@@ -1,0 +1,8 @@
+streamlit>=1.38
+psycopg2-binary>=2.9
+weasyprint>=62
+jinja2>=3.0
+pdfplumber>=0.11
+anthropic>=0.40
+plotly>=5.24
+pandas>=2.2
