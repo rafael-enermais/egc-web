@@ -20,13 +20,16 @@ from pathlib import Path
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from auth import require_login  # noqa: E402
 from conexao import sidebar_contexto, get_conn  # noqa: E402
 import db  # noqa: E402
 
 st.set_page_config(page_title="Arquivar/Recuperar — EGC", page_icon="🗄️", layout="wide")
 st.title("🗄️ Arquivar / Recuperar importação")
 
-cod_empresa, nome_empresa, usuario = sidebar_contexto()
+usuario = require_login()
+
+cod_empresa, nome_empresa, usuario = sidebar_contexto(usuario)
 conn = get_conn()
 
 col_arq, col_rec = st.columns(2)

@@ -19,6 +19,7 @@ from pathlib import Path
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from auth import require_login  # noqa: E402
 from conexao import sidebar_contexto, get_conn  # noqa: E402
 import db  # noqa: E402
 from parser_egc import processar_pdf  # noqa: E402
@@ -26,7 +27,9 @@ from parser_egc import processar_pdf  # noqa: E402
 st.set_page_config(page_title="Importar PDF — EGC", page_icon="📥", layout="wide")
 st.title("📥 Importar PDF")
 
-cod_empresa, nome_empresa, usuario = sidebar_contexto()
+usuario = require_login()
+
+cod_empresa, nome_empresa, usuario = sidebar_contexto(usuario)
 st.caption(f"Empresa selecionada na barra lateral: **{nome_empresa}** — confira antes de importar.")
 
 arquivos = st.file_uploader("PDFs (SPED, BP e/ou DRE)", type=["pdf"], accept_multiple_files=True)
