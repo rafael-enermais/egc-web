@@ -1,4 +1,5 @@
 streamlit>=1.38
+supabase
 psycopg2-binary>=2.9
 weasyprint>=62
 jinja2>=3.0

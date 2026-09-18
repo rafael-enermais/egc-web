@@ -8,15 +8,18 @@ Ponto de entrada Streamlit. Paginas em app/pages/:
 """
 import streamlit as st
 
+from auth import require_login
 from conexao import sidebar_contexto, get_conn
 import db
 
 st.set_page_config(page_title="EGC — EnerMais", page_icon="📊", layout="wide")
 
+usuario = require_login()
+
 st.title("EGC — Gestão Contábil EnerMais")
 st.caption("Importação de PDF, revisão/correção, histórico e relatórios — schema `egc` no Supabase.")
 
-cod_empresa, nome_empresa, usuario = sidebar_contexto()
+cod_empresa, nome_empresa, usuario = sidebar_contexto(usuario)
 
 st.markdown(
     "Use o menu à esquerda para **Importar PDF**, **Revisão/Correção** ou "

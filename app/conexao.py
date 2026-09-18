@@ -55,27 +55,20 @@ def get_conn():
     return conn
 
 
-def sidebar_contexto():
+def sidebar_contexto(usuario_logado: str):
     """
     Sidebar comum a todas as paginas: selecao de empresa (equivalente aos
-    6 checkboxes do PAINEL) + identificacao do usuario (pra trilha de
-    auditoria nas correcoes manuais — o VBA nao tinha isso, o Excel era
-    de uso individual; aqui vira campo simples, sem exigir login formal
-    ainda — decisao de exposicao/autenticacao fica pra Fase 8).
-    Retorna (codigo_empresa, nome_empresa, usuario).
+    6 checkboxes do PAINEL). Identificacao do usuario NAO e' mais campo
+    livre — vem do login (Supabase Auth, ver auth.require_login()),
+    chamado antes desta funcao em cada pagina. Isso fecha a trilha de
+    auditoria: nao da mais pra digitar o nome de outra pessoa.
+    Retorna (codigo_empresa, nome_empresa, usuario_logado).
     """
     st.sidebar.header("Contexto")
-
-    if "usuario" not in st.session_state:
-        st.session_state["usuario"] = ""
-    st.session_state["usuario"] = st.sidebar.text_input(
-        "Seu nome", value=st.session_state["usuario"], placeholder="ex.: Maria"
-    )
 
     nomes = [f"{nome} ({cod})" for cod, nome, _ in EMPRESAS_FIXAS]
     idx = st.sidebar.selectbox("Empresa", range(len(EMPRESAS_FIXAS)), format_func=lambda i: nomes[i])
     cod, nome, cnpj = EMPRESAS_FIXAS[idx]
     st.sidebar.caption(cnpj)
 
-    usuario = st.session_state["usuario"].strip() or None
-    return cod, nome, usuario
+    return cod, nome, usuario_logado
