@@ -2,29 +2,35 @@
 """
 Tela IMPORTAR PDF — equivalente ao botao ImportarPDF do PAINEL.
 
-Fluxo (ver PROJETO_EGC_v3.0.md secao 8 / Modulo_Enermais):
+Fluxo:
   1. Upload de 1+ PDFs (BP e/ou DRE, pode ser mais de 1 por vez, de
-     empresas DIFERENTES no mesmo lote -- nao precisa ser tudo da mesma).
+     empresas DIFERENTES no mesmo lote).
   2. Roda processar_pdf() do parser original (mesma logica, zero
-     reescrita) em cada arquivo.
-  3. Mostra previa das contas extraidas (empresa/CNPJ/periodo detectados
-     + tabela BP/DRE) ANTES de gravar — contadora confere antes.
-  4. So grava no banco quando ela confirma. Se ja existirem linhas ATIVAS
-     do mesmo empresa+periodo+tipo, elas sao inativadas antes (nunca
-     sobrescritas/apagadas) — mesma regra do "FIX CRITICO" do VBA.
+     reescrita) em cada arquivo. O uploader e' limpo logo em seguida
+     (key dinamica) -- os dados ja processados vivem so' em
+     session_state["import_resultados"], entao arquivo velho sentado no
+     uploader nao pode mais se misturar com um upload novo.
+  3. Previa por arquivo, empresa resolvida automaticamente pelo CNPJ
+     (conexao.empresa_por_cnpj) -- contadora confere antes de gravar.
+  4. Confirmar/gravar e' POR EMPRESA (nao 1 botao pro lote inteiro):
+     cada empresa resolvida no lote tem seu proprio grupo com botao
+     "Gravar <empresa>". Ao gravar um grupo, so' aqueles arquivos saem
+     da previa -- o resto do lote (outras empresas, ou coisas ainda nao
+     confirmadas) continua ali, pronta pra fluir pro proximo.
+  5. "Importações recentes" no fim da tela: historico de verdade (tabela
+     egc.importacoes, nao session_state) com opcao de desfazer (arquivar)
+     QUALQUER uma, nao so' a ultima da sessao atual -- sobrevive a
+     logout/F5.
 
-Empresa por CNPJ, nao por selecao previa (mudanca de 21/09/2026, pedido
-do Rafael): antes, a empresa que definia ONDE gravar vinha da selecao
-manual na sidebar (mesma pra todo o lote) -- e so' comparava o CNPJ do
-PDF contra ela pra bloquear se nao batesse. Isso obrigava selecionar 1
-empresa por vez mesmo quando o lote tinha PDFs de varios CNPJs
-diferentes, o que nao faz sentido: quem sabe a empresa certa e' o
-proprio PDF (o parser ja extrai o CNPJ). Agora cada arquivo resolve a
-PROPRIA empresa automaticamente via conexao.empresa_por_cnpj(); a
-contadora so' confirma visualmente antes de gravar (preview mostra
-"Empresa confirmada" por arquivo). A sidebar continua existindo (outras
-2 telas dependem dela pra saber o que exibir) mas nao influencia mais
-onde este import grava.
+Mudancas de 21/09/2026 (feedback do Rafael testando ao vivo):
+  - Empresa por CNPJ em vez de selecao previa na sidebar (ja' entregue
+    antes desta leva).
+  - BUG: uploader mantinha arquivos ja processados visiveis, causando
+    reprocessamento junto com o upload seguinte -- corrigido com key
+    dinamica + rerun logo apos processar.
+  - Gravar virou por empresa (grupo), nao 1 botao pro lote inteiro.
+  - Desfazer virou historico de verdade (db.listar_importacoes_recentes),
+    nao so' "a ultima importacao desta sessao".
 """
 import sys
 import tempfile
@@ -53,16 +59,22 @@ st.caption(
     "de empresa na barra lateral não afeta esta tela, só Revisão/Correção e Arquivar/Recuperar."
 )
 
-arquivos = st.file_uploader("PDFs (SPED, BP e/ou DRE)", type=["pdf"], accept_multiple_files=True)
+if "uploader_key_n" not in st.session_state:
+    st.session_state["uploader_key_n"] = 0
+
+arquivos = st.file_uploader(
+    "PDFs (SPED, BP e/ou DRE)", type=["pdf"], accept_multiple_files=True,
+    key=f"uploader_{st.session_state['uploader_key_n']}",
+)
 
 if arquivos and st.button("1. Processar PDFs (pré-visualizar)", type="primary"):
-    resultados = []
+    novos = []
     with tempfile.TemporaryDirectory() as tmp:
         for arq in arquivos:
             caminho = Path(tmp) / arq.name
             caminho.write_bytes(arq.getbuffer())
             bp_rows, dre_rows, log, meta = processar_pdf(caminho)
-            resultados.append(
+            novos.append(
                 {
                     "arquivo": arq.name,
                     "bp_rows": bp_rows,
@@ -71,7 +83,14 @@ if arquivos and st.button("1. Processar PDFs (pré-visualizar)", type="primary")
                     "meta": meta,
                 }
             )
-    st.session_state["import_resultados"] = resultados
+    # soma ao que ja estava pendente (nao substitui) -- assim da pra
+    # processar em varias levas sem perder o que ainda nao foi gravado
+    pendentes = st.session_state.get("import_resultados", [])
+    st.session_state["import_resultados"] = pendentes + novos
+    # limpa o uploader (key nova) pra nao ficar arquivo velho visivel
+    # misturando com o proximo upload
+    st.session_state["uploader_key_n"] += 1
+    st.rerun()
 
 resultados = st.session_state.get("import_resultados")
 if resultados:
@@ -111,6 +130,13 @@ if resultados:
                         f"⚠️ CNPJ {cnpj} não corresponde a nenhuma das 6 empresas cadastradas. "
                         "Este arquivo NÃO será gravado (confira se é o PDF certo)."
                     )
+                    if st.button("🗑️ Remover da lista", key=f"remover_{i}"):
+                        st.session_state["import_resultados"] = [
+                            x for x in st.session_state["import_resultados"] if x is not r
+                        ]
+                        if not st.session_state["import_resultados"]:
+                            del st.session_state["import_resultados"]
+                        st.rerun()
                 else:
                     st.warning("CNPJ não identificado neste PDF — selecione a empresa manualmente:")
                     nomes = [nome for _cod, nome, _cnpj in EMPRESAS_FIXAS]
@@ -142,78 +168,109 @@ if resultados:
     if algum_erro:
         st.error("Há erros de leitura em pelo menos um PDF — corrija/confira antes de gravar.")
 
-    n_bloqueados = sum(1 for r in resultados if r["_bloqueado"])
-    n_prontos = len(resultados) - n_bloqueados
+    # Agrupa por empresa resolvida -- gravar fica por empresa, nao 1 botao
+    # pro lote inteiro (pedido do Rafael: lote com varios CNPJs deveria
+    # poder confirmar/gravar empresa por empresa).
+    grupos = {}
+    bloqueados = [r for r in resultados if r["_bloqueado"]]
+    for r in resultados:
+        if r["_bloqueado"] or not r["_cod"]:
+            continue
+        g = grupos.setdefault(r["_cod"], {"nome": r["_nome"], "itens": []})
+        g["itens"].append(r)
+
     st.divider()
-    st.subheader("3. Confirmar gravação")
-    st.caption(
-        f"{n_prontos} de {len(resultados)} arquivo(s) prontos pra gravar"
-        + (f" — {n_bloqueados} não será(ão) gravado(s) por CNPJ não cadastrado (veja acima)." if n_bloqueados else ".")
-        + " Se já existir um período ativo igual (mesma empresa/período/tipo), ele será arquivado "
-        "automaticamente antes — nada é apagado."
-    )
-    if st.button("✅ Gravar no banco", type="primary", disabled=algum_erro):
-        conn = get_conn()
-        total_gravado = 0
-        pulados = []
-        periodos_tocados = set()
-        for r in resultados:
-            if not r["meta"] or r["_bloqueado"] or not r["_cod"]:
-                if r["_bloqueado"]:
-                    pulados.append(r["arquivo"])
-                continue
-            cod_r = r["_cod"]
-            empresa_nome, cnpj, periodo, nome_arq, tipo_doc, fmt = r["meta"][0]
-            # periodo vem como string "dd/mm/aaaa" do parser -> date
-            try:
-                periodo_date = _dt.datetime.strptime(periodo, "%d/%m/%Y").date()
-            except Exception:
-                st.error(f"Não consegui interpretar o período '{periodo}' de {r['arquivo']} — pulei este arquivo.")
-                pulados.append(r["arquivo"])
-                continue
+    st.subheader("3. Confirmar gravação (por empresa)")
+    if bloqueados:
+        st.caption(f"{len(bloqueados)} arquivo(s) não identificado(s) não aparecem aqui — veja o aviso na prévia acima.")
 
-            for tipo, rows in (("BP", r["bp_rows"]), ("DRE", r["dre_rows"])):
-                if not rows:
-                    continue
-                n_inativados = db.inativar_periodo_existente(conn, cod_r, periodo_date, tipo)
-                n_gravados = db.inserir_lancamentos(
-                    conn, cod_r, tipo, periodo_date, rows, r["arquivo"], usuario
-                )
-                total_gravado += n_gravados
-                periodos_tocados.add((cod_r, periodo_date))
-                nivel = "AVISO" if n_inativados else "OK"
-                msg = f"{n_gravados} conta(s) gravada(s)" + (
-                    f" — {n_inativados} linha(s) do período anterior arquivada(s) automaticamente" if n_inativados else ""
-                )
-                db.registrar_importacao(
-                    conn, cod_r, periodo_date, [r["arquivo"]], nivel, tipo, msg, usuario
-                )
+    if not grupos:
+        st.info("Nenhum arquivo pronto pra gravar ainda.")
 
-        st.session_state["import_desfazer"] = {"periodos": sorted(periodos_tocados)}
-        msg_final = f"Importação concluída: {total_gravado} lançamento(s) gravado(s)."
-        if pulados:
-            msg_final += f" {len(pulados)} arquivo(s) pulado(s): {', '.join(pulados)}."
-        st.success(msg_final)
-        del st.session_state["import_resultados"]
-        st.rerun()
+    for cod_g, grupo in grupos.items():
+        with st.container(border=True):
+            arquivos_nomes = ", ".join(x["arquivo"] for x in grupo["itens"])
+            st.markdown(f"**{grupo['nome']}** ({cod_g}) — {len(grupo['itens'])} arquivo(s): {arquivos_nomes}")
+            if st.button(f"✅ Gravar {grupo['nome']}", key=f"gravar_{cod_g}", type="primary", disabled=algum_erro):
+                conn = get_conn()
+                total_gravado = 0
+                pulados = []
+                for r in grupo["itens"]:
+                    if not r["meta"]:
+                        continue
+                    empresa_nome, cnpj, periodo, nome_arq, tipo_doc, fmt = r["meta"][0]
+                    try:
+                        periodo_date = _dt.datetime.strptime(periodo, "%d/%m/%Y").date()
+                    except Exception:
+                        st.error(f"Não consegui interpretar o período '{periodo}' de {r['arquivo']} — pulei este arquivo.")
+                        pulados.append(r["arquivo"])
+                        continue
 
-desfazer = st.session_state.get("import_desfazer")
-if desfazer and desfazer["periodos"]:
-    st.divider()
-    resumo = ", ".join(
-        f"{NOME_POR_COD.get(cod, cod)} ({p.strftime('%m/%Y')})" for cod, p in desfazer["periodos"]
-    )
-    st.info(f"Última importação: {resumo}.")
-    st.caption(
-        "Arquiva (não apaga) o que acabou de ser gravado. Se um período anterior foi arquivado "
-        "automaticamente por esta importação, ele NÃO volta sozinho — use Arquivar/Recuperar pra "
-        "reativá-lo, se precisar."
-    )
-    if st.button("↩️ Desfazer esta importação"):
-        conn = get_conn()
-        total = 0
-        for cod, p in desfazer["periodos"]:
-            total += db.arquivar_periodo(conn, cod, p)
-        st.success(f"{total} lançamento(s) arquivado(s). Desfeito.")
-        del st.session_state["import_desfazer"]
-        st.rerun()
+                    for tipo, rows in (("BP", r["bp_rows"]), ("DRE", r["dre_rows"])):
+                        if not rows:
+                            continue
+                        n_inativados = db.inativar_periodo_existente(conn, cod_g, periodo_date, tipo)
+                        n_gravados = db.inserir_lancamentos(
+                            conn, cod_g, tipo, periodo_date, rows, r["arquivo"], usuario
+                        )
+                        total_gravado += n_gravados
+                        nivel = "AVISO" if n_inativados else "OK"
+                        msg = f"{n_gravados} conta(s) gravada(s)" + (
+                            f" — {n_inativados} linha(s) do período anterior arquivada(s) automaticamente" if n_inativados else ""
+                        )
+                        db.registrar_importacao(
+                            conn, cod_g, periodo_date, [r["arquivo"]], nivel, tipo, msg, usuario
+                        )
+
+                # remove so' os itens deste grupo da lista pendente
+                gravados_ids = {id(x) for x in grupo["itens"]}
+                restante = [x for x in st.session_state["import_resultados"] if id(x) not in gravados_ids]
+                if restante:
+                    st.session_state["import_resultados"] = restante
+                else:
+                    del st.session_state["import_resultados"]
+
+                msg_final = f"{grupo['nome']}: {total_gravado} lançamento(s) gravado(s)."
+                if pulados:
+                    msg_final += f" {len(pulados)} arquivo(s) pulado(s): {', '.join(pulados)}."
+                st.success(msg_final)
+                st.rerun()
+
+st.divider()
+st.subheader("Importações recentes")
+st.caption(
+    "Histórico de gravações (todas as sessões, não só a atual). \"Desfazer\" arquiva "
+    "(não apaga) o período inteiro — reative depois em Arquivar/Recuperar se precisar."
+)
+try:
+    conn = get_conn()
+    brutos = db.listar_importacoes_recentes(conn, limite=50)
+    vistos = set()
+    eventos = []
+    for row in brutos:
+        chave = (row["empresa_codigo"], row["periodo"])
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        eventos.append(row)
+        if len(eventos) >= 10:
+            break
+except Exception as exc:
+    eventos = []
+    st.warning(f"Não consegui carregar o histórico agora: {exc}")
+
+if not eventos:
+    st.caption("Nenhuma importação registrada ainda.")
+else:
+    for ev in eventos:
+        cod_ev = ev["empresa_codigo"]
+        periodo_ev = ev["periodo"]
+        nome_ev = NOME_POR_COD.get(cod_ev, cod_ev)
+        quando = ev["criado_em"].strftime("%d/%m/%Y %H:%M") if ev["criado_em"] else "?"
+        col_a, col_b = st.columns([4, 1])
+        col_a.write(f"**{nome_ev}** — {periodo_ev.strftime('%m/%Y')} · gravado por {ev['usuario'] or '?'} em {quando}")
+        if col_b.button("↩️ Desfazer", key=f"hist_desfazer_{cod_ev}_{periodo_ev}"):
+            conn = get_conn()
+            total = db.arquivar_periodo(conn, cod_ev, periodo_ev)
+            st.success(f"{total} lançamento(s) de {nome_ev} ({periodo_ev.strftime('%m/%Y')}) arquivado(s).")
+            st.rerun()
