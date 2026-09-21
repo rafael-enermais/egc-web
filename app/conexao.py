@@ -111,12 +111,42 @@ def sidebar_contexto(usuario_logado: str) -> None:
     # (rafael.nakahara@enermais.com.br + v{VERSAO}), so que aqui na sidebar
     # (nao no fim do conteudo principal) porque o app e multipage e o
     # conteudo principal muda de tela; a sidebar e o unico lugar comum a
-    # todas as telas. "position: fixed" foi evitado de proposito -- o
-    # RADAR ja descobriu que o Streamlit corta isso (fica relativo a um
-    # container interno, nao a janela), entao aqui tambem e' bloco normal
-    # que flui no fim do conteudo da sidebar.
+    # todas as telas.
+    #
+    # Mudanca de 21/09/2026 (pedido do Rafael: "aquele contato e versao,
+    # esta acompanhando a parte de cima, conseguimos fixar na coluna a
+    # esquerda inferior? como rodape?"): antes ficava so' fluindo no fim
+    # do conteudo da sidebar (comentario antigo dizia que "position: fixed"
+    # tinha sido testado no RADAR e descartado por ficar relativo a um
+    # container interno, nao a janela -- na pratica o problema NAO e'
+    # fixed em si, e' que a sidebar do Streamlit tem SEU PROPRIO container
+    # scrollavel (data-testid="stSidebarUserContent", dentro dele
+    # "stVerticalBlock"), entao "fixed" relativo a janela some quando esse
+    # container rola. O fix certo e' "position: sticky" DENTRO desse
+    # container scrollavel -- gruda no fundo da area visivel da sidebar em
+    # vez de fixar na janela. Confirmado ao vivo via Chrome antes de
+    # commitar: injetei o CSS abaixo direto no DOM da sessao logada do
+    # Rafael, forcei scroll (spacer temporario de 2000px, removido depois)
+    # e confirmei visualmente que o rodape fica grudado embaixo o tempo
+    # todo, sem cobrir/ser coberto pelo conteudo. Alvo do CSS: o ULTIMO
+    # "stElementContainer" dentro da sidebar (":last-child") -- funciona
+    # pq esta funcao e' sempre a ultima coisa desenhada na sidebar em toda
+    # pagina (nada e' adicionado a st.sidebar depois dela), entao nao
+    # depende de contar quantos elementos vem antes (login/Sair podem
+    # mudar sem quebrar isso). Fundo solido (rgb(38,39,48), mesma cor da
+    # sidebar) pra nao deixar o conteudo que rola por baixo aparecer atras
+    # do texto.
     st.sidebar.markdown(
         f"""
+        <style>
+        [data-testid="stSidebarUserContent"] [data-testid="stElementContainer"]:last-child {{
+            position: sticky;
+            bottom: 0;
+            background: rgb(38, 39, 48);
+            z-index: 999;
+            padding-bottom: 0.8rem;
+        }}
+        </style>
         <div style="margin-top: 2rem; padding-top: 0.6rem;
                     border-top: 1px solid rgba(245,246,250,0.15);
                     font-size: 0.7rem; color: rgba(245,246,250,0.5);
