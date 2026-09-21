@@ -31,6 +31,10 @@ Mudancas de 21/09/2026 (feedback do Rafael testando ao vivo):
   - Gravar virou por empresa (grupo), nao 1 botao pro lote inteiro.
   - Desfazer virou historico de verdade (db.listar_importacoes_recentes),
     nao so' "a ultima importacao desta sessao".
+  - Arquivo com empresa resolvida mas ZERO contas BP/DRE extraidas (ex.:
+    Balancete) nao aparece mais pronto-pra-gravar (flag _sem_dados).
+  - Dedup por nome de arquivo (mesmo lote ou contra o que ja tava
+    pendente) -- evita gravar copia duplicada do mesmo PDF.
 """
 import sys
 import tempfile
@@ -68,9 +72,22 @@ arquivos = st.file_uploader(
 )
 
 if arquivos and st.button("1. Processar PDFs (pré-visualizar)", type="primary"):
+    # dedup por nome de arquivo -- tanto dentro do MESMO lote (selecionou
+    # o msm arquivo 2x sem querer) quanto contra o que ja estava pendente
+    # de uma leva anterior. Achado pelo Rafael testando (2 PDFs identicos
+    # de "Construtora - Balanco Patrimonial" apareceram juntos na previa e
+    # no grupo de gravacao) -- sem isso, gravar duas copias identicas nao
+    # quebra (inativar_periodo_existente cobre a 1a antes da 2a entrar),
+    # mas grava lixo duplicado (INATIVO) e confunde a tela.
     novos = []
+    nomes_vistos_no_lote = set()
+    duplicados_no_lote = []
     with tempfile.TemporaryDirectory() as tmp:
         for arq in arquivos:
+            if arq.name in nomes_vistos_no_lote:
+                duplicados_no_lote.append(arq.name)
+                continue
+            nomes_vistos_no_lote.add(arq.name)
             caminho = Path(tmp) / arq.name
             caminho.write_bytes(arq.getbuffer())
             bp_rows, dre_rows, log, meta = processar_pdf(caminho)
@@ -83,14 +100,33 @@ if arquivos and st.button("1. Processar PDFs (pré-visualizar)", type="primary")
                     "meta": meta,
                 }
             )
+
     # soma ao que ja estava pendente (nao substitui) -- assim da pra
-    # processar em varias levas sem perder o que ainda nao foi gravado
+    # processar em varias levas sem perder o que ainda nao foi gravado --
+    # mas nao duplica nome ja pendente
     pendentes = st.session_state.get("import_resultados", [])
-    st.session_state["import_resultados"] = pendentes + novos
+    nomes_pendentes = {r["arquivo"] for r in pendentes}
+    duplicados_ja_pendentes = [n["arquivo"] for n in novos if n["arquivo"] in nomes_pendentes]
+    novos_unicos = [n for n in novos if n["arquivo"] not in nomes_pendentes]
+    st.session_state["import_resultados"] = pendentes + novos_unicos
+
+    duplicados = duplicados_no_lote + duplicados_ja_pendentes
+    if duplicados:
+        st.session_state["import_duplicados_aviso"] = duplicados
+    elif "import_duplicados_aviso" in st.session_state:
+        del st.session_state["import_duplicados_aviso"]
+
     # limpa o uploader (key nova) pra nao ficar arquivo velho visivel
     # misturando com o proximo upload
     st.session_state["uploader_key_n"] += 1
     st.rerun()
+
+aviso_duplicados = st.session_state.pop("import_duplicados_aviso", None)
+if aviso_duplicados:
+    st.warning(
+        f"⚠️ {len(aviso_duplicados)} arquivo(s) com o mesmo nome já pendente não foram processados "
+        f"de novo (evita gravar duplicado): {', '.join(aviso_duplicados)}"
+    )
 
 resultados = st.session_state.get("import_resultados")
 if resultados:

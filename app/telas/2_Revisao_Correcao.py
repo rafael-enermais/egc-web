@@ -27,6 +27,15 @@ BP+DRE dentro (like antes). "Salvar correcoes" continua sendo 1 botao so'
 que grava tudo que foi editado em qualquer combinacao aberta. "Adicionar
 conta ausente" ganhou selecao de Empresa+Periodo+Tipo (antes so' Tipo),
 ja que agora podem existir varias combinacoes na tela ao mesmo tempo.
+
+Mudanca de 21/09/2026 (3ª leva): o multiselect de Empresa(s) desta pagina
+usava o dropdown da SIDEBAR como valor "default" -- na pratica isso fazia
+o Streamlit tratar o widget como "novo" toda vez que a sidebar mudava
+(porque o default mudava, e o multiselect nao tinha key explicita), o que
+resetava a selecao desta pagina sem o usuario mexer em nada aqui ("esse
+dropdown do lado esquerdo... interfere em tudo", Rafael). Removida
+totalmente a dependencia da sidebar: key explicita + default fixo (1a
+empresa da lista), sem nenhuma leitura do estado de outra pagina.
 """
 import sys
 from pathlib import Path
@@ -44,7 +53,7 @@ NOME_POR_COD = {cod: nome for cod, nome, _cnpj in EMPRESAS_FIXAS}
 st.title("✏️ Revisão / Correção manual")
 
 usuario = usuario_atual()
-cod_sidebar, _nome_sidebar, usuario = sidebar_contexto(usuario)  # so' pro layout/rodape
+sidebar_contexto(usuario)  # so' rodape -- ver nota em conexao.sidebar_contexto
 conn = get_conn()
 
 st.caption(
@@ -53,9 +62,9 @@ st.caption(
 )
 
 nomes_emp = [f"{nome} ({cod})" for cod, nome, _cnpj in EMPRESAS_FIXAS]
-idx_default = next((i for i, (cod, _n, _c) in enumerate(EMPRESAS_FIXAS) if cod == cod_sidebar), 0)
 idxs_sel = st.multiselect(
-    "Empresa(s)", range(len(EMPRESAS_FIXAS)), default=[idx_default], format_func=lambda i: nomes_emp[i],
+    "Empresa(s)", range(len(EMPRESAS_FIXAS)), default=[0], format_func=lambda i: nomes_emp[i],
+    key="revisao_empresas_sel",
 )
 cods_selecionados = [EMPRESAS_FIXAS[i][0] for i in idxs_sel]
 if not cods_selecionados:
@@ -71,8 +80,26 @@ if not todos_periodos:
     st.info(f"Nenhum período ativo pra {nomes_sel} ainda. Importe um PDF primeiro.")
     st.stop()
 
+# guarda contra o caso de trocar a selecao de empresa(s) e a selecao de
+# periodo(s) anterior (guardada em session_state pela key) ter algum
+# periodo que nao existe mais entre as opcoes novas -- Streamlit reclama
+# se o valor guardado nao for mais um subconjunto das opcoes atuais
+#
+# Nota 21/09/2026: esse padrao (escrever em session_state[key] logo antes
+# de um widget keyed que tambem tem default=) faz o Streamlit logar um
+# WARNING interno ("was created with a default value but also had its
+# value set via the Session State API"). Testado e confirmado inofensivo:
+# nao e' excecao, nao afeta o valor final do widget entre reruns (o
+# default so' vale na 1a renderizacao; o clamp so' toca estado ja
+# existente) -- so' um log verboso do proprio Streamlit por nao conseguir
+# distinguir "valor persistido do proprio widget" de "setado via API" aqui.
+if "revisao_periodos_sel" in st.session_state:
+    st.session_state["revisao_periodos_sel"] = [
+        p for p in st.session_state["revisao_periodos_sel"] if p in todos_periodos
+    ]
 periodos_sel = st.multiselect(
     "Período(s)", todos_periodos, default=todos_periodos[-1:], format_func=lambda d: d.strftime("%m/%Y"),
+    key="revisao_periodos_sel",
 )
 if not periodos_sel:
     st.info("Selecione ao menos 1 período.")

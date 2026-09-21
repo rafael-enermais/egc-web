@@ -20,7 +20,7 @@ nao reproduz esse comportamento de auto-descoberta do servidor).
 import streamlit as st
 
 from auth import require_login
-from conexao import sidebar_contexto, get_conn
+from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS
 import db
 
 st.set_page_config(page_title="EGC — EnerMais", page_icon="📊", layout="wide")
@@ -39,12 +39,22 @@ def pagina_inicio():
     st.title("EGC — Gestão Contábil EnerMais")
     st.caption("Importação de PDF, revisão/correção, histórico e relatórios — schema `egc` no Supabase.")
 
-    cod_empresa, nome_empresa, usuario = sidebar_contexto(usuario)
+    sidebar_contexto(usuario)  # so' rodape -- ver nota em conexao.sidebar_contexto
 
     st.markdown(
         "Use o menu à esquerda para **Importar PDF**, **Revisão/Correção** ou "
         "**Arquivar/Recuperar**. O dashboard de indicadores entra na Fase 4."
     )
+
+    # Seletor de empresa PROPRIO desta pagina (21/09/2026: nao depende mais
+    # de nenhum estado compartilhado com outras paginas -- ver nota em
+    # conexao.sidebar_contexto sobre por que o dropdown antigo foi tirado
+    # da sidebar).
+    nomes_emp = [f"{nome} ({cod})" for cod, nome, _cnpj in EMPRESAS_FIXAS]
+    idx = st.selectbox(
+        "Empresa", range(len(EMPRESAS_FIXAS)), format_func=lambda i: nomes_emp[i], key="inicio_empresa_sel",
+    )
+    cod_empresa, nome_empresa, _cnpj_empresa = EMPRESAS_FIXAS[idx]
 
     try:
         conn = get_conn()

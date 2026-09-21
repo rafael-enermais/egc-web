@@ -13,6 +13,10 @@ de egc.lancamentos (não numa aba separada), um ciclo Arquivar -> Recuperar
 NUNCA perde o valor original do PDF, mesmo em período com correção manual
 — a limitação conhecida do sistema antigo (seção 7 do handoff) não existe
 nesta versão.
+
+Mudanca de 21/09/2026: seletor de Empresa proprio desta pagina, nao
+depende mais do dropdown da sidebar (removido de conexao.sidebar_contexto
+-- ver nota la' sobre o efeito colateral entre paginas que isso causava).
 """
 import sys
 from pathlib import Path
@@ -27,12 +31,15 @@ import db  # noqa: E402
 st.title("🗄️ Arquivar / Recuperar importação")
 
 usuario = usuario_atual()
-
-cod_empresa, nome_empresa, usuario = sidebar_contexto(usuario)
+sidebar_contexto(usuario)  # so' rodape -- ver nota em conexao.sidebar_contexto
 conn = get_conn()
 
-CNPJ_POR_COD = {cod: cnpj for cod, _nome, cnpj in EMPRESAS_FIXAS}
-cnpj_empresa = CNPJ_POR_COD.get(cod_empresa, "")
+nomes_emp = [f"{nome} ({cod})" for cod, nome, _cnpj in EMPRESAS_FIXAS]
+idx_empresa = st.selectbox(
+    "Empresa", range(len(EMPRESAS_FIXAS)), format_func=lambda i: nomes_emp[i], key="arquivar_empresa_sel",
+)
+cod_empresa, nome_empresa, cnpj_empresa = EMPRESAS_FIXAS[idx_empresa]
+st.caption(cnpj_empresa)
 
 
 def _rotulo_periodo(d):
