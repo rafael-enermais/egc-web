@@ -118,28 +118,60 @@ def sidebar_contexto(usuario_logado: str) -> None:
     # esquerda inferior? como rodape?"): antes ficava so' fluindo no fim
     # do conteudo da sidebar (comentario antigo dizia que "position: fixed"
     # tinha sido testado no RADAR e descartado por ficar relativo a um
-    # container interno, nao a janela -- na pratica o problema NAO e'
-    # fixed em si, e' que a sidebar do Streamlit tem SEU PROPRIO container
-    # scrollavel (data-testid="stSidebarUserContent", dentro dele
-    # "stVerticalBlock"), entao "fixed" relativo a janela some quando esse
-    # container rola. O fix certo e' "position: sticky" DENTRO desse
-    # container scrollavel -- gruda no fundo da area visivel da sidebar em
-    # vez de fixar na janela. Confirmado ao vivo via Chrome antes de
-    # commitar: injetei o CSS abaixo direto no DOM da sessao logada do
-    # Rafael, forcei scroll (spacer temporario de 2000px, removido depois)
-    # e confirmei visualmente que o rodape fica grudado embaixo o tempo
-    # todo, sem cobrir/ser coberto pelo conteudo. Alvo do CSS: o ULTIMO
-    # "stElementContainer" dentro da sidebar (":last-child") -- funciona
-    # pq esta funcao e' sempre a ultima coisa desenhada na sidebar em toda
-    # pagina (nada e' adicionado a st.sidebar depois dela), entao nao
-    # depende de contar quantos elementos vem antes (login/Sair podem
-    # mudar sem quebrar isso). Fundo solido (rgb(38,39,48), mesma cor da
-    # sidebar) pra nao deixar o conteudo que rola por baixo aparecer atras
-    # do texto.
+    # container interno, nao a janela).
+    #
+    # 1a tentativa (so' "position: sticky" no ultimo elemento) NAO foi
+    # suficiente -- Rafael testou ao vivo e reportou "o rodape ainda ta na
+    # parte de cima". Causa: sticky so' gruda no fundo quando o CONTEUDO
+    # ja enche/ultrapassa a altura do container scrollavel; com pouco
+    # conteudo (poucas paginas tem isso) o elemento so' fica parado na sua
+    # posicao normal no fluxo, que sobra la' em cima, longe do fundo
+    # visivel. Fix definitivo: forcar o footer pra baixo com flexbox
+    # (padrao "sticky footer" classico), nao só sticky. A sidebar do
+    # Streamlit tem uma cadeia de 4 containers ate' chegar no nosso
+    # elemento: stSidebarContent > stSidebarUserContent > <div sem testid,
+    # wrapper automatico do Streamlit> > stVerticalBlock > [nossos
+    # elementos]. Cada um desses 4 precisa virar flex column com
+    # flex:1/min-height:0 pra herdar a altura total disponivel ate' o
+    # ultimo (stVerticalBlock), e so' ai' "margin-top: auto" no ultimo
+    # elemento consegue empurrar ele pro fundo. sticky fica mantido em
+    # cima disso como reforco pro caso do conteudo ficar mais alto que a
+    # tela (aí ele gruda no fundo da area visivel enquanto rola, em vez de
+    # sumir por baixo). Confirmado ao vivo via Chrome, direto no DOM da
+    # sessao logada do Rafael, ANTES de mudar o codigo -- 2 cenarios:
+    # conteudo curto (caso real, virou visivel corrigido so' com esse
+    # fix) e conteudo forcado a estourar a tela (spacer de 2000px
+    # temporario, removido depois) confirmando que continua grudado
+    # embaixo rolando. Alvo do ultimo elemento: ":last-child" (nao conta
+    # posicao) -- funciona pq esta funcao e' sempre a ultima coisa
+    # desenhada na sidebar em toda pagina. Fundo solido (rgb(38,39,48),
+    # mesma cor da sidebar) pra nao deixar o conteudo que rola por baixo
+    # aparecer atras do texto.
     st.sidebar.markdown(
         f"""
         <style>
+        [data-testid="stSidebarContent"] {{
+            display: flex;
+            flex-direction: column;
+        }}
+        [data-testid="stSidebarUserContent"] {{
+            display: flex;
+            flex-direction: column;
+            flex: 1 1 auto;
+            min-height: 0;
+        }}
+        [data-testid="stSidebarUserContent"] > div {{
+            display: flex;
+            flex-direction: column;
+            flex: 1 1 auto;
+            min-height: 0;
+        }}
+        [data-testid="stSidebarUserContent"] [data-testid="stVerticalBlock"] {{
+            flex: 1 1 auto;
+            min-height: 0;
+        }}
         [data-testid="stSidebarUserContent"] [data-testid="stElementContainer"]:last-child {{
+            margin-top: auto;
             position: sticky;
             bottom: 0;
             background: rgb(38, 39, 48);
