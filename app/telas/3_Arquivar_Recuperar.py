@@ -21,7 +21,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from auth import usuario_atual  # noqa: E402
-from conexao import sidebar_contexto, get_conn  # noqa: E402
+from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS  # noqa: E402
 import db  # noqa: E402
 
 st.title("🗄️ Arquivar / Recuperar importação")
@@ -30,6 +30,17 @@ usuario = usuario_atual()
 
 cod_empresa, nome_empresa, usuario = sidebar_contexto(usuario)
 conn = get_conn()
+
+CNPJ_POR_COD = {cod: cnpj for cod, _nome, cnpj in EMPRESAS_FIXAS}
+cnpj_empresa = CNPJ_POR_COD.get(cod_empresa, "")
+
+
+def _rotulo_periodo(d):
+    # pedido do Rafael 21/09/2026: mostrar CNPJ junto do periodo em cada
+    # opcao (antes so' aparecia o mes/ano), pra confirmar de bate-pronto
+    # qual empresa esta' sendo arquivada/recuperada sem depender so' do
+    # dropdown da sidebar
+    return f"{d.strftime('%m/%Y')} — {nome_empresa} ({cnpj_empresa})"
 
 col_arq, col_rec = st.columns(2)
 
@@ -43,7 +54,7 @@ with col_arq:
         escolhidos = st.multiselect(
             "Selecione o(s) período(s) para arquivar",
             ativos,
-            format_func=lambda d: d.strftime("%m/%Y"),
+            format_func=_rotulo_periodo,
             key="arquivar_sel",
         )
         if escolhidos and st.button("📦 Arquivar selecionado(s)", type="primary"):
@@ -63,7 +74,7 @@ with col_rec:
         escolhidos_r = st.multiselect(
             "Selecione o(s) período(s) para recuperar",
             inativos,
-            format_func=lambda d: d.strftime("%m/%Y"),
+            format_func=_rotulo_periodo,
             key="recuperar_sel",
         )
         if escolhidos_r and st.button("♻️ Recuperar selecionado(s)", type="primary"):
