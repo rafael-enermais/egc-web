@@ -83,22 +83,30 @@ def get_conn():
     return conn
 
 
-def sidebar_contexto(usuario_logado: str):
+def sidebar_contexto(usuario_logado: str) -> None:
     """
-    Sidebar comum a todas as paginas: selecao de empresa (equivalente aos
-    6 checkboxes do PAINEL). Identificacao do usuario NAO e' mais campo
-    livre — vem do login (Supabase Auth, ver auth.require_login()),
-    chamado antes desta funcao em cada pagina. Isso fecha a trilha de
-    auditoria: nao da mais pra digitar o nome de outra pessoa.
-    Retorna (codigo_empresa, nome_empresa, usuario_logado).
+    Sidebar comum a todas as paginas: so' o rodape (contato + versao) por
+    enquanto. Identificacao do usuario NAO e' campo livre — vem do login
+    (Supabase Auth, ver auth.require_login()), chamado antes desta funcao
+    em cada pagina.
+
+    Mudanca de 21/09/2026 (feedback do Rafael: "esse dropdown do lado
+    esquerdo, ele interfere em tudo... acredito q por pagina poderia
+    definir as opcoes do dropdown, sem depender desse ao lado esquerdo"):
+    o seletor de Empresa que existia AQUI foi removido. Antes, cada pagina
+    lia (ou tentava ler, ou parcialmente lia) esse dropdown compartilhado
+    da sidebar pra decidir o que mostrar -- isso causava efeito colateral
+    real entre paginas (mudar a empresa aqui mexia sem querer no default
+    do seletor proprio da Revisao/Correcao, por exemplo, porque o default
+    dela dependia deste valor). Agora CADA pagina que precisa de uma
+    empresa tem seu PROPRIO seletor local, sem nenhuma dependencia
+    cruzada: app.py (pagina Inicio), telas/2_Revisao_Correcao.py e
+    telas/3_Arquivar_Recuperar.py. Importar PDF nunca dependeu disso (a
+    empresa e' resolvida por CNPJ, por arquivo).
+
+    Nao retorna mais nada (antes retornava cod_empresa/nome_empresa —
+    ninguem mais deve usar o retorno desta funcao pra decidir empresa).
     """
-    st.sidebar.header("Contexto")
-
-    nomes = [f"{nome} ({cod})" for cod, nome, _ in EMPRESAS_FIXAS]
-    idx = st.sidebar.selectbox("Empresa", range(len(EMPRESAS_FIXAS)), format_func=lambda i: nomes[i])
-    cod, nome, cnpj = EMPRESAS_FIXAS[idx]
-    st.sidebar.caption(cnpj)
-
     # Rodape (contato + versao) -- mesmo padrao de conteudo do RADAR
     # (rafael.nakahara@enermais.com.br + v{VERSAO}), so que aqui na sidebar
     # (nao no fim do conteudo principal) porque o app e multipage e o
@@ -119,5 +127,3 @@ def sidebar_contexto(usuario_logado: str):
         """,
         unsafe_allow_html=True,
     )
-
-    return cod, nome, usuario_logado
