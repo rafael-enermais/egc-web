@@ -291,3 +291,57 @@ def indicadores(conn, empresa_codigo: str) -> list[dict]:
         )
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+# ─────────────────────────────────────────────
+#  VISAO GRUPO (BP/DRE consolidado multi-empresa)
+# ─────────────────────────────────────────────
+
+def listar_periodos_grupo(conn, empresas_codigos: list[str], status: str = "ATIVO") -> list[date]:
+    """
+    Uniao dos periodos com lancamentos (do status pedido) entre as
+    empresas informadas -- usado na Visao Grupo pra montar o seletor de
+    periodo a partir de QUALQUER empresa do grupo selecionado, nao so' 1.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT periodo
+            FROM egc.lancamentos
+            WHERE empresa_codigo = ANY(%s) AND status = %s
+            ORDER BY periodo DESC
+            """,
+            (empresas_codigos, status),
+        )
+        return [row[0] for row in cur.fetchall()]
+
+
+def listar_lancamentos_grupo(
+    conn, periodo: date, tipo: str, empresas_codigos: list[str], status: str = "ATIVO"
+) -> list[dict]:
+    """
+    Lancamentos "achatados" (1 linha por empresa+grupo+conta) de varias
+    empresas num MESMO periodo+tipo -- usado na Visao Grupo pra pivotar
+    (grupo, conta) x empresa_codigo em pandas. Ordena por grupo, conta
+    (mesma convencao de listar_lancamentos).
+
+    Premissa testada ao vivo antes de usar isto num pivot por igualdade
+    exata de (grupo, conta) -- ver Revisao/Correcao, SMG x Construtora,
+    06/2026: quando 2 empresas tem a MESMA conta, o texto bate exatamente
+    (mesma grafia/maiusculas), entao GROUP BY/pivot por igualdade exata e'
+    seguro. Contas que so existem em 1 empresa ficam com 0 nas outras --
+    normal (cada empresa tem seu proprio plano de contas), igual na
+    planilha "BALANCO GRUPO"/"DRE GRUPO".
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT empresa_codigo, grupo, conta, valor
+            FROM egc.lancamentos
+            WHERE periodo = %s AND tipo = %s AND status = %s AND empresa_codigo = ANY(%s)
+            ORDER BY grupo, conta
+            """,
+            (periodo, tipo, status, empresas_codigos),
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
