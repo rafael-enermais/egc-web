@@ -50,12 +50,19 @@ st.caption(
 import pandas as pd
 
 df = pd.DataFrame(lancamentos)
+# Coluna derivada (nao vem do banco) so pra destacar visualmente o que ja
+# foi corrigido a mao -- origem vira "MANUAL <periodo>" na 1a correcao
+# (regra de auditoria existente, ver db.salvar_correcao_manual). data_editor
+# nao aceita pandas Styler pra colorir celula, entao o destaque e' esta
+# coluna de check (mais confiavel que cor, e funciona igual em qualquer tema).
+df.insert(3, "corrigido", df["origem"].astype(str).str.startswith("MANUAL"))
 df_edit = st.data_editor(
     df,
     column_config={
         "id": st.column_config.NumberColumn("ID", disabled=True),
         "grupo": st.column_config.TextColumn("Grupo", disabled=True),
         "conta": st.column_config.TextColumn("Conta", disabled=True),
+        "corrigido": st.column_config.CheckboxColumn("✏️ Corrigido", disabled=True),
         "valor": st.column_config.NumberColumn("Valor", format="%.2f", step=0.01),
         "origem": st.column_config.TextColumn("Origem", disabled=True),
         "pdf_original": st.column_config.NumberColumn("PDF original", format="%.2f", disabled=True),

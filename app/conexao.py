@@ -9,6 +9,8 @@ from __future__ import annotations
 import streamlit as st
 import psycopg2
 
+APP_VERSION = "0.7"  # bump: decimo em manutencao/fix, inteiro em evolucao estrutural (regra do Rafael)
+
 EMPRESAS_FIXAS = [
     ("ENERGIA", "Enermais Energia Ltda", "47.040.664/0001-48"),
     ("SMG", "SMG Solucoes Ltda", "18.387.666/0001-00"),
@@ -70,5 +72,26 @@ def sidebar_contexto(usuario_logado: str):
     idx = st.sidebar.selectbox("Empresa", range(len(EMPRESAS_FIXAS)), format_func=lambda i: nomes[i])
     cod, nome, cnpj = EMPRESAS_FIXAS[idx]
     st.sidebar.caption(cnpj)
+
+    # Rodape (contato + versao) -- mesmo padrao de conteudo do RADAR
+    # (rafael.nakahara@enermais.com.br + v{VERSAO}), so que aqui na sidebar
+    # (nao no fim do conteudo principal) porque o app e multipage e o
+    # conteudo principal muda de tela; a sidebar e o unico lugar comum a
+    # todas as telas. "position: fixed" foi evitado de proposito -- o
+    # RADAR ja descobriu que o Streamlit corta isso (fica relativo a um
+    # container interno, nao a janela), entao aqui tambem e' bloco normal
+    # que flui no fim do conteudo da sidebar.
+    st.sidebar.markdown(
+        f"""
+        <div style="margin-top: 2rem; padding-top: 0.6rem;
+                    border-top: 1px solid rgba(245,246,250,0.15);
+                    font-size: 0.7rem; color: rgba(245,246,250,0.5);
+                    line-height: 1.4;">
+            EGC — Gestão Contábil EnerMais · v{APP_VERSION}<br>
+            rafael.nakahara@enermais.com.br
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     return cod, nome, usuario_logado
