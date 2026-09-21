@@ -165,6 +165,40 @@ def test_listar_importacoes_recentes_monta_sql_e_dict():
     print("OK: listar_importacoes_recentes")
 
 
+def test_listar_periodos_grupo_usa_any_e_status():
+    cur = FakeCursor(fetchall_result=[(datetime.date(2026, 6, 30),), (datetime.date(2026, 5, 31),)])
+    conn = FakeConn(cur)
+    periodos = db.listar_periodos_grupo(conn, ["ENERGIA", "SMG"], status="ATIVO")
+    sql, params = cur.executed[0]
+    assert "empresa_codigo = ANY(%s)" in sql
+    assert "status = %s" in sql
+    assert params == (["ENERGIA", "SMG"], "ATIVO")
+    assert periodos == [datetime.date(2026, 6, 30), datetime.date(2026, 5, 31)]
+    print("OK: listar_periodos_grupo")
+
+
+def test_listar_lancamentos_grupo_monta_sql_filtros_e_ordem():
+    cols = ["empresa_codigo", "grupo", "conta", "valor"]
+    linhas = [
+        ("SMG", "ATIVO CIRCULANTE", "CLIENTES", 121755.76),
+        ("CONST", "ATIVO CIRCULANTE", "CLIENTES", 50000.00),
+    ]
+    cur = FakeCursor(fetchall_result=linhas, description=[(c,) for c in cols])
+    conn = FakeConn(cur)
+    lancs = db.listar_lancamentos_grupo(
+        conn, datetime.date(2026, 6, 30), "BP", ["SMG", "CONST"], status="ATIVO"
+    )
+    sql, params = cur.executed[0]
+    assert "empresa_codigo = ANY(%s)" in sql
+    assert "ORDER BY grupo, conta" in sql
+    assert params == (datetime.date(2026, 6, 30), "BP", "ATIVO", ["SMG", "CONST"])
+    assert len(lancs) == 2
+    assert lancs[0] == {
+        "empresa_codigo": "SMG", "grupo": "ATIVO CIRCULANTE", "conta": "CLIENTES", "valor": 121755.76
+    }
+    print("OK: listar_lancamentos_grupo")
+
+
 if __name__ == "__main__":
     testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
     falhas = 0
