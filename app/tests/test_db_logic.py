@@ -145,6 +145,26 @@ def test_listar_periodos_filtra_por_status():
     print("OK: listar_periodos")
 
 
+def test_listar_importacoes_recentes_monta_sql_e_dict():
+    cols = ["empresa_codigo", "periodo", "criado_em", "usuario", "tipo", "nivel", "mensagem"]
+    linhas = [
+        ("ENERGIA", datetime.date(2026, 6, 30), datetime.datetime(2026, 9, 21, 10, 0), "maria", "BP", "OK", "5 conta(s) gravada(s)"),
+        ("SMG", datetime.date(2026, 6, 30), datetime.datetime(2026, 9, 21, 9, 0), "maria", "DRE", "OK", "3 conta(s) gravada(s)"),
+    ]
+    cur = FakeCursor(fetchall_result=linhas, description=[(c,) for c in cols])
+    conn = FakeConn(cur)
+    eventos = db.listar_importacoes_recentes(conn, limite=50)
+    sql, params = cur.executed[0]
+    assert "FROM egc.importacoes" in sql
+    assert "ORDER BY criado_em DESC" in sql
+    assert params == (50,)
+    assert len(eventos) == 2
+    assert eventos[0]["empresa_codigo"] == "ENERGIA"
+    assert eventos[0]["periodo"] == datetime.date(2026, 6, 30)
+    assert eventos[1]["empresa_codigo"] == "SMG"
+    print("OK: listar_importacoes_recentes")
+
+
 if __name__ == "__main__":
     testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
     falhas = 0

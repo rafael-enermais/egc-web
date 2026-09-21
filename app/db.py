@@ -143,6 +143,31 @@ def registrar_importacao(
         )
 
 
+def listar_importacoes_recentes(conn, limite: int = 30) -> list[dict]:
+    """
+    Historico de importacoes (tabela egc.importacoes, alimentada por
+    registrar_importacao a cada grava). Usado no Importar PDF pra mostrar
+    "importacoes recentes" com opcao de desfazer QUALQUER uma delas (nao
+    so a ultima da sessao) -- pedido do Rafael 21/09/2026. Retorna linhas
+    cruas (pode ter 1 linha por tipo BP/DRE do mesmo periodo); quem chama
+    agrupa por (empresa_codigo, periodo) se precisar de 1 linha por
+    "evento de import".
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT empresa_codigo, periodo, criado_em, usuario, tipo, nivel, mensagem
+            FROM egc.importacoes
+            WHERE empresa_codigo IS NOT NULL AND periodo IS NOT NULL
+            ORDER BY criado_em DESC
+            LIMIT %s
+            """,
+            (limite,),
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
 # ─────────────────────────────────────────────
 #  REVISAO / CORRECAO MANUAL
 # ─────────────────────────────────────────────
