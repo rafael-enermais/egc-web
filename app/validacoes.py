@@ -30,17 +30,6 @@ def checar_fechamento_bp(bp_rows: list) -> tuple[float | None, float | None]:
     return total_ativo, total_passivo
 
 
-def cnpj_bate(cnpj_detectado: str, cnpj_esperado: str) -> bool:
-    """
-    Compara CNPJ detectado no PDF pelo parser com o CNPJ da empresa
-    selecionada na sidebar. Comparacao simples (mesma mascara nos dois
-    lados -- parser usa regex \\d{2}.\\d{3}.\\d{3}/\\d{4}-\\d{2}, igual ao
-    cadastro em conexao.EMPRESAS_FIXAS). CNPJ vazio (parser nao achou)
-    conta como NAO bate -- melhor pedir confirmacao manual do que gravar
-    sem certeza nenhuma de qual empresa e' o PDF.
-    """
-    return bool(cnpj_detectado) and cnpj_detectado.strip() == cnpj_esperado.strip()
-
 def formatar_br(v: float) -> str:
     """1234.5 -> "1.234,50" (mesmo estilo BR usado no resto do app)."""
     return f"{v:,.2f}".translate(str.maketrans({",": "X", ".": ","})).replace("X", ".")

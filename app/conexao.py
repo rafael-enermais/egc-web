@@ -20,6 +20,24 @@ EMPRESAS_FIXAS = [
     ("SOL", "Enermais Solucoes Ltda", "60.353.219/0001-04"),
 ]
 
+def empresa_por_cnpj(cnpj: str) -> tuple[str, str] | None:
+    """
+    Resolve (codigo, nome) a partir do CNPJ detectado pelo parser num PDF.
+    None se o CNPJ nao bater com nenhuma das 6 empresas cadastradas (ex.:
+    "Futuro" ou qualquer CNPJ fora do grupo). Usado no Importar PDF pra
+    identificar a empresa automaticamente por arquivo, em vez de depender
+    de selecao manual previa na sidebar (pedido do Rafael 21/09/2026: com
+    upload de PDFs de varios CNPJs de uma vez, escolher 1 empresa antes na
+    sidebar nao faz sentido -- quem sabe a empresa certa e' o proprio PDF).
+    """
+    cnpj = (cnpj or "").strip()
+    if not cnpj:
+        return None
+    for cod, nome, c in EMPRESAS_FIXAS:
+        if c == cnpj:
+            return cod, nome
+    return None
+
 
 @st.cache_resource(show_spinner=False)
 def get_conn():
