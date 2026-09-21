@@ -24,7 +24,6 @@ from auth import require_login  # noqa: E402
 from conexao import sidebar_contexto, get_conn  # noqa: E402
 import db  # noqa: E402
 
-st.set_page_config(page_title="Arquivar/Recuperar — EGC", page_icon="🗄️", layout="wide")
 st.title("🗄️ Arquivar / Recuperar importação")
 
 usuario = require_login()

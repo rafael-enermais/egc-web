@@ -22,7 +22,6 @@ from auth import require_login  # noqa: E402
 from conexao import sidebar_contexto, get_conn  # noqa: E402
 import db  # noqa: E402
 
-st.set_page_config(page_title="Revisão/Correção — EGC", page_icon="✏️", layout="wide")
 st.title("✏️ Revisão / Correção manual")
 
 usuario = require_login()

@@ -24,7 +24,6 @@ from conexao import sidebar_contexto, get_conn  # noqa: E402
 import db  # noqa: E402
 from parser_egc import processar_pdf  # noqa: E402
 
-st.set_page_config(page_title="Importar PDF — EGC", page_icon="📥", layout="wide")
 st.title("📥 Importar PDF")
 
 usuario = require_login()
