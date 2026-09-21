@@ -92,3 +92,23 @@ def require_login() -> str:
         st.rerun()
 
     return sessao.user.email
+
+
+def usuario_atual() -> str:
+    """
+    Retorna o e-mail do usuario ja autenticado, SEM desenhar nada na
+    sidebar e SEM checar/gatear sessao de novo.
+
+    Usar dentro das paginas em app/telas/ (chamadas via st.Page() depois
+    de require_login() ja ter rodado uma vez em app.py, no topo, antes de
+    st.navigation()). Chamar require_login() de novo aqui duplicava o
+    bloco "Logado como / Sair" na sidebar (Streamlit reroda o app.py
+    inteiro a cada navegacao, entao o require_login() do topo de app.py
+    ja desenha esse bloco 1x; cada pagina chamando de novo desenhava 2x).
+    """
+    sessao = st.session_state.get("auth_session")
+    if sessao is None:
+        # Nao deveria acontecer (app.py ja bloqueou antes), mas por
+        # seguranca cai pro fluxo normal de login em vez de quebrar.
+        return require_login()
+    return sessao.user.email
