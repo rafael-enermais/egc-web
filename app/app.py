@@ -3,15 +3,19 @@
 EGC — Gestao Contabil EnerMais (v0.1 web)
 Ponto de entrada Streamlit.
 
-Fix (21/09/2026): antes disso, as paginas em app/pages/ eram descobertas
-automaticamente pelo Streamlit (convencao de pasta) e apareciam no menu
-lateral MESMO pra quem nao tinha logado ainda (o menu e' desenhado pelo
-framework antes do require_login() de cada pagina rodar) — so' o CONTEUDO
-ficava bloqueado, nao a lista de paginas. Trocado pra st.navigation()/
-st.Page(): as paginas so' sao registradas (e so' entao aparecem no menu)
-DEPOIS que require_login() confirma a sessao, replicando o padrao "login
--> app completo aparece" dos outros apps (RADAR etc.), que nao tem esse
-vazamento por serem single-page.
+Fix (21/09/2026, v2): antes disso, as paginas em app/pages/ eram
+descobertas automaticamente pelo Streamlit (convencao de pasta) e
+apareciam no menu lateral MESMO pra quem nao tinha logado ainda. A 1a
+tentativa (trocar pra st.navigation()/st.Page() mantendo os arquivos
+dentro de uma pasta chamada "pages/") NAO resolveu: o Streamlit continua
+auto-descobrindo e desenhando o menu a partir do NOME da pasta "pages/"
+em si (client-side, antes do script rodar), independente do que o codigo
+Python faz. Por isso os arquivos foram movidos pra app/telas/ (fora de
+qualquer pasta chamada "pages") — so' assim a auto-descoberta para' de
+vazar o menu, e st.navigation()/st.Page() passam a ser a UNICA fonte da
+lista de paginas, registrada so' depois que require_login() confirma a
+sessao. Validado direto no app publicado (nao so' no AppTest local, que
+nao reproduz esse comportamento de auto-descoberta do servidor).
 """
 import streamlit as st
 
@@ -57,9 +61,9 @@ def pagina_inicio():
 
 paginas = [
     st.Page(pagina_inicio, title="Início", icon="📊", default=True, url_path="inicio"),
-    st.Page("pages/1_Importar_PDF.py", title="Importar PDF", icon="📥"),
-    st.Page("pages/2_Revisao_Correcao.py", title="Revisão/Correção", icon="✏️"),
-    st.Page("pages/3_Arquivar_Recuperar.py", title="Arquivar/Recuperar", icon="🗄️"),
+    st.Page("telas/1_Importar_PDF.py", title="Importar PDF", icon="📥"),
+    st.Page("telas/2_Revisao_Correcao.py", title="Revisão/Correção", icon="✏️"),
+    st.Page("telas/3_Arquivar_Recuperar.py", title="Arquivar/Recuperar", icon="🗄️"),
 ]
 pg = st.navigation(paginas)
 pg.run()
