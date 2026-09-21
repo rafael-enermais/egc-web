@@ -114,6 +114,7 @@ if resultados:
             r["_cod"] = None
             r["_nome"] = None
             r["_bloqueado"] = False
+            r["_sem_dados"] = False
 
             if r["meta"]:
                 empresa, cnpj, periodo, nome_arq, tipo, fmt = r["meta"][0]
@@ -147,6 +148,27 @@ if resultados:
                     cod_m, nome_m, _cnpj_m = EMPRESAS_FIXAS[idx]
                     r["_cod"], r["_nome"] = cod_m, nome_m
 
+                # arquivo com empresa resolvida mas sem NENHUMA conta BP/DRE
+                # extraida (ex.: Balancete -- tipo nao suportado hoje, ou PDF
+                # vazio/corrompido) nao pode aparecer como "pronto pra gravar":
+                # antes disso o botao "Gravar" ficava habilitado mesmo sem ter
+                # nada pra gravar de fato (achado revisando o teste do Rafael
+                # com o Balancete da Construtora, 21/09/2026).
+                if not r["_bloqueado"] and not r["bp_rows"] and not r["dre_rows"]:
+                    r["_sem_dados"] = True
+                    st.warning(
+                        "⚠️ Nenhuma conta de BP ou DRE foi extraída deste arquivo (tipo de "
+                        "documento não suportado, ex.: Balancete, ou PDF sem essas páginas). "
+                        "Não há nada pra gravar — este arquivo não aparece na seção de gravação."
+                    )
+                    if st.button("🗑️ Remover da lista", key=f"remover_semdados_{i}"):
+                        st.session_state["import_resultados"] = [
+                            x for x in st.session_state["import_resultados"] if x is not r
+                        ]
+                        if not st.session_state["import_resultados"]:
+                            del st.session_state["import_resultados"]
+                        st.rerun()
+
             if r["bp_rows"]:
                 st.write(f"**BP — {len(r['bp_rows'])} contas**")
                 st.dataframe(r["bp_rows"], column_config=None, use_container_width=True,
@@ -173,8 +195,9 @@ if resultados:
     # poder confirmar/gravar empresa por empresa).
     grupos = {}
     bloqueados = [r for r in resultados if r["_bloqueado"]]
+    sem_dados = [r for r in resultados if r["_sem_dados"]]
     for r in resultados:
-        if r["_bloqueado"] or not r["_cod"]:
+        if r["_bloqueado"] or r["_sem_dados"] or not r["_cod"]:
             continue
         g = grupos.setdefault(r["_cod"], {"nome": r["_nome"], "itens": []})
         g["itens"].append(r)
@@ -183,6 +206,8 @@ if resultados:
     st.subheader("3. Confirmar gravação (por empresa)")
     if bloqueados:
         st.caption(f"{len(bloqueados)} arquivo(s) não identificado(s) não aparecem aqui — veja o aviso na prévia acima.")
+    if sem_dados:
+        st.caption(f"{len(sem_dados)} arquivo(s) sem BP/DRE extraído não aparecem aqui — veja o aviso na prévia acima.")
 
     if not grupos:
         st.info("Nenhum arquivo pronto pra gravar ainda.")

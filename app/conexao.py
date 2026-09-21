@@ -9,7 +9,15 @@ from __future__ import annotations
 import streamlit as st
 import psycopg2
 
-APP_VERSION = "0.7"  # bump: decimo em manutencao/fix, inteiro em evolucao estrutural (regra do Rafael)
+# Esquema de versao esclarecido pelo Rafael em 21/09/2026: enquanto o app
+# nao tiver o "lancamento oficial" (1a entrega formal pra contadora usar
+# de verdade), a versao fica 0.MAJOR.MINOR -- so' depois do lancamento
+# vira 1.algo. Dentro do "0.", MAJOR sobe em evolucao estrutural (nova
+# logica/funcao), MINOR sobe em manutencao/fix dentro da mesma estrutura
+# (mesma regra de sempre, so' que agora com 1 casa a mais de folga antes
+# do "1.0" oficial). Reiniciado em 0.1.0 nesta mudanca (era "0.7"/"0.8"/
+# "0.9" de 1 casa so').
+APP_VERSION = "0.1.0"
 
 EMPRESAS_FIXAS = [
     ("ENERGIA", "Enermais Energia Ltda", "47.040.664/0001-48"),
