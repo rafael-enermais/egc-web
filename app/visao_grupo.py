@@ -1,0 +1,85 @@
+# -*- coding: utf-8 -*-
+"""
+Logica de agregacao da Visao Grupo -- modulo puro (sem streamlit/db, mesma
+filosofia de projecao.py/parser_egc.py/validacoes.py: testavel isolado com
+dado sintetico). Extraido de app/telas/4_Visao_Grupo.py em 22/09/2026 pra
+ser reaproveitado tambem pela ferramenta "consultar_visao_grupo" do chat
+(6_Assistente.py) -- MESMA logica testada, sem duplicar (regra do Rafael:
+preservar o que ja funciona, evitar reescrever).
+
+3 funcoes, na ordem em que sao chamadas:
+  1. montar_pivot_grupo -- pivota lancamentos "achatados" (1 linha por
+     empresa+grupo+conta+valor, formato de db.listar_lancamentos_grupo)
+     em 1 linha por (grupo,conta) x 1 coluna por empresa + VALOR CONSOLIDADO.
+  2. visao_macro -- Energia separada x Empresas Consolidadoras somadas +
+     % de participacao (igual a planilha real "BALANCO GRUPO"/"DRE GRUPO").
+  3. visao_especifica -- as empresas selecionadas abertas 1 a 1, sem agrupar
+     (so' renomeia coluna de codigo pra nome).
+
+Premissa (ja testada ao vivo antes da 1a versao desta tela, 21/09/2026):
+pivot por igualdade EXATA de (grupo,conta) e' seguro -- nomes de conta
+batem exatamente entre empresas quando compartilhados, sem colisao.
+"""
+from __future__ import annotations
+
+import pandas as pd
+
+COD_ENERGIA = "ENERGIA"
+CODS_CONSOLIDADORAS = ["ENG", "CONST", "RENOV", "SOL", "SMG"]
+
+
+def montar_pivot_grupo(lancamentos: list[dict], cods_selecionados: list[str]) -> pd.DataFrame:
+    """
+    lancamentos: [{"empresa_codigo", "grupo", "conta", "valor"}, ...] (formato
+    de db.listar_lancamentos_grupo -- valor pode vir Decimal do psycopg2).
+    Retorna DataFrame com colunas: grupo, conta, 1 coluna por codigo em
+    cods_selecionados, VALOR CONSOLIDADO. Lista vazia -> DataFrame vazio
+    (mesmas colunas esperadas, 0 linhas) pra quem chama decidir o que fazer
+    (a tela para com st.stop(), a ferramenta do chat devolve lista vazia).
+    """
+    if not lancamentos:
+        vazio = pd.DataFrame(columns=["grupo", "conta", "VALOR CONSOLIDADO"] + list(cods_selecionados))
+        return vazio
+
+    df = pd.DataFrame(lancamentos)
+    # psycopg2 devolve NUMERIC do Postgres como decimal.Decimal (nao float) --
+    # sem este cast, pivot_table gera colunas dtype=object (Decimal) que o
+    # reindex(fill_value=0.0) mistura com float puro, e ".sum(axis=1)" quebra
+    # com TypeError. Bug real ja corrigido na 1a versao desta tela (22/09/2026).
+    df["valor"] = df["valor"].astype(float)
+    pivot = df.pivot_table(
+        index=["grupo", "conta"], columns="empresa_codigo", values="valor", aggfunc="sum", fill_value=0.0
+    )
+    # reindex: garante 1 coluna por empresa selecionada mesmo quando ela nao
+    # tem NENHUM lancamento neste periodo+tipo (senao a coluna nem apareceria)
+    pivot = pivot.reindex(columns=cods_selecionados, fill_value=0.0).reset_index()
+    pivot["VALOR CONSOLIDADO"] = pivot[cods_selecionados].sum(axis=1)
+    return pivot
+
+
+def _pct(numerador: pd.Series, denominador: pd.Series) -> pd.Series:
+    # 0/0 -> NaN, x/0 -> inf/-inf; ambos viram 0 (sem participacao definida
+    # quando o consolidado da conta e' 0)
+    return (numerador / denominador).replace([float("inf"), float("-inf")], 0.0).fillna(0.0)
+
+
+def visao_macro(pivot: pd.DataFrame, cods_selecionados: list[str]) -> pd.DataFrame:
+    """Energia separada x Empresas Consolidadoras somadas, com % de participacao."""
+    cods_consol_presentes = [c for c in CODS_CONSOLIDADORAS if c in cods_selecionados]
+    tem_energia = COD_ENERGIA in cods_selecionados
+
+    saida = pivot[["grupo", "conta", "VALOR CONSOLIDADO"]].copy()
+    saida["ENERMAIS ENERGIA"] = pivot[COD_ENERGIA] if tem_energia else 0.0
+    saida["% ENERGIA"] = _pct(saida["ENERMAIS ENERGIA"], saida["VALOR CONSOLIDADO"])
+    saida["EMPRESAS CONSOLIDADORAS"] = (
+        pivot[cods_consol_presentes].sum(axis=1) if cods_consol_presentes else 0.0
+    )
+    saida["% CONSOLIDADORAS"] = _pct(saida["EMPRESAS CONSOLIDADORAS"], saida["VALOR CONSOLIDADO"])
+    return saida
+
+
+def visao_especifica(pivot: pd.DataFrame, cods_selecionados: list[str], nome_por_cod: dict) -> pd.DataFrame:
+    """As empresas selecionadas abertas 1 a 1 (colunas renomeadas de codigo pra nome), sem agrupar."""
+    saida = pivot[["grupo", "conta", "VALOR CONSOLIDADO"] + cods_selecionados].copy()
+    saida = saida.rename(columns=nome_por_cod)
+    return saida

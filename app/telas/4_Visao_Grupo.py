@@ -35,17 +35,15 @@ Revisao/Correcao; esta tela so' reflete o que ja esta' ATIVO no banco.
 import sys
 from pathlib import Path
 
-import pandas as pd
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from auth import usuario_atual  # noqa: E402
 from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS  # noqa: E402
 import db  # noqa: E402
+import visao_grupo  # noqa: E402
 
 NOME_POR_COD = {cod: nome for cod, nome, _cnpj in EMPRESAS_FIXAS}
-COD_ENERGIA = "ENERGIA"
-CODS_CONSOLIDADORAS = ["ENG", "CONST", "RENOV", "SOL", "SMG"]
 
 st.title("🏢 Visão Grupo")
 
@@ -92,43 +90,10 @@ if not lancamentos:
     )
     st.stop()
 
-df = pd.DataFrame(lancamentos)
-# psycopg2 devolve NUMERIC do Postgres como decimal.Decimal (nao float) --
-# mesma razao pela qual Revisao_Correcao.py faz float(row["valor"]) antes
-# de comparar/gravar. Sem este cast, pivot_table gera colunas dtype=object
-# (Decimal) que o reindex(fill_value=0.0) mistura com float puro, e
-# ".sum(axis=1)" quebra com TypeError (Decimal + float nao e permitido em
-# Python). Bug real, pego so' na verificacao ao vivo pos-deploy (nao
-# reproduzido nos testes de db.py porque la' o valor injetado no mock ja'
-# era float, nunca Decimal de verdade).
-df["valor"] = df["valor"].astype(float)
-pivot = df.pivot_table(
-    index=["grupo", "conta"], columns="empresa_codigo", values="valor", aggfunc="sum", fill_value=0.0
-)
-# reindex: garante 1 coluna por empresa selecionada mesmo quando ela nao
-# tem NENHUM lancamento neste periodo+tipo (senao a coluna nem apareceria)
-pivot = pivot.reindex(columns=cods_selecionados, fill_value=0.0).reset_index()
-
-pivot["VALOR CONSOLIDADO"] = pivot[cods_selecionados].sum(axis=1)
-
-
-def _pct(numerador: pd.Series, denominador: pd.Series) -> pd.Series:
-    # 0/0 -> NaN, x/0 -> inf/-inf; ambos viram 0 (sem participacao definida
-    # quando o consolidado da conta e' 0)
-    return (numerador / denominador).replace([float("inf"), float("-inf")], 0.0).fillna(0.0)
-
+pivot = visao_grupo.montar_pivot_grupo(lancamentos, cods_selecionados)
 
 if visao.startswith("Macro"):
-    cods_consol_presentes = [c for c in CODS_CONSOLIDADORAS if c in cods_selecionados]
-    tem_energia = COD_ENERGIA in cods_selecionados
-
-    saida = pivot[["grupo", "conta", "VALOR CONSOLIDADO"]].copy()
-    saida["ENERMAIS ENERGIA"] = pivot[COD_ENERGIA] if tem_energia else 0.0
-    saida["% ENERGIA"] = _pct(saida["ENERMAIS ENERGIA"], saida["VALOR CONSOLIDADO"])
-    saida["EMPRESAS CONSOLIDADORAS"] = (
-        pivot[cods_consol_presentes].sum(axis=1) if cods_consol_presentes else 0.0
-    )
-    saida["% CONSOLIDADORAS"] = _pct(saida["EMPRESAS CONSOLIDADORAS"], saida["VALOR CONSOLIDADO"])
+    saida = visao_grupo.visao_macro(pivot, cods_selecionados)
 
     column_config = {
         "grupo": st.column_config.TextColumn("Grupo", disabled=True),
@@ -140,8 +105,7 @@ if visao.startswith("Macro"):
         "% CONSOLIDADORAS": st.column_config.NumberColumn("% Consolidadoras", format="percent"),
     }
 else:
-    saida = pivot[["grupo", "conta", "VALOR CONSOLIDADO"] + cods_selecionados].copy()
-    saida = saida.rename(columns=NOME_POR_COD)
+    saida = visao_grupo.visao_especifica(pivot, cods_selecionados, NOME_POR_COD)
     column_config = {
         "grupo": st.column_config.TextColumn("Grupo", disabled=True),
         "conta": st.column_config.TextColumn("Conta", disabled=True),
