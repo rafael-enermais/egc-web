@@ -93,6 +93,15 @@ if not lancamentos:
     st.stop()
 
 df = pd.DataFrame(lancamentos)
+# psycopg2 devolve NUMERIC do Postgres como decimal.Decimal (nao float) --
+# mesma razao pela qual Revisao_Correcao.py faz float(row["valor"]) antes
+# de comparar/gravar. Sem este cast, pivot_table gera colunas dtype=object
+# (Decimal) que o reindex(fill_value=0.0) mistura com float puro, e
+# ".sum(axis=1)" quebra com TypeError (Decimal + float nao e permitido em
+# Python). Bug real, pego so' na verificacao ao vivo pos-deploy (nao
+# reproduzido nos testes de db.py porque la' o valor injetado no mock ja'
+# era float, nunca Decimal de verdade).
+df["valor"] = df["valor"].astype(float)
 pivot = df.pivot_table(
     index=["grupo", "conta"], columns="empresa_codigo", values="valor", aggfunc="sum", fill_value=0.0
 )
