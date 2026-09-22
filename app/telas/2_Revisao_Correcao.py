@@ -60,6 +60,12 @@ st.caption(
     "Selecione 1 ou mais empresas e 1 ou mais períodos pra revisar/corrigir junto — não "
     "precisa mais trocar de tela ou selecionar 1 de cada vez pra comparar."
 )
+st.caption(
+    "💡 Pra corrigir um valor, edite direto a célula **Valor** na tabela abaixo (duplo clique) "
+    "e depois clique em **Salvar correções**, no fim da página. A coluna **✏️ Corrigido** é só um "
+    "indicador — não dá pra clicar nela; ela marca sozinha quando aquela conta já foi corrigida "
+    "manualmente pelo menos uma vez."
+)
 
 nomes_emp = [f"{nome} ({cod})" for cod, nome, _cnpj in EMPRESAS_FIXAS]
 idxs_sel = st.multiselect(
@@ -109,7 +115,14 @@ COLUMN_CONFIG = {
     "id": st.column_config.NumberColumn("ID", disabled=True),
     "grupo": st.column_config.TextColumn("Grupo", disabled=True),
     "conta": st.column_config.TextColumn("Conta", disabled=True),
-    "corrigido": st.column_config.CheckboxColumn("✏️ Corrigido", disabled=True),
+    "corrigido": st.column_config.CheckboxColumn(
+        "✏️ Corrigido", disabled=True,
+        help=(
+            "Indicador automático, não clicável. Marca sozinho quando a conta já foi "
+            "corrigida manualmente ao menos 1 vez (origem começa com 'MANUAL'). Pra corrigir, "
+            "edite a célula Valor ao lado."
+        ),
+    ),
     "valor": st.column_config.NumberColumn("Valor", format="%.2f", step=0.01),
     "origem": st.column_config.TextColumn("Origem", disabled=True),
     "pdf_original": st.column_config.NumberColumn("PDF original", format="%.2f", disabled=True),

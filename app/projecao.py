@@ -24,6 +24,7 @@ import calendar
 from datetime import date
 
 import numpy as np
+import pandas as pd
 
 LIMITE_FLAT = 4       # historico com menos de 4 periodos -> carrega o ultimo valor
 LIMITE_SAZONAL = 24   # historico com 24+ periodos (2 anos) -> tendencia + sazonalidade mensal
@@ -143,3 +144,34 @@ def aplicar_ajustes(baseline: list[dict], ajustes: list[dict]) -> list[dict]:
             "valor_projetado": round(linha["valor_base"] + ajuste, 2),
         })
     return resultado
+
+
+def montar_serie_grafico(serie_historico: dict, serie_projetado: dict) -> "pd.DataFrame":
+    """
+    Monta o DataFrame Historico/Projetado que app/telas/5_Dashboard_Projecao.py
+    passa pro st.line_chart. serie_historico/serie_projetado: {periodo (date):
+    valor (float)}.
+
+    Fix de bug real (22/09/2026, achado pelo Rafael testando ao vivo com
+    horizonte de 21 meses e historico voltando ate' 2023): o codigo antigo
+    ordenava os periodos corretamente por DATA, mas depois convertia pra
+    string "MM/AAAA" pra virar o indice do DataFrame -- e o st.line_chart
+    (Vega-Lite por baixo) trata um indice de STRING como eixo NOMINAL e
+    reordena ele sozinho em ordem ALFABETICA, nao pela data real. Resultado
+    visto ao vivo: "01/2027" < "01/2028" < "02/2028" < "03/2027" (ordem de
+    string, nao de tempo) -- o grafico saia com a linha de projecao "fora
+    de ordem"/cortada. Fix: o indice do DataFrame fica como
+    pd.DatetimeIndex (tipo temporal de verdade) em vez de string formatada
+    -- Vega-Lite reconhece e ordena por tempo real, natural, independente
+    de quantos periodos/anos o intervalo cobre. A ORDEM dos dados (a lista
+    `todos_periodos`, ja' ordenada por data real) continua sendo a fonte
+    de verdade -- so' o TIPO do indice mudou, nao a logica de ordenacao.
+    """
+    todos_periodos = sorted(set(serie_historico) | set(serie_projetado))
+    return pd.DataFrame(
+        {
+            "Histórico": [serie_historico.get(p) for p in todos_periodos],
+            "Projetado": [serie_projetado.get(p) for p in todos_periodos],
+        },
+        index=pd.to_datetime(todos_periodos),
+    )
