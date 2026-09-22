@@ -199,6 +199,29 @@ def test_listar_lancamentos_grupo_monta_sql_filtros_e_ordem():
     print("OK: listar_lancamentos_grupo")
 
 
+def test_listar_lancamentos_grupo_periodos_usa_any_pra_lista_de_periodos():
+    cols = ["empresa_codigo", "periodo", "grupo", "conta", "valor"]
+    linhas = [
+        ("ENERGIA", datetime.date(2026, 5, 31), "ATIVO", "TOTAL DO ATIVO", 1000000.00),
+        ("ENERGIA", datetime.date(2026, 6, 30), "ATIVO", "TOTAL DO ATIVO", 1100000.00),
+    ]
+    cur = FakeCursor(fetchall_result=linhas, description=[(c,) for c in cols])
+    conn = FakeConn(cur)
+    periodos = [datetime.date(2026, 5, 31), datetime.date(2026, 6, 30)]
+    lancs = db.listar_lancamentos_grupo_periodos(conn, periodos, "BP", ["ENERGIA"], status="ATIVO")
+    sql, params = cur.executed[0]
+    assert "periodo = ANY(%s)" in sql
+    assert "empresa_codigo = ANY(%s)" in sql
+    assert "ORDER BY periodo, grupo, conta" in sql
+    assert params == (periodos, "BP", "ATIVO", ["ENERGIA"])
+    assert len(lancs) == 2
+    assert lancs[0] == {
+        "empresa_codigo": "ENERGIA", "periodo": datetime.date(2026, 5, 31),
+        "grupo": "ATIVO", "conta": "TOTAL DO ATIVO", "valor": 1000000.00,
+    }
+    print("OK: listar_lancamentos_grupo_periodos — usa ANY(%s) pra lista de períodos, cada linha com o campo periodo")
+
+
 def test_listar_historico_grupo_todos_periodos_sem_filtro_de_periodo():
     cols = ["periodo", "grupo", "conta", "valor"]
     linhas = [
