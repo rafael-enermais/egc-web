@@ -345,3 +345,140 @@ def listar_lancamentos_grupo(
         )
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+# ─────────────────────────────────────────────
+#  PROJECAO (BP/DRE) — ajustes manuais + materializacao
+# ─────────────────────────────────────────────
+
+def listar_historico_grupo(conn, empresa_codigo: str, tipo: str, status: str = "ATIVO") -> list[dict]:
+    """
+    TODO o historico (todos os periodos, nao so 1) de 1 empresa+tipo,
+    achatado (1 linha por periodo+grupo+conta) -- usado no Dashboard de
+    Projecao pra montar a serie temporal de cada conta (agrupado
+    client-side por (grupo,conta) e passado pra projecao.gerar_baseline).
+    Ordena por periodo, grupo, conta.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT periodo, grupo, conta, valor
+            FROM egc.lancamentos
+            WHERE empresa_codigo = %s AND tipo = %s AND status = %s
+            ORDER BY periodo, grupo, conta
+            """,
+            (empresa_codigo, tipo, status),
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def salvar_ajuste_projecao(
+    conn,
+    empresa_codigo: str,
+    tipo: str,
+    periodo: date,
+    grupo: str,
+    conta: str,
+    valor_ajuste: float,
+    descricao: str,
+    usuario: Optional[str] = None,
+) -> int:
+    """Grava 1 ajuste manual (equivalente ao 'contrato X fechando em <periodo>' do Rafael)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO egc.projecoes_ajustes
+                (empresa_codigo, tipo, periodo, grupo, conta, valor_ajuste, descricao, usuario)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (empresa_codigo, tipo, periodo, grupo, conta, valor_ajuste, descricao, usuario),
+        )
+        return cur.fetchone()[0]
+
+
+def listar_ajustes_projecao(conn, empresa_codigo: str, tipo: str, status: str = "ATIVO") -> list[dict]:
+    """Todos os ajustes (ATIVOs por padrao) de 1 empresa+tipo, qualquer periodo futuro."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, periodo, grupo, conta, valor_ajuste, descricao, usuario, criado_em
+            FROM egc.projecoes_ajustes
+            WHERE empresa_codigo = %s AND tipo = %s AND status = %s
+            ORDER BY periodo, grupo, conta
+            """,
+            (empresa_codigo, tipo, status),
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def inativar_ajuste_projecao(conn, ajuste_id: int) -> int:
+    """Retira um ajuste manual sem apagar (mesma filosofia de arquivar_periodo -- nunca DELETE)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE egc.projecoes_ajustes
+            SET status = 'INATIVO', atualizado_em = now()
+            WHERE id = %s AND status = 'ATIVO'
+            """,
+            (ajuste_id,),
+        )
+        return cur.rowcount
+
+
+def gravar_projecoes(conn, linhas: list[dict]) -> int:
+    """
+    Upsert em lote das projecoes calculadas (saida de projecao.aplicar_ajustes,
+    com empresa_codigo/tipo/grupo/conta adicionados por quem chama). Cada
+    dict precisa de: empresa_codigo, tipo, periodo, grupo, conta, valor_base,
+    valor_ajuste, valor_projetado, metodo, periodos_historico. Materializa
+    no banco (nao so na tela) pra ficar disponivel a qualquer consumidor
+    externo (ex. futura integracao TIA.go) sem rodar o modelo de novo.
+    """
+    if not linhas:
+        return 0
+    registros = [
+        (
+            l["empresa_codigo"], l["tipo"], l["periodo"], l["grupo"], l["conta"],
+            l["valor_base"], l["valor_ajuste"], l["valor_projetado"],
+            l["metodo"], l["periodos_historico"],
+        )
+        for l in linhas
+    ]
+    with conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO egc.projecoes
+                (empresa_codigo, tipo, periodo, grupo, conta, valor_base, valor_ajuste,
+                 valor_projetado, metodo, periodos_historico)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (empresa_codigo, tipo, periodo, grupo, conta) DO UPDATE SET
+                valor_base = EXCLUDED.valor_base,
+                valor_ajuste = EXCLUDED.valor_ajuste,
+                valor_projetado = EXCLUDED.valor_projetado,
+                metodo = EXCLUDED.metodo,
+                periodos_historico = EXCLUDED.periodos_historico,
+                gerado_em = now()
+            """,
+            registros,
+        )
+        return cur.rowcount
+
+
+def listar_projecoes(conn, empresa_codigo: str, tipo: str) -> list[dict]:
+    """Ultima projecao materializada (ja gravada) de 1 empresa+tipo, sem recalcular."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT periodo, grupo, conta, valor_base, valor_ajuste, valor_projetado,
+                   metodo, periodos_historico, gerado_em
+            FROM egc.projecoes
+            WHERE empresa_codigo = %s AND tipo = %s
+            ORDER BY periodo, grupo, conta
+            """,
+            (empresa_codigo, tipo),
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]

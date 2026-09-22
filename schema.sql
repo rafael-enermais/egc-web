@@ -199,3 +199,70 @@ END $$;
 
 -- Fim. Rodar este arquivo inteiro no SQL Editor do Supabase (projeto radar-comercial).
 -- Depois: ALTER ROLE egc_app WITH PASSWORD '...' (senha forte, nao commitar).
+
+-- =====================================================================
+-- 8. Projecao (BP/DRE) — adicionado 22/09/2026, fila combinada com o
+--    Rafael (Visao Grupo -> rodape -> dashboard de projecao -> chat).
+--    2 tabelas: ajustes manuais (input) + projecoes materializadas
+--    (baseline+ajuste+total), gravadas no banco pra ficarem disponiveis
+--    a qualquer consumidor externo (ex. futura integracao com o app
+--    TIA.go) sem precisar rodar o modelo de novo. `tipo` ja aceita
+--    FLUXO_CAIXA na constraint (nao implementado ainda -- so' destravado
+--    pra nao exigir migracao de novo quando entrada/saida for decidido).
+--    IF NOT EXISTS pra este bloco poder ser rodado sozinho (nao precisa
+--    rodar o arquivo inteiro de novo, as tabelas 1-7 ja existem em
+--    producao).
+-- =====================================================================
+
+CREATE TABLE IF NOT EXISTS egc.projecoes_ajustes (
+  id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  empresa_codigo text NOT NULL REFERENCES egc.empresas(codigo),
+  tipo           text NOT NULL CHECK (tipo IN ('BP','DRE','FLUXO_CAIXA')),
+  periodo        date NOT NULL,
+  grupo          text NOT NULL,
+  conta          text NOT NULL,
+  valor_ajuste   numeric(18,2) NOT NULL,
+  descricao      text NOT NULL,
+  status         text NOT NULL DEFAULT 'ATIVO' CHECK (status IN ('ATIVO','INATIVO')),
+  usuario        text,
+  criado_em      timestamptz NOT NULL DEFAULT now(),
+  atualizado_em  timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_projecoes_ajustes_busca
+  ON egc.projecoes_ajustes (empresa_codigo, periodo, tipo, grupo, conta) WHERE status = 'ATIVO';
+
+CREATE TABLE IF NOT EXISTS egc.projecoes (
+  id                  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  empresa_codigo      text NOT NULL REFERENCES egc.empresas(codigo),
+  tipo                text NOT NULL CHECK (tipo IN ('BP','DRE','FLUXO_CAIXA')),
+  periodo             date NOT NULL,
+  grupo               text NOT NULL,
+  conta               text NOT NULL,
+  valor_base          numeric(18,2) NOT NULL,
+  valor_ajuste        numeric(18,2) NOT NULL DEFAULT 0,
+  valor_projetado     numeric(18,2) NOT NULL,
+  metodo              text NOT NULL,
+  periodos_historico  integer NOT NULL,
+  gerado_em           timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (empresa_codigo, tipo, periodo, grupo, conta)
+);
+
+CREATE INDEX IF NOT EXISTS idx_projecoes_busca
+  ON egc.projecoes (empresa_codigo, periodo, tipo, grupo, conta);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON egc.projecoes_ajustes, egc.projecoes TO egc_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA egc TO egc_app;
+
+ALTER TABLE egc.projecoes_ajustes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE egc.projecoes         ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS egc_app_full_access ON egc.projecoes_ajustes;
+CREATE POLICY egc_app_full_access ON egc.projecoes_ajustes FOR ALL TO egc_app USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS egc_app_full_access ON egc.projecoes;
+CREATE POLICY egc_app_full_access ON egc.projecoes FOR ALL TO egc_app USING (true) WITH CHECK (true);
+
+-- Fim do bloco 8. Rodar so' este bloco (da linha "-- 8. Projecao" ate aqui)
+-- no SQL Editor do Supabase (projeto radar-comercial) -- nao precisa
+-- rodar o arquivo inteiro de novo.
