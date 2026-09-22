@@ -46,7 +46,7 @@ import auth  # noqa: E402
 import conexao  # noqa: E402
 import db  # noqa: E402
 
-PAGE = str(Path(__file__).resolve().parent.parent / "telas" / "5_Dashboard_Projecao.py")
+PAGE = str(Path(__file__).resolve().parent / "5_Dashboard_Projecao.py")
 
 
 def _p(ano, mes):
