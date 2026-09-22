@@ -316,6 +316,36 @@ def listar_periodos_grupo(conn, empresas_codigos: list[str], status: str = "ATIV
         return [row[0] for row in cur.fetchall()]
 
 
+def listar_lancamentos_grupo_periodos(
+    conn, periodos: list[date], tipo: str, empresas_codigos: list[str], status: str = "ATIVO"
+) -> list[dict]:
+    """
+    Mesma coisa que listar_lancamentos_grupo, mas pra VARIOS periodos de
+    uma vez (1 query, em vez de N) -- usado no resumo/KPIs multi-periodo
+    da Visao Grupo "Completo" (22/09/2026, pedido do Rafael: "a visao
+    poder alcancar tudo de todos os periodos, ate' 1 periodo de 1 CNPJ
+    apenas"). Cada linha ganha o campo `periodo` a mais (a versao de 1
+    periodo so' nao precisa dele porque ja fixa no filtro) -- quem chama
+    agrupa por periodo+conta pra montar a serie temporal (ver
+    visao_grupo.montar_serie_kpis_grupo). listar_lancamentos_grupo
+    (1 periodo) continua existindo do jeito que esta' -- usada pela tabela
+    de detalhe (1 periodo por vez) e pela ferramenta consultar_visao_grupo
+    do chat, sem mudar nenhuma das duas.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT empresa_codigo, periodo, grupo, conta, valor
+            FROM egc.lancamentos
+            WHERE periodo = ANY(%s) AND tipo = %s AND status = %s AND empresa_codigo = ANY(%s)
+            ORDER BY periodo, grupo, conta
+            """,
+            (periodos, tipo, status, empresas_codigos),
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
 def listar_lancamentos_grupo(
     conn, periodo: date, tipo: str, empresas_codigos: list[str], status: str = "ATIVO"
 ) -> list[dict]:

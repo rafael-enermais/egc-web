@@ -5,11 +5,13 @@ Testes unitarios de app/visao_grupo.py (extraido de 4_Visao_Grupo.py em
 outros arquivos de teste do projeto (sem pytest, __main__ no final).
 """
 import sys
+import datetime
 from decimal import Decimal
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import pandas as pd  # noqa: E402
 import visao_grupo  # noqa: E402
 
 CODS_TODAS = ["ENERGIA", "SMG", "ENG", "RENOV", "CONST", "SOL"]
@@ -102,6 +104,72 @@ def test_visao_especifica_abre_empresas_sem_agrupar_e_renomeia():
     assert linha["SMG Solucoes Ltda"] == 121755.76
     assert linha["Enermais Construtora Ltda"] == 80.0
     print("OK: visao_especifica — empresas abertas 1 a 1, colunas renomeadas certas")
+
+
+# ─────────────── montar_serie_kpis_grupo (Visão Grupo "Completo", item 6/9) ───
+
+MOCK_LANCS_MULTI_PERIODO = [
+    {"empresa_codigo": "ENERGIA", "periodo": datetime.date(2026, 5, 31), "grupo": "ATIVO", "conta": "TOTAL DO ATIVO", "valor": Decimal("1000000.00")},
+    {"empresa_codigo": "ENERGIA", "periodo": datetime.date(2026, 5, 31), "grupo": "PASSIVO", "conta": "TOTAL DO PASSIVO", "valor": Decimal("1000000.00")},
+    {"empresa_codigo": "SMG", "periodo": datetime.date(2026, 5, 31), "grupo": "ATIVO", "conta": "TOTAL DO ATIVO", "valor": Decimal("200000.00")},
+    {"empresa_codigo": "SMG", "periodo": datetime.date(2026, 5, 31), "grupo": "PASSIVO", "conta": "TOTAL DO PASSIVO", "valor": Decimal("200000.00")},
+    {"empresa_codigo": "ENERGIA", "periodo": datetime.date(2026, 6, 30), "grupo": "ATIVO", "conta": "TOTAL DO ATIVO", "valor": Decimal("1100000.00")},
+    {"empresa_codigo": "ENERGIA", "periodo": datetime.date(2026, 6, 30), "grupo": "PASSIVO", "conta": "TOTAL DO PASSIVO", "valor": Decimal("1100000.00")},
+    # SMG sem lançamento em 06/2026 -- deve virar 0.0 nesse período, não sumir a linha
+]
+
+
+def test_montar_serie_kpis_grupo_1_linha_por_periodo_pedido_mesmo_sem_lancamento():
+    periodos = [datetime.date(2026, 5, 31), datetime.date(2026, 6, 30)]
+    serie = visao_grupo.montar_serie_kpis_grupo(
+        MOCK_LANCS_MULTI_PERIODO, ["ENERGIA", "SMG"], visao_grupo.CONTAS_KPI_BP, periodos,
+    )
+    assert len(serie) == 2, "esperava 1 linha por período pedido, mesmo com lançamento parcial"
+    assert list(serie.columns) == visao_grupo.CONTAS_KPI_BP
+    mai = serie.loc[pd.Timestamp(2026, 5, 31)]
+    jun = serie.loc[pd.Timestamp(2026, 6, 30)]
+    assert mai["TOTAL DO ATIVO"] == 1000000.0 + 200000.0  # ENERGIA + SMG
+    assert jun["TOTAL DO ATIVO"] == 1100000.0  # só ENERGIA -- SMG não tem lançamento em 06/2026, soma 0
+    print("OK: montar_serie_kpis_grupo — 1 linha por período pedido, soma Decimal certa, 0.0 quando falta lançamento")
+
+
+def test_montar_serie_kpis_grupo_indice_e_datetime_ordenado():
+    # mesma regra do fix do Dashboard de Projeção: índice tem que ser
+    # DatetimeIndex de verdade (não string), senão st.line_chart reordena
+    # alfabeticamente em vez de cronologicamente.
+    periodos = [datetime.date(2026, 6, 30), datetime.date(2025, 12, 31)]  # fora de ordem de propósito
+    serie = visao_grupo.montar_serie_kpis_grupo(
+        MOCK_LANCS_MULTI_PERIODO, ["ENERGIA", "SMG"], visao_grupo.CONTAS_KPI_BP, periodos,
+    )
+    assert isinstance(serie.index, pd.DatetimeIndex), f"esperava DatetimeIndex, veio {type(serie.index)}"
+    assert serie.index.is_monotonic_increasing, f"índice fora de ordem cronológica: {list(serie.index)}"
+    print("OK: montar_serie_kpis_grupo — índice é DatetimeIndex ordenado cronologicamente")
+
+
+def test_montar_serie_kpis_grupo_periodo_sem_nenhum_lancamento_fica_zero():
+    periodos = [datetime.date(2026, 5, 31), datetime.date(2024, 1, 31)]  # 2024 não existe no mock
+    serie = visao_grupo.montar_serie_kpis_grupo(
+        MOCK_LANCS_MULTI_PERIODO, ["ENERGIA", "SMG"], visao_grupo.CONTAS_KPI_BP, periodos,
+    )
+    linha_2024 = serie.loc[pd.Timestamp(2024, 1, 31)]
+    assert (linha_2024 == 0.0).all(), "período sem nenhum lançamento deveria ficar 0.0 em todas as contas, não sumir"
+    print("OK: montar_serie_kpis_grupo — período sem nenhum lançamento vira linha de 0.0, não some")
+
+
+def test_montar_serie_kpis_grupo_respeita_so_empresas_selecionadas():
+    periodos = [datetime.date(2026, 5, 31)]
+    serie = visao_grupo.montar_serie_kpis_grupo(
+        MOCK_LANCS_MULTI_PERIODO, ["ENERGIA"], visao_grupo.CONTAS_KPI_BP, periodos,
+    )
+    assert serie.loc[pd.Timestamp(2026, 5, 31)]["TOTAL DO ATIVO"] == 1000000.0  # só ENERGIA, sem SMG
+    print("OK: montar_serie_kpis_grupo — soma só as empresas selecionadas, ignora as outras")
+
+
+def test_montar_serie_kpis_grupo_lista_vazia_de_periodos_devolve_vazio():
+    serie = visao_grupo.montar_serie_kpis_grupo(MOCK_LANCS_MULTI_PERIODO, ["ENERGIA"], visao_grupo.CONTAS_KPI_BP, [])
+    assert len(serie) == 0
+    assert list(serie.columns) == visao_grupo.CONTAS_KPI_BP
+    print("OK: montar_serie_kpis_grupo — lista de períodos vazia devolve DataFrame vazio com colunas certas")
 
 
 if __name__ == "__main__":

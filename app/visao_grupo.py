@@ -27,6 +27,17 @@ import pandas as pd
 COD_ENERGIA = "ENERGIA"
 CODS_CONSOLIDADORAS = ["ENG", "CONST", "RENOV", "SOL", "SMG"]
 
+# Contas-chave usadas como KPI do resumo da Visao Grupo "Completo" (22/09/2026,
+# pedido do Rafael: "mais informacoes, detalhes, graficos, numeros prontos" +
+# "a visao poder alcancar tudo de todos os periodos"). Nomes EXATOS de saida
+# do parser (parser_egc.py, dicionario CONTAS_BP/CONTAS_DRE, campo nome_saida
+# -- conferido no codigo antes de usar, nao assumido): TOTAL DO ATIVO/PASSIVO
+# ja e' usado em validacoes.checar_fechamento_bp; as 3 linhas de DRE sao as
+# que o parser SEMPRE tenta ter (calculadas se o SPED nao trouxer explicito,
+# ver parser_egc.calcular_derivados_dre).
+CONTAS_KPI_BP = ["TOTAL DO ATIVO", "TOTAL DO PASSIVO"]
+CONTAS_KPI_DRE = ["RECEITA OPERACIONAL LIQUIDA", "LUCRO BRUTO", "LUCRO LIQUIDO DO EXERCICIO"]
+
 
 def montar_pivot_grupo(lancamentos: list[dict], cods_selecionados: list[str]) -> pd.DataFrame:
     """
@@ -83,3 +94,43 @@ def visao_especifica(pivot: pd.DataFrame, cods_selecionados: list[str], nome_por
     saida = pivot[["grupo", "conta", "VALOR CONSOLIDADO"] + cods_selecionados].copy()
     saida = saida.rename(columns=nome_por_cod)
     return saida
+
+
+def montar_serie_kpis_grupo(
+    lancamentos_multi: list[dict], cods_selecionados: list[str], contas_kpi: list[str], periodos: list,
+) -> pd.DataFrame:
+    """
+    Serie temporal das contas-chave (CONTAS_KPI_BP ou CONTAS_KPI_DRE) somadas
+    entre as empresas selecionadas, 1 linha por periodo -- usada no "Resumo
+    do grupo" da Visao Grupo "Completo" (KPIs + grafico de evolucao).
+
+    lancamentos_multi: formato de db.listar_lancamentos_grupo_periodos ([{
+    "empresa_codigo","periodo","grupo","conta","valor"}, ...], varios
+    periodos misturados). `periodos` e' a lista COMPLETA de periodos a
+    cobrir (nao inferida do dado) -- garante 1 linha por periodo pedido
+    mesmo se nenhuma das contas_kpi apareceu nele (fica 0.0, nao some a
+    linha).
+
+    Indice do DataFrame retornado e' pd.DatetimeIndex de verdade (mesma
+    razao do fix do grafico do Dashboard de Projecao, 22/09/2026: um
+    indice de STRING faz o st.line_chart/Vega-Lite reordenar por ordem
+    alfabetica em vez de cronologica -- nunca repetir esse bug aqui).
+    """
+    colunas = list(contas_kpi)
+    if not periodos:
+        vazio = pd.DataFrame(columns=colunas)
+        vazio.index = pd.DatetimeIndex([], name="periodo")
+        return vazio
+
+    if lancamentos_multi:
+        df = pd.DataFrame(lancamentos_multi)
+        df["valor"] = df["valor"].astype(float)  # Decimal do psycopg2 -- mesma regra de sempre
+        df = df[df["empresa_codigo"].isin(cods_selecionados) & df["conta"].isin(contas_kpi)]
+        agrupado = df.groupby(["periodo", "conta"])["valor"].sum().unstack("conta") if not df.empty else pd.DataFrame()
+    else:
+        agrupado = pd.DataFrame()
+
+    agrupado = agrupado.reindex(index=sorted(periodos), columns=colunas, fill_value=0.0)
+    agrupado.index = pd.to_datetime(agrupado.index)
+    agrupado.index.name = "periodo"
+    return agrupado
