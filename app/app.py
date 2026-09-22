@@ -75,6 +75,7 @@ paginas = [
     st.Page("telas/2_Revisao_Correcao.py", title="Revisão/Correção", icon="✏️"),
     st.Page("telas/3_Arquivar_Recuperar.py", title="Arquivar/Recuperar", icon="🗄️"),
     st.Page("telas/4_Visao_Grupo.py", title="Visão Grupo", icon="🏢"),
+    st.Page("telas/5_Dashboard_Projecao.py", title="Dashboard de Projeção", icon="📈"),
 ]
 pg = st.navigation(paginas)
 pg.run()

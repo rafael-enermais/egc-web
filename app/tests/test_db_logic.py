@@ -199,6 +199,86 @@ def test_listar_lancamentos_grupo_monta_sql_filtros_e_ordem():
     print("OK: listar_lancamentos_grupo")
 
 
+def test_listar_historico_grupo_todos_periodos_sem_filtro_de_periodo():
+    cols = ["periodo", "grupo", "conta", "valor"]
+    linhas = [
+        (datetime.date(2026, 5, 31), "ATIVO CIRCULANTE", "CLIENTES", 100.0),
+        (datetime.date(2026, 6, 30), "ATIVO CIRCULANTE", "CLIENTES", 200.0),
+    ]
+    cur = FakeCursor(fetchall_result=linhas, description=[(c,) for c in cols])
+    conn = FakeConn(cur)
+    hist = db.listar_historico_grupo(conn, "SMG", "BP", status="ATIVO")
+    sql, params = cur.executed[0]
+    assert "FROM egc.lancamentos" in sql
+    assert "ORDER BY periodo, grupo, conta" in sql
+    assert params == ("SMG", "BP", "ATIVO")  # sem filtro de periodo especifico -- so empresa/tipo/status
+    assert len(hist) == 2
+    print("OK: listar_historico_grupo")
+
+
+def test_salvar_ajuste_projecao_grava_e_retorna_id():
+    cur = FakeCursor(fetchone_result=(7,))
+    conn = FakeConn(cur)
+    novo_id = db.salvar_ajuste_projecao(
+        conn, "CONST", "DRE", datetime.date(2026, 12, 31), "RECEITAS", "RECEITA OPERACIONAL BRUTA",
+        500000.0, "Contrato X fechando", "rafael",
+    )
+    sql, params = cur.executed[0]
+    assert "INSERT INTO egc.projecoes_ajustes" in sql
+    assert novo_id == 7
+    assert params == ("CONST", "DRE", datetime.date(2026, 12, 31), "RECEITAS", "RECEITA OPERACIONAL BRUTA", 500000.0, "Contrato X fechando", "rafael")
+    print("OK: salvar_ajuste_projecao")
+
+
+def test_inativar_ajuste_projecao_so_muda_status_nunca_apaga():
+    cur = FakeCursor()
+    conn = FakeConn(cur)
+    db.inativar_ajuste_projecao(conn, 7)
+    sql, params = cur.executed[0]
+    assert "DELETE" not in sql.upper()
+    assert "SET status = 'INATIVO'" in sql
+    assert params == (7,)
+    print("OK: inativar_ajuste_projecao (so status, sem DELETE)")
+
+
+def test_gravar_projecoes_upsert_em_lote_com_on_conflict():
+    cur = FakeCursor()
+    conn = FakeConn(cur)
+    linhas = [{
+        "empresa_codigo": "CONST", "tipo": "DRE", "periodo": datetime.date(2026, 7, 31),
+        "grupo": "RECEITAS", "conta": "RECEITA OPERACIONAL BRUTA",
+        "valor_base": 1000.0, "valor_ajuste": 500.0, "valor_projetado": 1500.0,
+        "metodo": "flat_ultimo_valor", "periodos_historico": 1,
+    }]
+    n = db.gravar_projecoes(conn, linhas)
+    sql, registros = cur.executed[0]
+    assert "ON CONFLICT (empresa_codigo, tipo, periodo, grupo, conta) DO UPDATE" in sql
+    assert registros[0] == ("CONST", "DRE", datetime.date(2026, 7, 31), "RECEITAS", "RECEITA OPERACIONAL BRUTA", 1000.0, 500.0, 1500.0, "flat_ultimo_valor", 1)
+    print("OK: gravar_projecoes (upsert em lote)")
+
+
+def test_gravar_projecoes_lista_vazia_nao_executa_sql():
+    cur = FakeCursor()
+    conn = FakeConn(cur)
+    n = db.gravar_projecoes(conn, [])
+    assert n == 0
+    assert cur.executed == []
+    print("OK: gravar_projecoes — lista vazia nao chama o banco")
+
+
+def test_listar_projecoes_le_materializado_sem_recalcular():
+    cols = ["periodo", "grupo", "conta", "valor_base", "valor_ajuste", "valor_projetado", "metodo", "periodos_historico", "gerado_em"]
+    linhas = [(datetime.date(2026, 7, 31), "RECEITAS", "RECEITA OPERACIONAL BRUTA", 1000.0, 500.0, 1500.0, "flat_ultimo_valor", 1, datetime.datetime(2026, 9, 22, 10, 0))]
+    cur = FakeCursor(fetchall_result=linhas, description=[(c,) for c in cols])
+    conn = FakeConn(cur)
+    projecoes = db.listar_projecoes(conn, "CONST", "DRE")
+    sql, params = cur.executed[0]
+    assert "FROM egc.projecoes" in sql
+    assert params == ("CONST", "DRE")
+    assert projecoes[0]["valor_projetado"] == 1500.0
+    print("OK: listar_projecoes")
+
+
 if __name__ == "__main__":
     testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
     falhas = 0
