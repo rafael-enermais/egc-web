@@ -186,29 +186,57 @@ nova_conta = c3.text_input("Nome da conta")
 novo_valor_add = c4.number_input("Valor", value=0.0, step=0.01, format="%.2f")
 adicionar = st.button("+ Adicionar")
 
+def _log_seguro(nivel, mensagem, empresa_codigo=None, periodo=None, detalhe=None):
+    # log completo (task #16) -- melhor-esforco, nunca quebra a tela por
+    # causa de falha ao GRAVAR o log (ver mesmo padrao em app.py).
+    try:
+        db.registrar_evento(conn, "revisao_correcao", nivel, mensagem, empresa_codigo=empresa_codigo,
+                             periodo=periodo, usuario=usuario, detalhe=detalhe)
+    except Exception:
+        pass
+
+
 if st.button("💾 Salvar correções", type="primary"):
     alterados = 0
+    erros = []
     for (cod, periodo, tipo), (df, df_edit) in secoes.items():
         for _, row_orig in df.iterrows():
             row_novo = df_edit.loc[df_edit["id"] == row_orig["id"]].iloc[0]
             if float(row_novo["valor"]) != float(row_orig["valor"]):
-                db.salvar_correcao_manual(
-                    conn, int(row_orig["id"]), float(row_novo["valor"]), periodo, usuario
-                )
-                alterados += 1
+                try:
+                    db.salvar_correcao_manual(
+                        conn, int(row_orig["id"]), float(row_novo["valor"]), periodo, usuario
+                    )
+                    alterados += 1
+                except Exception as exc:
+                    erros.append((row_orig.get("conta", "?"), str(exc)))
+                    _log_seguro("ERRO", f"Falha ao salvar correção manual — conta '{row_orig.get('conta', '?')}'",
+                                empresa_codigo=cod, periodo=periodo, detalhe=str(exc))
     if alterados:
+        _log_seguro("INFO", f"{alterados} conta(s) corrigida(s) manualmente")
         st.success(f"{alterados} conta(s) corrigida(s) e gravada(s).")
+    if erros:
+        st.error(f"{len(erros)} conta(s) NÃO foram salvas (erro no banco) — ver detalhe no log de eventos: "
+                 + "; ".join(f"{c}: {e}" for c, e in erros))
+    if alterados or erros:
         st.rerun()
-    else:
+    elif not erros:
         st.info("Nenhum valor foi alterado.")
 
 if adicionar:
     if not nova_conta.strip():
         st.error("Informe o nome da conta.")
     else:
-        db.salvar_correcao_manual(
-            conn, None, float(novo_valor_add), periodo_add, usuario,
-            empresa_codigo=cod_add, tipo=tipo_add, conta=nova_conta.strip(),
-        )
-        st.success(f"Conta '{nova_conta}' adicionada em {NOME_POR_COD.get(cod_add, cod_add)} — {tipo_add}.")
-        st.rerun()
+        try:
+            db.salvar_correcao_manual(
+                conn, None, float(novo_valor_add), periodo_add, usuario,
+                empresa_codigo=cod_add, tipo=tipo_add, conta=nova_conta.strip(),
+            )
+            _log_seguro("INFO", f"Conta ausente adicionada: '{nova_conta.strip()}' ({tipo_add})",
+                        empresa_codigo=cod_add, periodo=periodo_add)
+            st.success(f"Conta '{nova_conta}' adicionada em {NOME_POR_COD.get(cod_add, cod_add)} — {tipo_add}.")
+            st.rerun()
+        except Exception as exc:
+            _log_seguro("ERRO", f"Falha ao adicionar conta ausente '{nova_conta.strip()}'",
+                        empresa_codigo=cod_add, periodo=periodo_add, detalhe=str(exc))
+            st.error(f"Não foi possível gravar: {exc}")

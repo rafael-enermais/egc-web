@@ -34,8 +34,10 @@ import datetime
 from typing import Optional
 
 import consultas_chat
+import db
 
 MODEL_ID = "claude-sonnet-5"
+CONTEXTO_FISCAL_MAX_CHARS = 4000  # ver montar_system_prompt -- teto defensivo, nao existe hoje mas evita prompt gigante se a tabela crescer sem controle
 MAX_TOKENS = 1024
 MAX_ITERACOES_TOOL_USE = 6
 
@@ -103,14 +105,50 @@ TOOLS = [
 ]
 
 
-def montar_system_prompt(usuario_email: str, empresas_codigos: list[str], hoje: Optional[datetime.date] = None) -> str:
+def montar_system_prompt(
+    usuario_email: str, empresas_codigos: list[str], conn=None, hoje: Optional[datetime.date] = None,
+) -> str:
     """
     hoje injetavel (nao datetime.date.today() direto) pra dar pra testar
     determinismo -- mesma razao do TIA.go ter tido um bug real de data
     relativa mal calculada antes de fixar a data de hoje no prompt (visto
     ao vivo pelo Rafael, corrigido na v0.8.1 de la).
+
+    conn (opcional, default None): quando informada, busca
+    egc.contexto_fiscal e anexa como bloco de CONHECIMENTO DE REFERENCIA
+    no fim do prompt (pedido do Rafael 22/09/2026 sobre a Reforma
+    Tributaria: "queria imputar de alguma forma, pelo menos p saber ou
+    ter ciencia dessas informacoes"). None (default, e' o que os testes
+    existentes usam) simplesmente pula esse bloco -- nao quebra nada que
+    ja chamava esta funcao sem conn. Falha ao buscar (banco fora do ar)
+    tambem so' pula o bloco, nunca quebra o prompt inteiro -- ver
+    try/except abaixo.
+
+    Importante: este bloco NAO afrouxa a REGRA CRITICA abaixo (so'
+    responder com dado vindo de ferramenta) -- e' conteudo FIXO, curado
+    por nos (nao pelo modelo), claramente rotulado como referencia, nunca
+    como se fosse consulta ao BP/DRE.
     """
     hoje = hoje or datetime.date.today()
+    bloco_contexto_fiscal = ""
+    if conn is not None:
+        try:
+            linhas = db.listar_contexto_fiscal(conn)
+        except Exception:
+            linhas = []
+        if linhas:
+            texto = "\n\n".join(f"- {l['titulo']}: {l['conteudo']}" for l in linhas)
+            if len(texto) > CONTEXTO_FISCAL_MAX_CHARS:
+                texto = texto[:CONTEXTO_FISCAL_MAX_CHARS] + " [...]"
+            bloco_contexto_fiscal = (
+                "\n\nCONHECIMENTO DE REFERENCIA (contexto fixo, curado por nos -- NAO e' dado "
+                "de BP/DRE, nao veio de nenhuma ferramenta, e nao deve ser tratado como se "
+                "fosse consulta ao banco). Use isso so' pra dar contexto/explicacao quando "
+                "fizer sentido (ex. o usuario perguntar sobre a Reforma Tributaria, ou "
+                "especular se uma variacao de margem pode estar ligada a ela) -- nunca pra "
+                "calcular ou afirmar um valor financeiro que devia vir de consultar_bp_dre/"
+                "consultar_visao_grupo:\n" + texto
+            )
     return (
         "Voce e' o Assistente EGC da EnerMais -- ajuda a contadora e a gerencia a "
         "consultar Balanco Patrimonial (BP), DRE e a Visao Grupo (consolidado das 6 "
@@ -140,6 +178,7 @@ def montar_system_prompt(usuario_email: str, empresas_codigos: list[str], hoje: 
         "empresa(s) certa(s) -- sem periodo especifico mencionado, so' chame "
         "consultar_bp_dre/consultar_visao_grupo direto (eles ja' usam o mais recente "
         "sozinhos)."
+        + bloco_contexto_fiscal
     )
 
 

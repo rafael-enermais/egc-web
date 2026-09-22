@@ -27,6 +27,27 @@ import indicadores
 
 st.set_page_config(page_title="EGC — EnerMais", page_icon="📊", layout="wide")
 
+
+def _registrar_evento_seguro(conn, origem, nivel, mensagem, usuario=None, detalhe=None,
+                              empresa_codigo=None, periodo=None):
+    """
+    Wrapper de db.registrar_evento (log completo, task #16) que NUNCA
+    levanta excecao pra quem chama -- gravar o log e' melhor-esforco; se
+    o proprio banco estiver fora do ar (a causa mais provavel de um erro
+    aqui), o aviso original que o usuario ja viu (st.warning/st.error) e'
+    o que importa, a tela nao pode quebrar por causa do log. `conn` pode
+    ser None (ex. get_conn() falhou antes de existir) -- nesse caso so'
+    nao grava, sem erro.
+    """
+    if conn is None:
+        return
+    try:
+        db.registrar_evento(conn, origem, nivel, mensagem, empresa_codigo=empresa_codigo,
+                             periodo=periodo, usuario=usuario, detalhe=detalhe)
+    except Exception:
+        pass
+
+
 # Bloqueia aqui (st.stop() dentro de require_login) se nao autenticado.
 # st.navigation() so' e' chamado DEPOIS desta linha — por isso a lista de
 # paginas nunca existe pra quem nao passou do login. O e-mail retornado e'
@@ -58,6 +79,7 @@ def pagina_inicio():
     )
     cod_empresa, nome_empresa, _cnpj_empresa = EMPRESAS_FIXAS[idx]
 
+    conn = None
     try:
         conn = get_conn()
         periodos_ativos = db.listar_periodos(conn, cod_empresa, status="ATIVO")
@@ -69,6 +91,8 @@ def pagina_inicio():
             st.caption("Últimos períodos ativos: " + ", ".join(p.strftime("%m/%Y") for p in periodos_ativos[:6]))
     except Exception as exc:
         st.warning(f"Não foi possível consultar o banco ainda: {exc}")
+        _registrar_evento_seguro(conn, "inicio", "ERRO", "Falha ao consultar períodos",
+                                  usuario=usuario, detalhe=str(exc), empresa_codigo=cod_empresa)
         return
 
     # ─────────────── Indicadores contábeis (Fase 4, 22/09/2026) ───────────
@@ -86,6 +110,8 @@ def pagina_inicio():
         tabela_ind = indicadores.calcular_indicadores(hist_bp, hist_dre)
     except Exception as exc:
         st.warning(f"Não foi possível calcular os indicadores: {exc}")
+        _registrar_evento_seguro(conn, "inicio", "ERRO", "Falha ao calcular indicadores",
+                                  usuario=usuario, detalhe=str(exc), empresa_codigo=cod_empresa)
         return
 
     if tabela_ind.empty:

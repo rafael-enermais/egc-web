@@ -302,6 +302,87 @@ def test_listar_projecoes_le_materializado_sem_recalcular():
     print("OK: listar_projecoes")
 
 
+# ─────────────────────────────────────────────
+#  EVENTOS DO SISTEMA (log completo — task #16, 22/09/2026)
+# ─────────────────────────────────────────────
+
+def test_registrar_evento_grava_todos_os_campos():
+    cur = FakeCursor()
+    conn = FakeConn(cur)
+    db.registrar_evento(
+        conn, "revisao_correcao", "ERRO", "Falha ao salvar correção",
+        empresa_codigo="SMG", periodo=datetime.date(2026, 6, 30), usuario="teste@enermais.com.br",
+        detalhe="ConnectionError: timeout",
+    )
+    sql, params = cur.executed[0]
+    assert "INSERT INTO egc.eventos_sistema" in sql
+    assert params == ("revisao_correcao", "ERRO", "Falha ao salvar correção", "ConnectionError: timeout",
+                       "SMG", datetime.date(2026, 6, 30), "teste@enermais.com.br")
+    print("OK: registrar_evento — grava origem/nivel/mensagem/detalhe/empresa/periodo/usuario")
+
+
+def test_registrar_evento_campos_opcionais_default_none():
+    cur = FakeCursor()
+    conn = FakeConn(cur)
+    db.registrar_evento(conn, "chat", "INFO", "teste sem opcionais")
+    _, params = cur.executed[0]
+    assert params == ("chat", "INFO", "teste sem opcionais", None, None, None, None)
+    print("OK: registrar_evento — sem empresa/periodo/usuario/detalhe, grava None (nao quebra)")
+
+
+def test_listar_eventos_recentes_sem_filtro():
+    cols = ["id", "origem", "nivel", "mensagem", "detalhe", "empresa_codigo", "periodo", "usuario", "criado_em"]
+    linhas = [(1, "chat", "ERRO", "falha na API", "timeout", None, None, "a@b.com", datetime.datetime(2026, 9, 22, 10, 0))]
+    cur = FakeCursor(fetchall_result=linhas, description=[(c,) for c in cols])
+    conn = FakeConn(cur)
+    eventos = db.listar_eventos_recentes(conn)
+    sql, params = cur.executed[0]
+    assert "FROM egc.eventos_sistema" in sql
+    assert "WHERE" not in sql  # sem filtro nenhum, so' ORDER BY + LIMIT
+    assert params == [100]
+    assert eventos[0]["origem"] == "chat"
+    print("OK: listar_eventos_recentes — sem filtro, limite default 100")
+
+
+def test_listar_eventos_recentes_filtra_nivel_e_origem():
+    cur = FakeCursor()
+    conn = FakeConn(cur)
+    db.listar_eventos_recentes(conn, limite=10, nivel="ERRO", origem="arquivar_recuperar")
+    sql, params = cur.executed[0]
+    assert "nivel = %s" in sql and "origem = %s" in sql
+    assert params == ["ERRO", "arquivar_recuperar", 10]
+    print("OK: listar_eventos_recentes — filtro por nivel + origem monta WHERE certo")
+
+
+# ─────────────────────────────────────────────
+#  CONTEXTO FISCAL (Reforma Tributaria — 22/09/2026)
+# ─────────────────────────────────────────────
+
+def test_listar_contexto_fiscal_sem_tema_traz_so_ativos():
+    cols = ["chave", "tema", "titulo", "conteudo", "fonte", "atualizado_em"]
+    linhas = [("REFORMA_TRIB_CRONOGRAMA", "reforma_tributaria", "Cronograma", "texto...", "fonte X",
+               datetime.datetime(2026, 9, 22, 10, 0))]
+    cur = FakeCursor(fetchall_result=linhas, description=[(c,) for c in cols])
+    conn = FakeConn(cur)
+    linhas_ret = db.listar_contexto_fiscal(conn)
+    sql, params = cur.executed[0]
+    assert "FROM egc.contexto_fiscal" in sql
+    assert "ativo = true" in sql
+    assert params is None
+    assert linhas_ret[0]["titulo"] == "Cronograma"
+    print("OK: listar_contexto_fiscal — sem tema, so' ativos, ordenado")
+
+
+def test_listar_contexto_fiscal_filtra_por_tema():
+    cur = FakeCursor()
+    conn = FakeConn(cur)
+    db.listar_contexto_fiscal(conn, tema="reforma_tributaria")
+    sql, params = cur.executed[0]
+    assert "tema = %s" in sql
+    assert params == ("reforma_tributaria",)
+    print("OK: listar_contexto_fiscal — filtro por tema")
+
+
 if __name__ == "__main__":
     testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
     falhas = 0

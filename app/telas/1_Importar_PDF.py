@@ -286,18 +286,30 @@ if resultados:
                     for tipo, rows in (("BP", r["bp_rows"]), ("DRE", r["dre_rows"])):
                         if not rows:
                             continue
-                        n_inativados = db.inativar_periodo_existente(conn, cod_g, periodo_date, tipo)
-                        n_gravados = db.inserir_lancamentos(
-                            conn, cod_g, tipo, periodo_date, rows, r["arquivo"], usuario
-                        )
-                        total_gravado += n_gravados
-                        nivel = "AVISO" if n_inativados else "OK"
-                        msg = f"{n_gravados} conta(s) gravada(s)" + (
-                            f" — {n_inativados} linha(s) do período anterior arquivada(s) automaticamente" if n_inativados else ""
-                        )
-                        db.registrar_importacao(
-                            conn, cod_g, periodo_date, [r["arquivo"]], nivel, tipo, msg, usuario
-                        )
+                        try:
+                            n_inativados = db.inativar_periodo_existente(conn, cod_g, periodo_date, tipo)
+                            n_gravados = db.inserir_lancamentos(
+                                conn, cod_g, tipo, periodo_date, rows, r["arquivo"], usuario
+                            )
+                            total_gravado += n_gravados
+                            nivel = "AVISO" if n_inativados else "OK"
+                            msg = f"{n_gravados} conta(s) gravada(s)" + (
+                                f" — {n_inativados} linha(s) do período anterior arquivada(s) automaticamente" if n_inativados else ""
+                            )
+                            db.registrar_importacao(
+                                conn, cod_g, periodo_date, [r["arquivo"]], nivel, tipo, msg, usuario
+                            )
+                        except Exception as exc:
+                            # log completo (task #16): falha na gravacao NAO pode travar
+                            # os outros arquivos/tipos do lote -- registra e segue.
+                            pulados.append(f"{r['arquivo']} ({tipo})")
+                            try:
+                                db.registrar_importacao(
+                                    conn, cod_g, periodo_date, [r["arquivo"]], "ERRO", tipo,
+                                    f"Falha ao gravar: {exc}", usuario,
+                                )
+                            except Exception:
+                                pass
 
                 # remove so' os itens deste grupo da lista pendente
                 gravados_ids = {id(x) for x in grupo["itens"]}
@@ -330,6 +342,11 @@ try:
 except Exception as exc:
     eventos = []
     st.warning(f"Não consegui carregar o histórico agora: {exc}")
+    try:
+        db.registrar_evento(conn, "importar_pdf", "ERRO", "Falha ao carregar histórico de importações",
+                             usuario=usuario, detalhe=str(exc))
+    except Exception:
+        pass
 
 if not eventos:
     st.caption("Nenhuma importação registrada ainda.")
