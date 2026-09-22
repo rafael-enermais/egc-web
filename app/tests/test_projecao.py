@@ -117,6 +117,59 @@ def test_aplicar_ajustes_soma_e_ignora_periodo_sem_ajuste():
     print("OK: aplicar_ajustes — soma multiplos ajustes no mesmo periodo, 0 quando nao ha ajuste")
 
 
+def test_montar_serie_grafico_indice_e_datetime_nao_string():
+    # regressao do bug real (22/09/2026, achado pelo Rafael ao vivo): indice
+    # de STRING "MM/AAAA" faz o st.line_chart (Vega-Lite) tratar o eixo como
+    # NOMINAL e reordenar alfabeticamente, quebrando a ordem cronologica.
+    # index precisa ser um tipo temporal de verdade (DatetimeIndex).
+    serie_historico = {_periodo(2026, 6): 1000.0}
+    serie_projetado = {_periodo(2026, 7): 1100.0}
+    df = projecao.montar_serie_grafico(serie_historico, serie_projetado)
+    import pandas as pd
+    assert isinstance(df.index, pd.DatetimeIndex), f"esperava DatetimeIndex, veio {type(df.index)}"
+    print("OK: montar_serie_grafico — indice e' DatetimeIndex, nao string (fix do bug de ordenacao)")
+
+
+def test_montar_serie_grafico_ordem_cronologica_intervalo_longo():
+    # reproduz o cenario real do bug (Rafael testou com historico 2023-2026
+    # e horizonte de 21 meses): mesmo com anos diferentes e meses que colidem
+    # em ordem alfabetica ("01/2027" < "01/2028" < "02/2026"), o indice final
+    # tem que ficar em ordem CRONOLOGICA real, monotonica crescente.
+    serie_historico = {
+        _periodo(2023, 12): 100.0,
+        _periodo(2024, 12): 110.0,
+        _periodo(2026, 6): 120.0,
+    }
+    serie_projetado = {
+        _periodo(2026, 7): 130.0,
+        _periodo(2027, 1): 140.0,
+        _periodo(2027, 3): 150.0,
+        _periodo(2028, 1): 160.0,
+        _periodo(2028, 2): 170.0,
+    }
+    df = projecao.montar_serie_grafico(serie_historico, serie_projetado)
+    assert df.index.is_monotonic_increasing, f"indice fora de ordem cronologica: {list(df.index)}"
+    # a ordem alfabetica de string ("01/2027" < "01/2028" < "02/2028" < "03/2027")
+    # colocaria 03/2027 DEPOIS de 02/2028 -- confirma que isso NAO acontece aqui
+    idx_lista = list(df.index)
+    pos_2027_03 = idx_lista.index(__import__("pandas").Timestamp(_periodo(2027, 3)))
+    pos_2028_01 = idx_lista.index(__import__("pandas").Timestamp(_periodo(2028, 1)))
+    assert pos_2027_03 < pos_2028_01, "03/2027 deveria vir ANTES de 01/2028 na ordem cronologica real"
+    print("OK: montar_serie_grafico — ordem cronologica correta mesmo com intervalo 2023-2028 (bug real reproduzido e corrigido)")
+
+
+def test_montar_serie_grafico_valores_mapeados_certo_com_vazio_onde_falta():
+    import pandas as pd
+    serie_historico = {_periodo(2026, 6): 1000.0}
+    serie_projetado = {_periodo(2026, 7): 1100.0}
+    df = projecao.montar_serie_grafico(serie_historico, serie_projetado)
+    assert list(df["Histórico"]) == [1000.0] or (df["Histórico"].iloc[0] == 1000.0)
+    assert pd.isna(df["Histórico"].iloc[1]), "periodo sem historico deveria ficar vazio (NaN), nao um valor inventado"
+    assert pd.isna(df["Projetado"].iloc[0]), "periodo sem projecao deveria ficar vazio (NaN), nao um valor inventado"
+    assert df["Projetado"].iloc[1] == 1100.0
+    print("OK: montar_serie_grafico — Historico/Projetado mapeados certo, vazio (NaN) onde nao ha dado")
+
+
 if __name__ == "__main__":
     testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
     falhas = 0

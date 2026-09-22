@@ -41,6 +41,7 @@ import tempfile
 import datetime as _dt
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -49,8 +50,17 @@ from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS, empresa_por_cnpj
 import db  # noqa: E402
 from parser_egc import processar_pdf  # noqa: E402
 from validacoes import checar_fechamento_bp, formatar_br  # noqa: E402
+from importacoes_ui import chave_ordenacao_previa, agrupar_historico_importacoes  # noqa: E402
 
 NOME_POR_COD = {cod: nome for cod, nome, _cnpj in EMPRESAS_FIXAS}
+
+# Ordem de colunas de saida do parser (parser_egc.build_output, conferido
+# 22/09/2026 antes deste fix) -- BP e DRE tem ordem DIFERENTE entre si.
+# Usado so' pra nomear a previa (item 1 do feedback do Rafael, 22/09/2026:
+# "esse nome da tabela '0, 1, 2...' nao conseguimos nomear?") -- nao muda
+# a extracao nem o que e gravado no banco, so' o rotulo mostrado na tela.
+COLUNAS_BP = ["Grupo", "Conta", "Valor", "Origem"]
+COLUNAS_DRE = ["Conta", "Valor", "Grupo", "Origem"]
 
 st.title("📥 Importar PDF")
 
@@ -130,6 +140,11 @@ if aviso_duplicados:
 
 resultados = st.session_state.get("import_resultados")
 if resultados:
+    # reordena por CNPJ+periodo (BP antes de DRE) so' pra exibicao/gravacao
+    # -- mesmos objetos (sorted() nao copia os dicts), entao remover por
+    # identidade (`is not r`) mais abaixo continua funcionando igual.
+    resultados = sorted(resultados, key=chave_ordenacao_previa)
+
     st.divider()
     st.subheader("2. Pré-visualização — confira antes de gravar")
 
@@ -207,8 +222,8 @@ if resultados:
 
             if r["bp_rows"]:
                 st.write(f"**BP — {len(r['bp_rows'])} contas**")
-                st.dataframe(r["bp_rows"], column_config=None, use_container_width=True,
-                             hide_index=True)
+                st.dataframe(pd.DataFrame(r["bp_rows"], columns=COLUNAS_BP),
+                             use_container_width=True, hide_index=True)
                 total_ativo, total_passivo = checar_fechamento_bp(r["bp_rows"])
                 if total_ativo is not None and total_passivo is not None:
                     diferenca = round(total_ativo - total_passivo, 2)
@@ -221,7 +236,8 @@ if resultados:
                         )
             if r["dre_rows"]:
                 st.write(f"**DRE — {len(r['dre_rows'])} contas**")
-                st.dataframe(r["dre_rows"], use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(r["dre_rows"], columns=COLUNAS_DRE),
+                             use_container_width=True, hide_index=True)
 
     if algum_erro:
         st.error("Há erros de leitura em pelo menos um PDF — corrija/confira antes de gravar.")
@@ -306,16 +322,11 @@ st.caption(
 try:
     conn = get_conn()
     brutos = db.listar_importacoes_recentes(conn, limite=50)
-    vistos = set()
-    eventos = []
-    for row in brutos:
-        chave = (row["empresa_codigo"], row["periodo"])
-        if chave in vistos:
-            continue
-        vistos.add(chave)
-        eventos.append(row)
-        if len(eventos) >= 10:
-            break
+    # Fix (item 5 do feedback do Rafael, 22/09/2026): ver docstring de
+    # agrupar_historico_importacoes (app/importacoes_ui.py) -- combina
+    # BP+DRE do mesmo clique de "Gravar" numa unica linha de historico,
+    # em vez de o dedup antigo perder a mensagem do BP silenciosamente.
+    eventos = agrupar_historico_importacoes(brutos, limite=10)
 except Exception as exc:
     eventos = []
     st.warning(f"Não consegui carregar o histórico agora: {exc}")
@@ -328,8 +339,15 @@ else:
         periodo_ev = ev["periodo"]
         nome_ev = NOME_POR_COD.get(cod_ev, cod_ev)
         quando = ev["criado_em"].strftime("%d/%m/%Y %H:%M") if ev["criado_em"] else "?"
+        tipos_label = ", ".join(t for t, _msg in ev["tipos"]) or "?"
         col_a, col_b = st.columns([4, 1])
-        col_a.write(f"**{nome_ev}** — {periodo_ev.strftime('%m/%Y')} · gravado por {ev['usuario'] or '?'} em {quando}")
+        col_a.write(
+            f"**{nome_ev}** — {periodo_ev.strftime('%m/%Y')} · {tipos_label} · "
+            f"gravado por {ev['usuario'] or '?'} em {quando}"
+        )
+        detalhes = " · ".join(f"{t}: {msg}" for t, msg in ev["tipos"] if msg)
+        if detalhes:
+            col_a.caption(detalhes)
         if col_b.button("↩️ Desfazer", key=f"hist_desfazer_{cod_ev}_{periodo_ev}"):
             conn = get_conn()
             total = db.arquivar_periodo(conn, cod_ev, periodo_ev)

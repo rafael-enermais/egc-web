@@ -134,14 +134,7 @@ serie_projetado = {
     for linha in linhas_completas
     if linha["grupo"] == grupo_sel and linha["conta"] == conta_sel
 }
-todos_periodos = sorted(set(serie_historico) | set(serie_projetado))
-df_grafico = pd.DataFrame(
-    {
-        "Histórico": [serie_historico.get(p) for p in todos_periodos],
-        "Projetado": [serie_projetado.get(p) for p in todos_periodos],
-    },
-    index=[p.strftime("%m/%Y") for p in todos_periodos],
-)
+df_grafico = projecao.montar_serie_grafico(serie_historico, serie_projetado)
 st.line_chart(df_grafico)
 
 # --- Ajuste manual ----------------------------------------------------
