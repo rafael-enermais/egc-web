@@ -18,10 +18,12 @@ sessao. Validado direto no app publicado (nao so' no AppTest local, que
 nao reproduz esse comportamento de auto-descoberta do servidor).
 """
 import streamlit as st
+import pandas as pd
 
 from auth import require_login
 from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS
 import db
+import indicadores
 
 st.set_page_config(page_title="EGC — EnerMais", page_icon="📊", layout="wide")
 
@@ -43,7 +45,7 @@ def pagina_inicio():
 
     st.markdown(
         "Use o menu à esquerda para **Importar PDF**, **Revisão/Correção** ou "
-        "**Arquivar/Recuperar**. O dashboard de indicadores entra na Fase 4."
+        "**Arquivar/Recuperar**."
     )
 
     # Seletor de empresa PROPRIO desta pagina (21/09/2026: nao depende mais
@@ -67,6 +69,99 @@ def pagina_inicio():
             st.caption("Últimos períodos ativos: " + ", ".join(p.strftime("%m/%Y") for p in periodos_ativos[:6]))
     except Exception as exc:
         st.warning(f"Não foi possível consultar o banco ainda: {exc}")
+        return
+
+    # ─────────────── Indicadores contábeis (Fase 4, 22/09/2026) ───────────
+    # Pedido do Rafael: "poderiamos fazer todos os calculos que forem
+    # uteis... tudo oq ajudar e saber e interessante" -- zero import novo,
+    # calculado em cima do BP/DRE que ja esta no banco (mesma fonte que
+    # Visao Grupo/Revisao). Reaproveita db.listar_historico_grupo (ja
+    # existia pro motor de projecao, removido desta versao -- ver
+    # app/_arquivados/).
+    st.divider()
+    st.subheader("Indicadores contábeis")
+    try:
+        hist_bp = db.listar_historico_grupo(conn, cod_empresa, "BP", status="ATIVO")
+        hist_dre = db.listar_historico_grupo(conn, cod_empresa, "DRE", status="ATIVO")
+        tabela_ind = indicadores.calcular_indicadores(hist_bp, hist_dre)
+    except Exception as exc:
+        st.warning(f"Não foi possível calcular os indicadores: {exc}")
+        return
+
+    if tabela_ind.empty:
+        st.caption("Sem BP/DRE suficiente pra calcular indicadores ainda.")
+        return
+
+    periodo_ind = tabela_ind.index.max()
+    periodo_ind_anterior = None
+    anteriores = tabela_ind.index[tabela_ind.index < periodo_ind]
+    if len(anteriores) > 0:
+        periodo_ind_anterior = anteriores.max()
+
+    def _fmt(col, formato):
+        valor = tabela_ind.loc[periodo_ind, col]
+        delta = None
+        if periodo_ind_anterior is not None and pd.notna(tabela_ind.loc[periodo_ind_anterior, col]) and pd.notna(valor):
+            delta = valor - tabela_ind.loc[periodo_ind_anterior, col]
+        if pd.isna(valor):
+            return "—", None
+        if formato == "pct":
+            texto = f"{valor:.1%}"
+            delta_txt = f"{delta:+.1%}" if delta is not None else None
+        elif formato == "x":
+            texto = f"{valor:.2f}x"
+            delta_txt = f"{delta:+.2f}x" if delta is not None else None
+        else:  # "R$"
+            texto = f"R$ {valor:,.2f}"
+            delta_txt = f"R$ {delta:+,.2f}" if delta is not None else None
+        return texto, delta_txt
+
+    st.caption(f"Período de referência: {periodo_ind.strftime('%m/%Y')}"
+               + (f" · comparado a {periodo_ind_anterior.strftime('%m/%Y')}" if periodo_ind_anterior is not None else " · sem período anterior pra comparar ainda"))
+
+    k1, k2, k3 = st.columns(3)
+    for col, label, fmt, container in [
+        ("Liquidez Corrente", "Liquidez Corrente", "x", k1),
+        ("Capital de Giro", "Capital de Giro", "R$", k2),
+        ("Endividamento Geral", "Endividamento Geral", "pct", k3),
+    ]:
+        texto, delta_txt = _fmt(col, fmt)
+        container.metric(label, texto, delta=delta_txt)
+
+    k4, k5, k6, k7 = st.columns(4)
+    for col, label, fmt, container in [
+        ("Margem Bruta", "Margem Bruta", "pct", k4),
+        ("Margem Líquida", "Margem Líquida", "pct", k5),
+        ("ROA", "ROA (Retorno s/ Ativo)", "pct", k6),
+        ("ROE", "ROE (Retorno s/ PL)", "pct", k7),
+    ]:
+        texto, delta_txt = _fmt(col, fmt)
+        container.metric(label, texto, delta=delta_txt)
+
+    with st.expander("Histórico completo dos indicadores"):
+        st.dataframe(
+            tabela_ind.rename(index=lambda d: d.strftime("%m/%Y")),
+            column_config={
+                "Liquidez Corrente": st.column_config.NumberColumn(format="%.2fx"),
+                "Capital de Giro": st.column_config.NumberColumn(format="R$ %.2f"),
+                "Endividamento Geral": st.column_config.NumberColumn(format="percent"),
+                "Margem Bruta": st.column_config.NumberColumn(format="percent"),
+                "Margem Líquida": st.column_config.NumberColumn(format="percent"),
+                "ROA": st.column_config.NumberColumn(format="percent"),
+                "ROE": st.column_config.NumberColumn(format="percent"),
+            },
+            use_container_width=True,
+        )
+        st.caption(
+            "Liquidez seca não entra: as 6 empresas do grupo (EPC/energia) não têm "
+            "conta de Estoques no BP extraído hoje — ficaria idêntica à Liquidez "
+            "Corrente, sem valor informativo. Fórmulas: Liquidez Corrente = Ativo "
+            "Circulante ÷ Passivo Circulante · Capital de Giro = Ativo Circulante − "
+            "Passivo Circulante · Endividamento Geral = (Passivo Circulante + Passivo "
+            "Não Circulante) ÷ Ativo Total · Margem Bruta = Lucro Bruto ÷ Receita "
+            "Líquida · Margem Líquida = Lucro Líquido ÷ Receita Líquida · ROA = Lucro "
+            "Líquido ÷ Ativo Total · ROE = Lucro Líquido ÷ Patrimônio Líquido."
+        )
 
 
 paginas = [
@@ -75,7 +170,12 @@ paginas = [
     st.Page("telas/2_Revisao_Correcao.py", title="Revisão/Correção", icon="✏️"),
     st.Page("telas/3_Arquivar_Recuperar.py", title="Arquivar/Recuperar", icon="🗄️"),
     st.Page("telas/4_Visao_Grupo.py", title="Visão Grupo", icon="🏢"),
-    st.Page("telas/5_Dashboard_Projecao.py", title="Dashboard de Projeção", icon="📈"),
+    # Dashboard de Projeção removido do menu por pedido do Rafael
+    # (22/09/2026): numeros ficavam irreais em horizonte longo com pouco
+    # historico real (tendencia linear sem teto). Codigo e tabelas
+    # (egc.projecoes/projecoes_ajustes) preservados, nao apagados -- ver
+    # app/_arquivados/5_Dashboard_Projecao.py pra reativar se decidir
+    # retomar com mais historico acumulado.
     st.Page("telas/6_Assistente.py", title="Assistente", icon="🤖"),
 ]
 pg = st.navigation(paginas)
