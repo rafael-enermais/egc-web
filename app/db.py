@@ -512,3 +512,117 @@ def listar_projecoes(conn, empresa_codigo: str, tipo: str) -> list[dict]:
         )
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+# ─────────────────────────────────────────────
+#  EVENTOS DO SISTEMA (log completo — task #16)
+# ─────────────────────────────────────────────
+
+def registrar_evento(
+    conn,
+    origem: str,
+    nivel: str,
+    mensagem: str,
+    empresa_codigo: Optional[str] = None,
+    periodo: Optional[date] = None,
+    usuario: Optional[str] = None,
+    detalhe: Optional[str] = None,
+) -> None:
+    """
+    Grava 1 linha em egc.eventos_sistema (pedido do Rafael 22/09/2026:
+    "deixa pronto pra ter logs e msm sistematica, de forma q se der erro
+    conseguimos arrumar facil via log"). `origem` e' string livre (nome
+    da pagina/fluxo -- ex. "revisao_correcao", "arquivar_recuperar",
+    "chat", "inicio") -- fluxos novos (ex. geracao de relatorio, quando
+    existir no web) so' passam uma origem nova, sem migracao de schema.
+    `nivel`: 'INFO' | 'AVISO' | 'ERRO'.
+
+    Quem chama SEMPRE envolve esta funcao no proprio try/except da tela
+    (ver app.py/telas/*.py) -- uma falha ao GRAVAR o log (ex. banco fora
+    do ar) nunca pode ser a causa de uma tela quebrar; se acontecer, o
+    erro original mostrado ao usuario e' o que importa, o log e'
+    melhor-esforco.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO egc.eventos_sistema
+                (origem, nivel, mensagem, detalhe, empresa_codigo, periodo, usuario)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (origem, nivel, mensagem, detalhe, empresa_codigo, periodo, usuario),
+        )
+
+
+def listar_eventos_recentes(
+    conn, limite: int = 100, nivel: Optional[str] = None, origem: Optional[str] = None,
+) -> list[dict]:
+    """
+    Historico de egc.eventos_sistema, mais recente primeiro -- pra
+    conferencia manual via SQL Editor do Supabase por enquanto (sem UI
+    dedicada nesta leva, ver task #15/#16 no vault). `nivel`/`origem`
+    filtram opcionalmente (ex. so' 'ERRO', ou so' 'revisao_correcao').
+    """
+    filtros = []
+    params: list = []
+    if nivel:
+        filtros.append("nivel = %s")
+        params.append(nivel)
+    if origem:
+        filtros.append("origem = %s")
+        params.append(origem)
+    where = f"WHERE {' AND '.join(filtros)}" if filtros else ""
+    params.append(limite)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT id, origem, nivel, mensagem, detalhe, empresa_codigo, periodo, usuario, criado_em
+            FROM egc.eventos_sistema
+            {where}
+            ORDER BY criado_em DESC
+            LIMIT %s
+            """,
+            params,
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+# ─────────────────────────────────────────────
+#  CONTEXTO FISCAL (conhecimento de referencia — Reforma Tributaria)
+# ─────────────────────────────────────────────
+
+def listar_contexto_fiscal(conn, tema: Optional[str] = None) -> list[dict]:
+    """
+    Blocos de conhecimento curado (egc.contexto_fiscal), so' os ativos
+    (ativo=true) -- pedido do Rafael 22/09/2026 sobre a Reforma
+    Tributaria: "queria imputar de alguma forma, pelo menos p saber ou
+    ter ciencia dessas informacoes... futuramente o chat conseguira
+    trabalhar com base nos dados existentes e cruzamento dessas novas
+    informacoes". Usado por chat_egc.montar_system_prompt pra injetar
+    esse conteudo no system prompt, claramente rotulado como referencia
+    (nao dado de BP/DRE) -- ver REGRA CRITICA la'. `tema` filtra
+    opcionalmente (hoje so existe 'reforma_tributaria').
+    """
+    with conn.cursor() as cur:
+        if tema:
+            cur.execute(
+                """
+                SELECT chave, tema, titulo, conteudo, fonte, atualizado_em
+                FROM egc.contexto_fiscal
+                WHERE ativo = true AND tema = %s
+                ORDER BY chave
+                """,
+                (tema,),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT chave, tema, titulo, conteudo, fonte, atualizado_em
+                FROM egc.contexto_fiscal
+                WHERE ativo = true
+                ORDER BY tema, chave
+                """
+            )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]

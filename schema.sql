@@ -266,3 +266,90 @@ CREATE POLICY egc_app_full_access ON egc.projecoes FOR ALL TO egc_app USING (tru
 -- Fim do bloco 8. Rodar so' este bloco (da linha "-- 8. Projecao" ate aqui)
 -- no SQL Editor do Supabase (projeto radar-comercial) -- nao precisa
 -- rodar o arquivo inteiro de novo.
+
+-- =====================================================================
+-- 9. Eventos do sistema — log completo (task #16, pedido do Rafael
+--    22/09/2026: "deixa pronto pra ter logs e msm sistematica, de forma
+--    q se der erro conseguimos arrumar facil via log"). Generico e
+--    aditivo -- NAO substitui egc.importacoes nem egc.relatorios_gerados
+--    (continuam do jeito que estao, ja usados de verdade pelo Importar
+--    PDF); cobre tudo que ainda nao tinha lugar nenhum pra registrar erro
+--    (Revisao/Correcao, Arquivar/Recuperar, chat, Inicio) -- ver
+--    db.registrar_evento() e os pontos de captura em app.py/telas/*.py.
+--    origem e' string livre (nome da pagina/fluxo), sem CHECK fechado de
+--    proposito -- fluxos novos (ex. geracao de relatorio, quando
+--    existir) so' passam uma origem nova, sem migracao.
+-- =====================================================================
+
+CREATE TABLE IF NOT EXISTS egc.eventos_sistema (
+  id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  origem         text NOT NULL,
+  nivel          text NOT NULL CHECK (nivel IN ('INFO','AVISO','ERRO')),
+  mensagem       text NOT NULL,
+  detalhe        text,
+  empresa_codigo text,
+  periodo        date,
+  usuario        text,
+  criado_em      timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_eventos_sistema_recentes ON egc.eventos_sistema (criado_em DESC);
+CREATE INDEX IF NOT EXISTS idx_eventos_sistema_nivel     ON egc.eventos_sistema (nivel, criado_em DESC);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON egc.eventos_sistema TO egc_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA egc TO egc_app;
+
+ALTER TABLE egc.eventos_sistema ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS egc_app_full_access ON egc.eventos_sistema;
+CREATE POLICY egc_app_full_access ON egc.eventos_sistema FOR ALL TO egc_app USING (true) WITH CHECK (true);
+
+-- =====================================================================
+-- 10. Contexto fiscal — conhecimento de referencia curado (task da
+--     Reforma Tributaria, pedido do Rafael 22/09/2026: "queria imputar
+--     de alguma forma, pelo menos p saber ou ter ciencia dessas
+--     informacoes... futuramente o chat conseguira trabalhar com base
+--     nos dados existentes e cruzamento dessas novas informacoes").
+--
+--     NAO e' dado financeiro (BP/DRE) nem substitui a REGRA CRITICA do
+--     chat ("responda so' com dado que veio de verdade das ferramentas"
+--     -- ver chat_egc.montar_system_prompt) -- e' contexto factual FIXO,
+--     pesquisado e datado por nos (nao pelo modelo), injetado no system
+--     prompt como referencia, claramente rotulado como tal. Atualizacao
+--     e' edicao de linha (UPDATE), sem precisar de deploy de codigo --
+--     e' exatamente o ponto: a reforma muda em degraus ate' 2033, o
+--     conteudo muda, o codigo que injeta nao.
+-- =====================================================================
+
+CREATE TABLE IF NOT EXISTS egc.contexto_fiscal (
+  chave          text PRIMARY KEY,
+  tema           text NOT NULL,
+  titulo         text NOT NULL,
+  conteudo       text NOT NULL,
+  fonte          text,
+  ativo          boolean NOT NULL DEFAULT true,
+  atualizado_por text,
+  atualizado_em  timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO egc.contexto_fiscal (chave, tema, titulo, conteudo, fonte, atualizado_por) VALUES
+('REFORMA_TRIB_CRONOGRAMA', 'reforma_tributaria', 'Cronograma da Reforma Tributaria (EC 132/2023 + LC 214/2025)',
+ 'Fase de teste teve inicio em 01/01/2026: aliquota-teste CBS (federal) 0,9% + IBS (estadual/municipal) 0,1% (total 1%), destaque obrigatorio em nota fiscal desde 03/08/2026. Esse valor e integralmente compensavel com PIS/COFINS do mesmo periodo -- empresa em dia com as obrigacoes acessorias nao desembolsa nada de fato em 2026. A partir de 2027: CBS entra em vigor plena, PIS/COFINS sao extintos, Imposto Seletivo inicia. 2028: ajustes/consolidacao. 2029-2032: substituicao gradual de ICMS/ISS por IBS, em degraus anuais. 2033: extincao total de ICMS e ISS -- sistema pleno IBS+CBS+Imposto Seletivo.',
+ 'Pesquisa datada de 22/09/2026 (Tax Group, CGIBS, LegisWeb) -- ver detalhe completo no chat EGC #26/#27 do Rafael.', 'claude'),
+('REFORMA_TRIB_CONTABILIZACAO_2026', 'reforma_tributaria', 'Como contabilizar CBS/IBS em 2026',
+ 'O CFC publicou a Orientacao Tecnica CFC no 1/2026 (jul/2026), que NAO obriga um tratamento unico -- permite 2 abordagens validas: (a) registrar IBS/CBS em contas NOVAS no Balanco (ativo = credito fiscal; passivo circulante = a recolher), preparando o modelo definitivo; ou (b) tratar como passivo contingente, sem lancar conta nova, so divulgando em nota explicativa -- valido pra empresa em dia com as obrigacoes acessorias. A receita, quando reconhecida, e sempre LIQUIDA de IBS/CBS (tributo "por fora", nao transita pelo resultado). As contas antigas (ICMS, PIS, COFINS, ISS "a recolher") continuam normais e integrais em 2026, sem reducao nenhuma ainda -- mudanca estrutural real so comeca em 2027.',
+ 'Pesquisa datada de 22/09/2026 (Contabeis.com.br, Jettax) -- OT CFC no 1/2026.', 'claude'),
+('REFORMA_TRIB_CONSTRUCAO_CIVIL', 'reforma_tributaria', 'Regra especifica pra construcao civil/EPC (LC 214/2025 arts. 252-270)',
+ 'Operacoes com bens imoveis/construcao (obras, incorporacao, loteamento, locacao) tem regra propria: base unica substituindo ISS/ICMS/PIS/COFINS fragmentados, apuracao POR EMPREENDIMENTO (cada obra/canteiro com controle segregado), fato gerador em momentos especificos (venda na alienacao; servico no pagamento; obra na entrega), credito amplo sobre materiais/equipamentos/servicos contratados. Nao ha confirmacao de aliquota reduzida especifica pra EPC industrial (diferente do redutor do setor imobiliario residencial) -- ponto a validar com um tributarista se for relevante pro grupo, nao e algo que o assistente deva afirmar sozinho.',
+ 'Pesquisa datada de 22/09/2026 (Contabeis.com.br, 08/09/2025) -- LC 214/2025 arts. 252-270.', 'claude'),
+('REFORMA_TRIB_PARSER_IMPACTO', 'reforma_tributaria', 'Impacto no parser do EGC (BP_TARGETS/DRE_TARGETS)',
+ 'O parser do EGC-WEB (app/parser_egc.py) captura tributos de forma AGREGADA, nao item a item: "IMPOSTOS E CONTRIBUICOES A RECOLHER" e "TRIBUTOS RETIDOS A RECOLHER" no BP, "DEDUCOES DA RECEITA BRUTA" no DRE -- nao existe conta separada de ICMS/PIS/COFINS/ISS hoje. Se a contadora nao lancar conta nova em 2026 (opcao b da OT CFC 1/2026), nada precisa mudar no parser. Se lancar conta nova (ex. "IBS A RECOLHER"), e' preciso 1 entrada nova em BP_TARGETS/DRE_TARGETS -- baixo risco, mas so deve ser escrita olhando um PDF real com esse nome (nunca chutar alias sem fonte, mesma regra de sempre do projeto).',
+ 'Inspecao direta de app/parser_egc.py em 22/09/2026.', 'claude')
+ON CONFLICT (chave) DO NOTHING;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON egc.contexto_fiscal TO egc_app;
+ALTER TABLE egc.contexto_fiscal ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS egc_app_full_access ON egc.contexto_fiscal;
+CREATE POLICY egc_app_full_access ON egc.contexto_fiscal FOR ALL TO egc_app USING (true) WITH CHECK (true);
+
+-- Fim dos blocos 9-10. Rodar so' esses 2 blocos no SQL Editor do Supabase
+-- (projeto radar-comercial) -- nao precisa rodar o arquivo inteiro de novo.

@@ -49,6 +49,16 @@ def _rotulo_periodo(d):
     # dropdown da sidebar
     return f"{d.strftime('%m/%Y')} — {nome_empresa} ({cnpj_empresa})"
 
+def _log_seguro(nivel, mensagem, periodo=None, detalhe=None):
+    # log completo (task #16) -- melhor-esforco, mesmo padrao de app.py/
+    # 2_Revisao_Correcao.py.
+    try:
+        db.registrar_evento(conn, "arquivar_recuperar", nivel, mensagem, empresa_codigo=cod_empresa,
+                             periodo=periodo, usuario=usuario, detalhe=detalhe)
+    except Exception:
+        pass
+
+
 col_arq, col_rec = st.columns(2)
 
 with col_arq:
@@ -66,9 +76,19 @@ with col_arq:
         )
         if escolhidos and st.button("📦 Arquivar selecionado(s)", type="primary"):
             total = 0
+            erros = []
             for p in escolhidos:
-                total += db.arquivar_periodo(conn, cod_empresa, p)
-            st.success(f"{total} lançamento(s) arquivado(s) em {len(escolhidos)} período(s).")
+                try:
+                    total += db.arquivar_periodo(conn, cod_empresa, p)
+                except Exception as exc:
+                    erros.append((p, str(exc)))
+                    _log_seguro("ERRO", "Falha ao arquivar período", periodo=p, detalhe=str(exc))
+            if total:
+                _log_seguro("INFO", f"{total} lançamento(s) arquivado(s) em {len(escolhidos) - len(erros)} período(s)")
+                st.success(f"{total} lançamento(s) arquivado(s) em {len(escolhidos) - len(erros)} período(s).")
+            if erros:
+                st.error(f"{len(erros)} período(s) NÃO foram arquivados (erro no banco) — ver log de eventos: "
+                         + "; ".join(f"{p.strftime('%m/%Y')}: {e}" for p, e in erros))
             st.rerun()
 
 with col_rec:
@@ -86,7 +106,17 @@ with col_rec:
         )
         if escolhidos_r and st.button("♻️ Recuperar selecionado(s)", type="primary"):
             total = 0
+            erros = []
             for p in escolhidos_r:
-                total += db.recuperar_periodo(conn, cod_empresa, p)
-            st.success(f"{total} lançamento(s) recuperado(s) em {len(escolhidos_r)} período(s).")
+                try:
+                    total += db.recuperar_periodo(conn, cod_empresa, p)
+                except Exception as exc:
+                    erros.append((p, str(exc)))
+                    _log_seguro("ERRO", "Falha ao recuperar período", periodo=p, detalhe=str(exc))
+            if total:
+                _log_seguro("INFO", f"{total} lançamento(s) recuperado(s) em {len(escolhidos_r) - len(erros)} período(s)")
+                st.success(f"{total} lançamento(s) recuperado(s) em {len(escolhidos_r) - len(erros)} período(s).")
+            if erros:
+                st.error(f"{len(erros)} período(s) NÃO foram recuperados (erro no banco) — ver log de eventos: "
+                         + "; ".join(f"{p.strftime('%m/%Y')}: {e}" for p, e in erros))
             st.rerun()

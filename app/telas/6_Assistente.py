@@ -42,6 +42,7 @@ from auth import usuario_atual  # noqa: E402
 from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS  # noqa: E402
 import chat_egc  # noqa: E402
 import consultas_chat  # noqa: E402
+import db  # noqa: E402
 
 NOME_POR_COD = {cod: nome for cod, nome, _cnpj in EMPRESAS_FIXAS}
 EMPRESAS_CODIGOS = [cod for cod, _nome, _cnpj in EMPRESAS_FIXAS]
@@ -157,10 +158,20 @@ with col_chat:
 
     if st.session_state.assistente_mensagens and st.session_state.assistente_mensagens[-1]["role"] == "user":
         with st.spinner("Consultando..."):
-            system_prompt = chat_egc.montar_system_prompt(usuario, EMPRESAS_CODIGOS)
-            r = chat_egc.responder(
-                client, conn, st.session_state.assistente_mensagens, system_prompt, EMPRESAS_CODIGOS,
-            )
+            system_prompt = chat_egc.montar_system_prompt(usuario, EMPRESAS_CODIGOS, conn=conn)
+            try:
+                r = chat_egc.responder(
+                    client, conn, st.session_state.assistente_mensagens, system_prompt, EMPRESAS_CODIGOS,
+                )
+            except Exception as exc:
+                # log completo (task #16) -- falha na chamada da API (rede, rate
+                # limit, resposta inesperada) nao pode travar a tela sem rastro.
+                try:
+                    db.registrar_evento(conn, "chat", "ERRO", "Falha ao chamar o assistente (API)",
+                                         usuario=usuario, detalhe=str(exc))
+                except Exception:
+                    pass
+                r = {"texto": f"Não consegui responder agora (erro na API): {exc}", "ferramentas_usadas": []}
         st.session_state.assistente_mensagens.append({"role": "assistant", "content": r["texto"]})
         if r["ferramentas_usadas"]:
             st.session_state.assistente_ultima_ferramenta = r["ferramentas_usadas"][-1]

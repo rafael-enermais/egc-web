@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import consultas_chat  # noqa: E402
 import chat_egc  # noqa: E402
+import db  # noqa: E402
 
 FALHAS = []
 
@@ -56,6 +57,41 @@ def test_montar_system_prompt_inclui_data_usuario_empresas():
     checar("teste@enermais.com.br" in p, "montar_system_prompt -- usuario logado aparece")
     checar("ENERGIA" in p and "SMG" in p, "montar_system_prompt -- codigos de empresa aparecem")
     checar("nunca invente" in p.lower(), "montar_system_prompt -- regra anti-invencao presente")
+
+
+def test_montar_system_prompt_sem_conn_nao_traz_contexto_fiscal():
+    # conn=None (default, mesma chamada que todos os testes acima ja
+    # usavam) -- comportamento identico a antes desta mudanca, sem quebrar
+    # nada que ja chamava esta funcao.
+    p = chat_egc.montar_system_prompt("teste@enermais.com.br", ["ENERGIA"], hoje=datetime.date(2026, 9, 22))
+    checar("CONHECIMENTO DE REFERENCIA" not in p, "montar_system_prompt -- sem conn, nenhum bloco de contexto fiscal")
+
+
+def test_montar_system_prompt_com_conn_injeta_contexto_fiscal():
+    linhas = [
+        {"chave": "REFORMA_TRIB_CRONOGRAMA", "tema": "reforma_tributaria",
+         "titulo": "Cronograma da Reforma Tributaria", "conteudo": "teste ate 2033...",
+         "fonte": "x", "atualizado_em": None},
+    ]
+    with patch.object(db, "listar_contexto_fiscal", return_value=linhas) as m:
+        p = chat_egc.montar_system_prompt("teste@enermais.com.br", ["ENERGIA"], conn="fake_conn",
+                                           hoje=datetime.date(2026, 9, 22))
+    checar(m.call_count == 1, "montar_system_prompt -- com conn, chama db.listar_contexto_fiscal 1 vez")
+    checar("CONHECIMENTO DE REFERENCIA" in p, "montar_system_prompt -- com conn e linhas, bloco aparece")
+    checar("Cronograma da Reforma Tributaria" in p and "teste ate 2033..." in p,
+           "montar_system_prompt -- titulo e conteudo curado aparecem no prompt")
+    checar("nao e' dado" in p.lower() or "nao e dado" in p.lower(),
+           "montar_system_prompt -- bloco deixa claro que nao e' dado de BP/DRE (nao afrouxa REGRA CRITICA)")
+
+
+def test_montar_system_prompt_falha_ao_buscar_contexto_nao_quebra_prompt():
+    # banco fora do ar / tabela ainda nao existe -- so' pula o bloco, o
+    # resto do prompt (data/usuario/empresas/REGRA CRITICA) continua indo.
+    with patch.object(db, "listar_contexto_fiscal", side_effect=Exception("relation does not exist")):
+        p = chat_egc.montar_system_prompt("teste@enermais.com.br", ["ENERGIA"], conn="fake_conn",
+                                           hoje=datetime.date(2026, 9, 22))
+    checar("CONHECIMENTO DE REFERENCIA" not in p, "montar_system_prompt -- falha ao buscar contexto, bloco omitido")
+    checar("nunca invente" in p.lower(), "montar_system_prompt -- resto do prompt intacto mesmo com falha no contexto")
 
 
 def test_executar_ferramenta_desconhecida_nao_quebra():
@@ -156,6 +192,9 @@ def test_responder_mensagens_api_ignora_tool_turns_antigos():
 
 if __name__ == "__main__":
     test_montar_system_prompt_inclui_data_usuario_empresas()
+    test_montar_system_prompt_sem_conn_nao_traz_contexto_fiscal()
+    test_montar_system_prompt_com_conn_injeta_contexto_fiscal()
+    test_montar_system_prompt_falha_ao_buscar_contexto_nao_quebra_prompt()
     test_executar_ferramenta_desconhecida_nao_quebra()
     test_responder_sem_tool_use_devolve_texto_direto()
     test_responder_com_1_chamada_de_ferramenta()
@@ -166,5 +205,5 @@ if __name__ == "__main__":
     if FALHAS:
         print(f"{len(FALHAS)} FALHA(S)")
         sys.exit(1)
-    print("17/17 verificacoes passaram")
+    print(f"todas as verificacoes passaram ({24} no total)")
     sys.exit(0)
