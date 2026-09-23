@@ -73,7 +73,11 @@ def run():
         assert len(at.dataframe) >= 1, "esperava a tabela de 'Consulta rapida' (dashboard) renderizada mesmo sem chat"
         tabela_rapida = at.dataframe[0].value
         assert list(tabela_rapida["conta"]) == ["CLIENTES"], f"tabela rapida nao bateu: {tabela_rapida}"
-        assert tabela_rapida["valor"].iloc[0] == 1000.50, "consulta rapida -- Decimal convertido pra float certo"
+        # Fix 23/09/2026 (achado do Rafael): "valor" agora vem pre-formatado
+        # em BR (formatacao.moeda_br), nao mais float cru -- a conversao
+        # Decimal->float continua acontecendo antes (consultas_chat.py),
+        # so' a EXIBICAO virou texto.
+        assert tabela_rapida["valor"].iloc[0] == "R$ 1.000,50", f"consulta rápida -- formatação BR errada: {tabela_rapida['valor'].iloc[0]!r}"
         print("Cenario 1 OK -- dashboard funciona, chat desabilitado com aviso, sem excecao")
 
         # ── Cenario 2: COM secret + client Anthropic mockado ──────────

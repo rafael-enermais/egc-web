@@ -30,6 +30,24 @@ def checar_fechamento_bp(bp_rows: list) -> tuple[float | None, float | None]:
     return total_ativo, total_passivo
 
 
+def montar_detalhe_correcoes(alteracoes: list[tuple[str, float, float]]) -> str:
+    """
+    Monta o texto de 'detalhe' pro log de eventos (egc.eventos_sistema) de
+    um lote de correções manuais de 1 combinação empresa+período+tipo --
+    "CONTA: R$ x,xx → R$ y,yy" separado por "; ". Usado por
+    Revisão/Correção (23/09/2026, achado real do Rafael testando ao vivo:
+    editou uma conta pra testar e depois não lembrava qual foi -- o log
+    até então só contava quantas contas mudaram, nunca dizia QUAL).
+
+    alteracoes: lista de (conta, valor_antigo, valor_novo). Import de
+    formatacao.moeda_br é local (dentro da função) pra evitar import
+    circular no topo do módulo -- formatacao.py já importa
+    validacoes.formatar_br no topo dele.
+    """
+    from formatacao import moeda_br
+    return "; ".join(f"{conta}: {moeda_br(antigo)} → {moeda_br(novo)}" for conta, antigo, novo in alteracoes)
+
+
 def formatar_br(v: float) -> str:
     """1234.5 -> "1.234,50" (mesmo estilo BR usado no resto do app)."""
     return f"{v:,.2f}".translate(str.maketrans({",": "X", ".": ","})).replace("X", ".")

@@ -96,6 +96,46 @@ def visao_especifica(pivot: pd.DataFrame, cods_selecionados: list[str], nome_por
     return saida
 
 
+def resumir_completude_por_periodo(completude: pd.DataFrame) -> pd.DataFrame:
+    """
+    Resume calcular_completude_grupo (1 linha por empresa x periodo) pra
+    1 linha por periodo -- pedido do Rafael (23/09/2026, 2a leva de
+    feedback ao vivo): a versao anterior do painel de pendencias tinha 2
+    tabelas parecidas (pendentes + matriz completa no expander), "parece
+    repetida". Esta funcao junta tudo numa visao MACRO: por periodo, quantas
+    empresas estao completas e quais ainda faltam -- suficiente pra saber o
+    que falta sem precisar abrir nada.
+
+    completude: saida de calcular_completude_grupo (colunas Período,
+    Empresa, empresa_codigo, tem_bp, tem_dre, Status).
+
+    Retorna 1 linha por periodo (mais recente primeiro), colunas: Período,
+    Status ("✅ Completo (N/N)" ou "⚠️ Incompleto (x/N)"), Empresas
+    pendentes (nomes separados por vírgula, "—" se completo). DataFrame
+    vazio (mesmas colunas) se completude vier vazio.
+    """
+    colunas = ["Período", "Status", "Empresas pendentes"]
+    if completude.empty:
+        return pd.DataFrame(columns=colunas)
+
+    linhas = []
+    for periodo, grupo in completude.groupby("Período", sort=False):
+        total = len(grupo)
+        completas = grupo[grupo["Status"] == "✅ Completo"]
+        pendentes = grupo[grupo["Status"] != "✅ Completo"]
+        n_completas = len(completas)
+        if pendentes.empty:
+            status = f"✅ Completo ({n_completas}/{total})"
+            nomes_pendentes = "—"
+        else:
+            status = f"⚠️ Incompleto ({n_completas}/{total})"
+            nomes_pendentes = ", ".join(pendentes["Empresa"])
+        linhas.append({"Período": periodo, "Status": status, "Empresas pendentes": nomes_pendentes})
+
+    saida = pd.DataFrame(linhas, columns=colunas)
+    return saida.sort_values("Período", ascending=False).reset_index(drop=True)
+
+
 def calcular_completude_grupo(
     periodos: list, lancs_bp: list[dict], lancs_dre: list[dict],
     empresas: list[tuple[str, str, str]],

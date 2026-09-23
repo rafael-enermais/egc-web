@@ -224,6 +224,50 @@ def test_calcular_completude_grupo_sem_lancamento_nenhum_marca_tudo_faltando():
     print("OK: calcular_completude_grupo — sem lançamento nenhum, todas as empresas ficam Faltando")
 
 
+# ─────────────── resumir_completude_por_periodo (2a leva, 23/09/2026) ────
+
+def test_resumir_completude_por_periodo_agrega_completo_e_incompleto():
+    periodos = [datetime.date(2026, 5, 31), datetime.date(2026, 6, 30)]
+    completude = visao_grupo.calcular_completude_grupo(
+        periodos, MOCK_LANCS_COMPLETUDE_BP, MOCK_LANCS_COMPLETUDE_DRE, EMPRESAS_MOCK,
+    )
+    resumo = visao_grupo.resumir_completude_por_periodo(completude)
+    assert list(resumo.columns) == ["Período", "Status", "Empresas pendentes"]
+    assert len(resumo) == 2, f"esperava 1 linha por período (2), veio {len(resumo)}"
+    # mais recente primeiro
+    assert list(resumo["Período"]) == [datetime.date(2026, 6, 30), datetime.date(2026, 5, 31)]
+
+    linha_mai = resumo[resumo["Período"] == datetime.date(2026, 5, 31)].iloc[0]
+    assert linha_mai["Status"] == "⚠️ Incompleto (1/2)"  # ENERGIA completo, SMG só BP
+    assert linha_mai["Empresas pendentes"] == "SMG Solucoes Ltda"
+
+    linha_jun = resumo[resumo["Período"] == datetime.date(2026, 6, 30)].iloc[0]
+    assert linha_jun["Status"] == "⚠️ Incompleto (0/2)"  # nenhuma completa em 06/2026
+    assert "Enermais Energia Ltda" in linha_jun["Empresas pendentes"] and "SMG Solucoes Ltda" in linha_jun["Empresas pendentes"]
+    print("OK: resumir_completude_por_periodo — agrega por período, status e lista de pendentes certos")
+
+
+def test_resumir_completude_por_periodo_todas_completas_sem_pendentes():
+    periodos = [datetime.date(2026, 5, 31)]
+    completude = visao_grupo.calcular_completude_grupo(
+        periodos, MOCK_LANCS_COMPLETUDE_BP, MOCK_LANCS_COMPLETUDE_BP,  # BP nos 2 -- "DRE" tambem completo aqui de proposito
+        EMPRESAS_MOCK,
+    )
+    resumo = visao_grupo.resumir_completude_por_periodo(completude)
+    assert len(resumo) == 1
+    assert resumo.iloc[0]["Status"] == "✅ Completo (2/2)"
+    assert resumo.iloc[0]["Empresas pendentes"] == "—"
+    print("OK: resumir_completude_por_periodo — período 100% completo não lista pendente nenhum")
+
+
+def test_resumir_completude_por_periodo_vazio_devolve_vazio():
+    vazio = visao_grupo.calcular_completude_grupo([], [], [], EMPRESAS_MOCK)
+    resumo = visao_grupo.resumir_completude_por_periodo(vazio)
+    assert len(resumo) == 0
+    assert list(resumo.columns) == ["Período", "Status", "Empresas pendentes"]
+    print("OK: resumir_completude_por_periodo — completude vazia devolve DataFrame vazio com colunas certas")
+
+
 if __name__ == "__main__":
     testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
     falhas = 0
