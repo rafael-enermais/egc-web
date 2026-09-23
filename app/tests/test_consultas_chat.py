@@ -118,6 +118,73 @@ def test_consultar_periodos():
         checar(r["periodos_por_empresa"]["SMG"] == ["2026-06"], "consultar_periodos -- por empresa, independente")
 
 
+# ── Erik.AI (23/09/2026) -- consultar_indicadores / consultar_completude ──
+
+LANCS_BP_1EMPRESA = [
+    {"periodo": _p(2026, 6), "grupo": "ATIVO CIRCULANTE", "conta": "TOTAL CIRCULANTE ATIVO", "valor": Decimal("200000.00")},
+    {"periodo": _p(2026, 6), "grupo": "PASSIVO CIRCULANTE", "conta": "TOTAL CIRCULANTE PASSIVO", "valor": Decimal("100000.00")},
+    {"periodo": _p(2026, 6), "grupo": "PASSIVO NAO CIRCULANTE", "conta": "TOTAL NAO CIRCULANTE PASSIVO", "valor": Decimal("50000.00")},
+    {"periodo": _p(2026, 6), "grupo": "TOTAL", "conta": "TOTAL DO ATIVO", "valor": Decimal("1000000.00")},
+    {"periodo": _p(2026, 6), "grupo": "PATRIMONIO LIQUIDO", "conta": "TOTAL PATRIMONIO LIQUIDO", "valor": Decimal("850000.00")},
+]
+LANCS_DRE_1EMPRESA = [
+    {"periodo": _p(2026, 6), "grupo": "RESULTADO", "conta": "RECEITA OPERACIONAL LIQUIDA", "valor": Decimal("300000.00")},
+    {"periodo": _p(2026, 6), "grupo": "RESULTADO", "conta": "LUCRO BRUTO", "valor": Decimal("110000.00")},
+    {"periodo": _p(2026, 6), "grupo": "RESULTADO", "conta": "LUCRO LIQUIDO DO EXERCICIO", "valor": Decimal("50000.00")},
+]
+
+
+def test_consultar_indicadores_1_empresa_usa_historico_direto():
+    with patch.object(db, "listar_historico_grupo", side_effect=[LANCS_BP_1EMPRESA, LANCS_DRE_1EMPRESA]) as m_hist,          patch.object(db, "listar_periodos_grupo") as m_grupo:
+        r = cc.consultar_indicadores(conn=None, empresas_codigos=["SMG"])
+        checar("erro" not in r, "consultar_indicadores 1 empresa -- sem erro")
+        checar(r["periodo"] == "2026-06", "consultar_indicadores 1 empresa -- periodo mais recente certo")
+        checar(r["indicadores"]["Liquidez Corrente"] == 2.0, "consultar_indicadores 1 empresa -- Liquidez Corrente calculada certa (200k/100k)")
+        checar(isinstance(r["indicadores"]["Liquidez Corrente"], float), "consultar_indicadores -- valor sai como float puro")
+        checar(m_hist.call_count == 2, "consultar_indicadores 1 empresa -- usa listar_historico_grupo (caminho direto)")
+        checar(not m_grupo.called, "consultar_indicadores 1 empresa -- NAO usa o caminho multi-empresa")
+        checar(json.dumps(r), "consultar_indicadores 1 empresa -- saida e' JSON-serializavel")
+
+
+def test_consultar_indicadores_multi_empresa_usa_caminho_do_grupo():
+    with patch.object(db, "listar_periodos_grupo", return_value=[_p(2026, 6)]) as m_periodos,          patch.object(db, "listar_lancamentos_grupo_periodos", side_effect=[LANCS_BP_1EMPRESA, LANCS_DRE_1EMPRESA]) as m_lancs:
+        r = cc.consultar_indicadores(conn=None, empresas_codigos=["ENERGIA", "SMG"])
+        checar("erro" not in r, "consultar_indicadores multi-empresa -- sem erro")
+        checar(m_periodos.called and m_lancs.call_count == 2,
+               "consultar_indicadores multi-empresa -- usa listar_periodos_grupo + listar_lancamentos_grupo_periodos (mesmo caminho do KPI consolidado da Início)")
+        checar(json.dumps(r), "consultar_indicadores multi-empresa -- saida e' JSON-serializavel")
+
+
+def test_consultar_indicadores_sem_dado_devolve_erro():
+    with patch.object(db, "listar_historico_grupo", return_value=[]):
+        r = cc.consultar_indicadores(conn=None, empresas_codigos=["SMG"])
+        checar("erro" in r, "consultar_indicadores -- sem BP/DRE nenhum devolve erro, nao excecao")
+
+
+def test_consultar_completude():
+    empresas = ["ENERGIA", "SMG"]
+    lancs_bp = [{"empresa_codigo": "ENERGIA", "periodo": _p(2026, 6)}]  # so' ENERGIA tem BP -- SMG falta
+    lancs_dre = [
+        {"empresa_codigo": "ENERGIA", "periodo": _p(2026, 6)},
+        {"empresa_codigo": "SMG", "periodo": _p(2026, 6)},
+    ]
+    with patch.object(db, "listar_periodos_grupo", return_value=[_p(2026, 6)]),          patch.object(db, "listar_lancamentos_grupo_periodos", side_effect=[lancs_bp, lancs_dre]):
+        r = cc.consultar_completude(conn=None, empresas_codigos=empresas)
+        checar(r["empresas_incluidas"] == empresas, "consultar_completude -- ecoa as empresas checadas")
+        checar(len(r["completude_por_periodo"]) == 1, "consultar_completude -- 1 periodo no resumo")
+        linha = r["completude_por_periodo"][0]
+        checar(linha["Período"] == "2026-06", "consultar_completude -- Período formatado AAAA-MM")
+        checar("Incompleto" in linha["Status"], "consultar_completude -- SMG sem BP marca período como incompleto")
+        checar("SMG" in linha["Empresas pendentes"], "consultar_completude -- SMG aparece como pendente")
+        checar(json.dumps(r), "consultar_completude -- saida e' JSON-serializavel")
+
+
+def test_consultar_completude_sem_periodo_nenhum():
+    with patch.object(db, "listar_periodos_grupo", return_value=[]),          patch.object(db, "listar_lancamentos_grupo_periodos", return_value=[]):
+        r = cc.consultar_completude(conn=None, empresas_codigos=["ENERGIA"])
+        checar(r["completude_por_periodo"] == [], "consultar_completude -- sem período nenhum devolve lista vazia, nao excecao")
+
+
 if __name__ == "__main__":
     test_resolver_periodo_texto_bate()
     test_resolver_periodo_vazio_pega_mais_recente()
@@ -128,9 +195,14 @@ if __name__ == "__main__":
     test_consultar_visao_grupo_macro()
     test_consultar_visao_grupo_especifica()
     test_consultar_periodos()
+    test_consultar_indicadores_1_empresa_usa_historico_direto()
+    test_consultar_indicadores_multi_empresa_usa_caminho_do_grupo()
+    test_consultar_indicadores_sem_dado_devolve_erro()
+    test_consultar_completude()
+    test_consultar_completude_sem_periodo_nenhum()
     print()
     if FALHAS:
         print(f"{len(FALHAS)} FALHA(S)")
         sys.exit(1)
-    print("9/9 testes passaram")
+    print("14/14 testes passaram")
     sys.exit(0)

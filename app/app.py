@@ -312,7 +312,10 @@ paginas = [
     # (egc.projecoes/projecoes_ajustes) preservados, nao apagados -- ver
     # app/_arquivados/5_Dashboard_Projecao.py pra reativar se decidir
     # retomar com mais historico acumulado.
-    st.Page("telas/6_Assistente.py", title="Assistente", icon="🤖"),
+    # Nome do bot: "Erik.AI" (pedido do Rafael 23/09/2026) -- url_path
+    # fixado em "Assistente" (era o default implícito antes) pra NÃO
+    # quebrar o link enermais04.streamlit.app/Assistente já em uso.
+    st.Page("telas/6_Assistente.py", title="Erik.AI", icon="🤖", url_path="Assistente"),
 ]
 pg = st.navigation(paginas)
 pg.run()
