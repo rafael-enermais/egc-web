@@ -99,6 +99,22 @@ def test_executar_ferramenta_desconhecida_nao_quebra():
     checar(r == {"erro": "ferramenta desconhecida: nao_existe"}, "executar_ferramenta -- nome desconhecido devolve erro, nao excecao")
 
 
+def test_executar_ferramenta_dispatch_indicadores_e_completude():
+    # Erik.AI (23/09/2026) -- confirma que as 2 ferramentas novas estao
+    # ligadas no dispatcher (nao so' na lista TOOLS/descricao), com o
+    # default de "sem empresas informadas -> todas as do grupo" igual as
+    # outras 3 ferramentas ja tinham.
+    with patch.object(consultas_chat, "consultar_indicadores", return_value={"ok": True}) as m_ind:
+        r = chat_egc.executar_ferramenta(conn=None, nome="consultar_indicadores", entrada={}, empresas_codigos=["ENERGIA", "SMG"])
+        checar(r == {"ok": True}, "executar_ferramenta -- consultar_indicadores despachado certo")
+        checar(m_ind.call_args[0][1] == ["ENERGIA", "SMG"], "executar_ferramenta -- consultar_indicadores usa default (todas as empresas do grupo) quando 'empresas' nao vem na entrada")
+
+    with patch.object(consultas_chat, "consultar_completude", return_value={"ok": True}) as m_comp:
+        r = chat_egc.executar_ferramenta(conn=None, nome="consultar_completude", entrada={"empresas": ["SMG"]}, empresas_codigos=["ENERGIA", "SMG"])
+        checar(r == {"ok": True}, "executar_ferramenta -- consultar_completude despachado certo")
+        checar(m_comp.call_args[0][1] == ["SMG"], "executar_ferramenta -- consultar_completude respeita 'empresas' explicita na entrada")
+
+
 def test_responder_sem_tool_use_devolve_texto_direto():
     client = SimpleNamespace(messages=SimpleNamespace(
         create=lambda **kw: _resposta("end_turn", [_texto("Ola! Como posso ajudar?")])
@@ -196,6 +212,7 @@ if __name__ == "__main__":
     test_montar_system_prompt_com_conn_injeta_contexto_fiscal()
     test_montar_system_prompt_falha_ao_buscar_contexto_nao_quebra_prompt()
     test_executar_ferramenta_desconhecida_nao_quebra()
+    test_executar_ferramenta_dispatch_indicadores_e_completude()
     test_responder_sem_tool_use_devolve_texto_direto()
     test_responder_com_1_chamada_de_ferramenta()
     test_responder_com_2_chamadas_em_sequencia()
@@ -205,5 +222,5 @@ if __name__ == "__main__":
     if FALHAS:
         print(f"{len(FALHAS)} FALHA(S)")
         sys.exit(1)
-    print(f"todas as verificacoes passaram ({24} no total)")
+    print(f"todas as verificacoes passaram ({26} no total)")
     sys.exit(0)

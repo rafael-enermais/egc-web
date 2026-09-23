@@ -212,6 +212,94 @@ def run():
         assert "%" in tabela_grupo["% ENERGIA"].iloc[0],             f"coluna de percentual nao formatou como %: {tabela_grupo['% ENERGIA'].iloc[0]!r}"
         print("Cenario 4 OK -- tool_use consultar_visao_grupo nao quebra mais a pagina, formata dinheiro e % pelo nome da coluna")
 
+    # ── Cenario 5: Erik.AI -- tool_use consultar_indicadores ───────────
+    # Feature nova (23/09/2026, pedido do Rafael: "ele tem q conseguir
+    # fazer insight com o banco de dados") -- confirma que a pagina nao
+    # quebra e que o painel "Ultima consulta do chat" mostra a tabela
+    # Indicador/Valor formatada em BR (x/pct/R$ pelo nome do indicador).
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"),          patch.object(conexao, "get_conn", return_value=None),          patch.object(db, "listar_periodos", return_value=[datetime.date(2026, 6, 30)]),          patch.object(db, "listar_lancamentos", return_value=MOCK_LANCAMENTOS_SMG_BP),          patch.object(db, "listar_historico_grupo", side_effect=lambda conn, cod, tipo, status="ATIVO": (
+             [{"periodo": datetime.date(2026, 6, 30), "grupo": "ATIVO CIRCULANTE", "conta": "TOTAL CIRCULANTE ATIVO", "valor": Decimal("200000.00")},
+              {"periodo": datetime.date(2026, 6, 30), "grupo": "PASSIVO CIRCULANTE", "conta": "TOTAL CIRCULANTE PASSIVO", "valor": Decimal("100000.00")},
+              {"periodo": datetime.date(2026, 6, 30), "grupo": "PASSIVO NAO CIRCULANTE", "conta": "TOTAL NAO CIRCULANTE PASSIVO", "valor": Decimal("50000.00")},
+              {"periodo": datetime.date(2026, 6, 30), "grupo": "TOTAL", "conta": "TOTAL DO ATIVO", "valor": Decimal("1000000.00")},
+              {"periodo": datetime.date(2026, 6, 30), "grupo": "PATRIMONIO LIQUIDO", "conta": "TOTAL PATRIMONIO LIQUIDO", "valor": Decimal("850000.00")}]
+             if tipo == "BP" else
+             [{"periodo": datetime.date(2026, 6, 30), "grupo": "RESULTADO", "conta": "RECEITA OPERACIONAL LIQUIDA", "valor": Decimal("300000.00")},
+              {"periodo": datetime.date(2026, 6, 30), "grupo": "RESULTADO", "conta": "LUCRO BRUTO", "valor": Decimal("110000.00")},
+              {"periodo": datetime.date(2026, 6, 30), "grupo": "RESULTADO", "conta": "LUCRO LIQUIDO DO EXERCICIO", "valor": Decimal("50000.00")}]
+         )):
+
+        chamadas5 = {"n": 0}
+
+        def fake_create_indicadores(**kw):
+            chamadas5["n"] += 1
+            if chamadas5["n"] == 1:
+                tool_use = SimpleNamespace(
+                    type="tool_use", id="tu_3", name="consultar_indicadores", input={"empresas": ["SMG"]},
+                )
+                return SimpleNamespace(stop_reason="tool_use", content=[tool_use])
+            return SimpleNamespace(stop_reason="end_turn", content=[_texto("A liquidez corrente da SMG e' 2,00x.")])
+
+        client_mock5 = SimpleNamespace(messages=SimpleNamespace(create=fake_create_indicadores))
+
+        at5 = AppTest.from_file(PAGE)
+        at5.secrets["ANTHROPIC_API_KEY"] = "sk-fake-nao-usada-de-verdade"
+        with patch("anthropic.Anthropic", return_value=client_mock5):
+            at5.run(timeout=30)
+            at5.chat_input[0].set_value("como esta a liquidez da SMG?").run(timeout=30)
+            print("Depois de perguntar (tool_use indicadores), exception:", at5.exception)
+            assert not at5.exception, f"FALHOU (consultar_indicadores): {at5.exception[0] if at5.exception else None}"
+
+        ultima5 = at5.session_state["assistente_ultima_ferramenta"]
+        checar_val = ultima5["resultado"]["indicadores"]["Liquidez Corrente"]
+        assert abs(checar_val - 2.0) < 0.001, f"esperava Liquidez Corrente=2.0, veio {checar_val!r}"
+        tabela_ind = next(
+            (df.value for df in at5.dataframe if "Indicador" in df.value.columns and "Valor" in df.value.columns),
+            None,
+        )
+        assert tabela_ind is not None, "esperava a tabela Indicador/Valor no painel 'Ultima consulta do chat'"
+        linha_liq = tabela_ind[tabela_ind["Indicador"] == "Liquidez Corrente"]
+        assert linha_liq["Valor"].iloc[0] == "2,00x", f"Liquidez Corrente nao formatou como 'x' BR: {linha_liq['Valor'].iloc[0]!r}"
+        print("Cenario 5 OK -- tool_use consultar_indicadores funciona, tabela Indicador/Valor formatada em BR")
+
+    # ── Cenario 6: Erik.AI -- tool_use consultar_completude ────────────
+    # Responde direto a pergunta real que gerou esta feature: "quais PDFs
+    # faltam pra completar todos os CNPJs?".
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"),          patch.object(conexao, "get_conn", return_value=None),          patch.object(db, "listar_periodos", return_value=[datetime.date(2026, 6, 30)]),          patch.object(db, "listar_lancamentos", return_value=MOCK_LANCAMENTOS_SMG_BP),          patch.object(db, "listar_periodos_grupo", return_value=[datetime.date(2026, 6, 30)]),          patch.object(db, "listar_lancamentos_grupo_periodos", side_effect=[
+             [{"empresa_codigo": "ENERGIA", "periodo": datetime.date(2026, 6, 30)}],  # so' BP da Energia
+             [{"empresa_codigo": "ENERGIA", "periodo": datetime.date(2026, 6, 30)},
+              {"empresa_codigo": "SMG", "periodo": datetime.date(2026, 6, 30)}],  # DRE das 2
+         ]):
+
+        chamadas6 = {"n": 0}
+
+        def fake_create_completude(**kw):
+            chamadas6["n"] += 1
+            if chamadas6["n"] == 1:
+                tool_use = SimpleNamespace(
+                    type="tool_use", id="tu_4", name="consultar_completude", input={},
+                )
+                return SimpleNamespace(stop_reason="tool_use", content=[tool_use])
+            return SimpleNamespace(stop_reason="end_turn", content=[_texto("Falta o BP da SMG em 06/2026.")])
+
+        client_mock6 = SimpleNamespace(messages=SimpleNamespace(create=fake_create_completude))
+
+        at6 = AppTest.from_file(PAGE)
+        at6.secrets["ANTHROPIC_API_KEY"] = "sk-fake-nao-usada-de-verdade"
+        with patch("anthropic.Anthropic", return_value=client_mock6):
+            at6.run(timeout=30)
+            at6.chat_input[0].set_value("quais PDFs faltam pra completar todos os CNPJs?").run(timeout=30)
+            print("Depois de perguntar (tool_use completude), exception:", at6.exception)
+            assert not at6.exception, f"FALHOU (consultar_completude): {at6.exception[0] if at6.exception else None}"
+
+        tabela_comp = next(
+            (df.value for df in at6.dataframe if "Status" in df.value.columns and "Empresas pendentes" in df.value.columns),
+            None,
+        )
+        assert tabela_comp is not None, "esperava a tabela de completude no painel 'Ultima consulta do chat'"
+        assert "SMG" in tabela_comp["Empresas pendentes"].iloc[0], f"esperava SMG como pendente: {tabela_comp}"
+        print("Cenario 6 OK -- tool_use consultar_completude responde a pergunta real ('quais PDFs faltam')")
+
     print("\nTODOS OS CENARIOS OK (dashboard sem chat, chat com client mockado)")
 
 

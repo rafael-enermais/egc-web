@@ -102,6 +102,51 @@ TOOLS = [
             "required": ["tipo"],
         },
     },
+    {
+        "name": "consultar_indicadores",
+        "description": (
+            "Indicadores contabeis (Liquidez Corrente, Capital de Giro, Endividamento "
+            "Geral, Margem Bruta, Margem Liquida, ROA, ROE) no periodo mais recente "
+            "disponivel. 1 empresa em 'empresas' -> indicadores so' dela; 2+ empresas "
+            "(ou vazio/omitido, que usa todas as 6) -> indicadores CONSOLIDADOS do "
+            "grupo (soma antes de calcular os indices). Use pra perguntas tipo "
+            "'como esta a liquidez da SMG', 'a margem do grupo melhorou ou piorou', "
+            "'qual o endividamento geral' -- nao serve pra pegar 1 conta especifica "
+            "(pra isso, consultar_bp_dre)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "empresas": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Codigos das empresas -- vazio/omitido ou 2+ calcula consolidado do grupo; 1 codigo calcula so' dessa empresa.",
+                },
+            },
+        },
+    },
+    {
+        "name": "consultar_completude",
+        "description": (
+            "Pra cada periodo (mes/ano) com QUALQUER lancamento ativo entre as "
+            "empresas escolhidas, mostra se esta' Completo (BP+DRE de TODAS as "
+            "empresas) ou quais empresas ainda faltam. Use pra perguntas tipo "
+            "'quais periodos/empresas estao faltando dado', 'o que falta importar "
+            "pra fechar o grupo', 'esta tudo completo?' -- NAO rastreia PDF/upload em "
+            "si, so' ausencia de lancamento no banco (na pratica o mesmo sinal: PDF "
+            "nao importado ou importacao falhou)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "empresas": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Codigos das empresas a checar -- vazio ou omitido checa todas as 6.",
+                },
+            },
+        },
+    },
 ]
 
 
@@ -150,9 +195,10 @@ def montar_system_prompt(
                 "consultar_visao_grupo:\n" + texto
             )
     return (
-        "Voce e' o Assistente EGC da EnerMais -- ajuda a contadora e a gerencia a "
-        "consultar Balanco Patrimonial (BP), DRE e a Visao Grupo (consolidado das 6 "
-        "empresas) ja importados no sistema.\n"
+        "Voce e' o Erik.AI, assistente da EnerMais -- ajuda a contadora e a gerencia a "
+        "consultar Balanco Patrimonial (BP), DRE, Visao Grupo (consolidado das 6 "
+        "empresas) e indicadores contabeis/completude de dados ja importados no "
+        "sistema.\n"
         f"Hoje e' {hoje.strftime('%d/%m/%Y')}. Use essa data como referencia pra "
         "qualquer pergunta relativa ('mes passado', 'ultimo periodo', etc) -- nunca "
         "calcule 'hoje' sozinho.\n"
@@ -166,7 +212,10 @@ def montar_system_prompt(
         "perguntarem, explique que ainda nao esta disponivel no chat): projecao/"
         "previsao futura de BP/DRE (existe um Dashboard de Projecao separado no "
         "menu, mas com pouco historico real o metodo hoje e' basico e ainda nao "
-        "esta ligado ao chat), correcao de lancamento, importacao de PDF.\n\n"
+        "esta ligado ao chat), correcao de lancamento, upload/processamento de PDF "
+        "em si (consultar_completude mostra o que falta em termos de lancamento no "
+        "banco, que e' o sinal mais proximo disso -- mas nao sabe se um PDF foi "
+        "enviado e falhou vs nunca foi enviado).\n\n"
         "Guia de escolha de ferramenta:\n"
         "- Pergunta sobre 1 empresa especifica (ex. 'qual o CLIENTES da SMG', "
         "'total do Ativo Circulante da Energia') -> consultar_bp_dre.\n"
@@ -177,7 +226,11 @@ def montar_system_prompt(
         "maio'), confirme com consultar_periodos que aquele periodo existe pra(s) "
         "empresa(s) certa(s) -- sem periodo especifico mencionado, so' chame "
         "consultar_bp_dre/consultar_visao_grupo direto (eles ja' usam o mais recente "
-        "sozinhos)."
+        "sozinhos).\n"
+        "- Pergunta sobre saude financeira/indice (liquidez, endividamento, margem, "
+        "ROA, ROE), de 1 empresa ou do grupo consolidado -> consultar_indicadores.\n"
+        "- Pergunta sobre o que falta, o que esta incompleto, quais periodos/empresas "
+        "sem dado -> consultar_completude."
         + bloco_contexto_fiscal
     )
 
@@ -195,6 +248,12 @@ def executar_ferramenta(conn, nome: str, entrada: dict, empresas_codigos: list[s
         return consultas_chat.consultar_visao_grupo(
             conn, entrada.get("tipo"), empresas, entrada.get("periodo"), entrada.get("visao", "macro")
         )
+    if nome == "consultar_indicadores":
+        empresas = entrada.get("empresas") or empresas_codigos
+        return consultas_chat.consultar_indicadores(conn, empresas)
+    if nome == "consultar_completude":
+        empresas = entrada.get("empresas") or empresas_codigos
+        return consultas_chat.consultar_completude(conn, empresas)
     return {"erro": f"ferramenta desconhecida: {nome}"}
 
 

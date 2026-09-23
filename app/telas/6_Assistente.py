@@ -48,7 +48,7 @@ import formatacao  # noqa: E402
 NOME_POR_COD = {cod: nome for cod, nome, _cnpj in EMPRESAS_FIXAS}
 EMPRESAS_CODIGOS = [cod for cod, _nome, _cnpj in EMPRESAS_FIXAS]
 
-st.title("🤖 Assistente EGC")
+st.title("🤖 Erik.AI")
 
 usuario = usuario_atual()
 sidebar_contexto(usuario)  # so' rodape -- ver nota em conexao.sidebar_contexto
@@ -144,6 +144,36 @@ with col_dash:
                     for cod, periodos in resultado["periodos_por_empresa"].items()
                 ]
                 st.dataframe(pd.DataFrame(linhas_periodos), hide_index=True, use_container_width=True)
+            elif "indicadores" in resultado:
+                # Erik.AI (23/09/2026) -- nova ferramenta consultar_indicadores.
+                # Mesmo mapeamento de formato por indicador que a Início usa
+                # (app.py, _fmt) -- x/R$/pct por coluna, nunca genérico.
+                FORMATO_INDICADOR = {
+                    "Liquidez Corrente": "x", "Capital de Giro": "R$", "Endividamento Geral": "pct",
+                    "Margem Bruta": "pct", "Margem Líquida": "pct", "ROA": "pct", "ROE": "pct",
+                }
+                st.caption(f"Período: {resultado['periodo']} · Empresas: {', '.join(resultado['empresas_incluidas'])}")
+                linhas_ind = []
+                for nome_ind, valor in resultado["indicadores"].items():
+                    fmt = FORMATO_INDICADOR.get(nome_ind, "R$")
+                    if fmt == "x":
+                        texto = formatacao.numero_br(valor, sufixo="x")
+                    elif fmt == "pct":
+                        texto = formatacao.pct_br(valor)
+                    else:
+                        texto = formatacao.moeda_br(valor)
+                    linhas_ind.append({"Indicador": nome_ind, "Valor": texto})
+                st.dataframe(pd.DataFrame(linhas_ind), hide_index=True, use_container_width=True)
+            elif "completude_por_periodo" in resultado:
+                # Erik.AI (23/09/2026) -- nova ferramenta consultar_completude,
+                # mesma tabela do painel de pendências da Início (texto puro,
+                # sem coluna numérica pra formatar).
+                if not resultado["completude_por_periodo"]:
+                    st.caption("Sem período nenhum encontrado pra essas empresas.")
+                else:
+                    st.dataframe(
+                        pd.DataFrame(resultado["completude_por_periodo"]), hide_index=True, use_container_width=True,
+                    )
             else:
                 st.caption("Sem dado pra exibir dessa consulta.")
         st.divider()

@@ -26,8 +26,12 @@ from __future__ import annotations
 import datetime
 from typing import Optional
 
+import pandas as pd
+
 import db
+import indicadores
 import visao_grupo
+from conexao import EMPRESAS_FIXAS
 
 
 def _resolver_periodo(periodos_disponiveis: list, periodo_texto: Optional[str]):
@@ -95,6 +99,83 @@ def consultar_bp_dre(conn, empresa_codigo: str, tipo: str, periodo_texto: Option
         "quantidade_contas": len(contas),
         "contas": contas,
     }
+
+
+def consultar_indicadores(conn, empresas_codigos: list[str]) -> dict:
+    """
+    Indicadores contabeis (Liquidez Corrente, Capital de Giro, Endividamento
+    Geral, Margem Bruta/Liquida, ROA, ROE) no periodo mais recente
+    disponivel -- 1 empresa isolada OU consolidado do grupo (soma das
+    empresas em empresas_codigos), dependendo de quantas vierem na lista.
+    Erik.AI, 23/09/2026 -- fecha o gap real que apareceu ao vivo (Rafael
+    perguntou "insight" sobre o banco e o chat so' sabia devolver BP/DRE
+    cru): MESMA fonte/logica das secoes "Indicadores contabeis"/"KPI
+    consolidado do grupo" da Inicio (indicadores.calcular_indicadores),
+    reaproveitada aqui sem duplicar nenhuma conta/formula.
+
+    1 empresa -> db.listar_historico_grupo (caminho mais direto). 2+
+    empresas -> db.listar_periodos_grupo + listar_lancamentos_grupo_periodos,
+    o MESMO caminho do "KPI consolidado do grupo" da Inicio -- soma direta
+    sem eliminacao, intercompany ja validado sem transacao material entre
+    as 6 empresas (decisao tomada com o Rafael, nao reaberta aqui).
+    """
+    if len(empresas_codigos) == 1:
+        cod = empresas_codigos[0]
+        hist_bp = db.listar_historico_grupo(conn, cod, "BP", status="ATIVO")
+        hist_dre = db.listar_historico_grupo(conn, cod, "DRE", status="ATIVO")
+    else:
+        periodos = db.listar_periodos_grupo(conn, empresas_codigos, status="ATIVO")
+        hist_bp = db.listar_lancamentos_grupo_periodos(conn, periodos, "BP", empresas_codigos, status="ATIVO")
+        hist_dre = db.listar_lancamentos_grupo_periodos(conn, periodos, "DRE", empresas_codigos, status="ATIVO")
+
+    tabela = indicadores.calcular_indicadores(hist_bp, hist_dre)
+    if tabela.empty:
+        return {
+            "erro": "Sem BP/DRE suficiente pra calcular indicadores pra essa(s) empresa(s) ainda.",
+            "empresas_incluidas": empresas_codigos,
+        }
+
+    periodo_atual = tabela.index.max()
+    linha = tabela.loc[periodo_atual]
+    valores = {col: (None if pd.isna(v) else float(v)) for col, v in linha.items()}
+
+    return {
+        "empresas_incluidas": empresas_codigos,
+        "periodo": periodo_atual.strftime("%Y-%m"),
+        "indicadores": valores,
+    }
+
+
+def consultar_completude(conn, empresas_codigos: list[str]) -> dict:
+    """
+    Pra cada periodo com QUALQUER lancamento ativo entre as empresas
+    escolhidas, mostra se esta' Completo (BP+DRE de todas as empresas) ou
+    quais empresas ainda faltam. Erik.AI, 23/09/2026 -- responde DIRETO a
+    pergunta real que ja apareceu ao vivo ("quais PDFs faltam pra
+    completar todos os CNPJs?"): antes so' dava pra inferir isso chamando
+    consultar_periodos empresa por empresa e comparando na mao (o que so'
+    mostra o que JA' existe, nao o que falta). MESMA fonte/logica do
+    "Painel de pendencias" da Inicio (visao_grupo.calcular_completude_grupo
+    + resumir_completude_por_periodo), reaproveitada sem duplicar.
+
+    Nao rastreia upload de PDF em si (isso continua fora de escopo -- ver
+    SYSTEM_PROMPT): mostra ausencia de LANCAMENTO ativo no banco, que na
+    pratica e' o mesmo sinal (PDF nao importado ou importacao falhou).
+    """
+    empresas_tuplas = [(cod, nome, cnpj) for cod, nome, cnpj in EMPRESAS_FIXAS if cod in empresas_codigos]
+    periodos = db.listar_periodos_grupo(conn, empresas_codigos, status="ATIVO")
+    lancs_bp = db.listar_lancamentos_grupo_periodos(conn, periodos, "BP", empresas_codigos, status="ATIVO")
+    lancs_dre = db.listar_lancamentos_grupo_periodos(conn, periodos, "DRE", empresas_codigos, status="ATIVO")
+    completude = visao_grupo.calcular_completude_grupo(periodos, lancs_bp, lancs_dre, empresas_tuplas)
+    resumo = visao_grupo.resumir_completude_por_periodo(completude)
+
+    linhas = resumo.to_dict(orient="records")
+    for linha in linhas:
+        p = linha.get("Período")
+        if hasattr(p, "strftime"):
+            linha["Período"] = p.strftime("%Y-%m")
+
+    return {"empresas_incluidas": empresas_codigos, "completude_por_periodo": linhas}
 
 
 def consultar_visao_grupo(
