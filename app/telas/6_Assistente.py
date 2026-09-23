@@ -190,14 +190,30 @@ with col_chat:
     # 23/09/2026 (feedback ao vivo): height="stretch" ficou pior -- caixa
     # nasce vazia lá em cima e cresce infinito conforme o chat cresce, em
     # vez de ter altura FIXA com a conversa crescendo pra cima como chat de
-    # verdade. Não consegui acessar a pasta do TIA.go neste dispositivo pra
-    # comparar linha a linha (pasta não está conectada nesta sessão) -- o
-    # fix abaixo é o padrão nativo e documentado do Streamlit pra esse caso
-    # exato: container com altura FIXA em pixels (não "stretch"/"content")
-    # + autoscroll=True, que mantém o scroll grudado na mensagem mais
-    # recente conforme o histórico cresce, com o chat_input sempre fixo
-    # embaixo da página (comportamento nativo do st.chat_input, não muda).
-    historico_box = st.container(height=480, autoscroll=True)
+    # verdade.
+    #
+    # Comparado de fato com o TIA.go (pasta conectada nesta sessão,
+    # $HOME/mnt/Projetos/TIA.go/arquivos/app_tiago.py) -- e a conclusão de
+    # lá bate 100% com o motivo documentado do bug do "stretch" aqui: o
+    # próprio TIA.go tentou esticar a caixa via CSS (unidade vh amarrada no
+    # key do container) e DESISTIU, com o motivo documentado no código dele:
+    # o Streamlit cria a classe CSS "st-key-<key>" DENTRO do container, não
+    # no elemento que de fato controla altura/scroll -- sem garantia de
+    # funcionar (github.com/streamlit/streamlit/issues/10674, issue real,
+    # não suposição). A solução deles (v0.8.1/v0.8.2) foi exatamente a
+    # mesma linha de raciocínio que já tinha aplicado aqui: container de
+    # altura FIXA em pixels (nunca "stretch"), chat_input em fluxo normal
+    # logo abaixo dentro do MESMO container -- sem tentar posição fixa.
+    # Diferença que importa pro pedido dele: o TIA.go começou em 480 (mesmo
+    # valor que eu tinha usado antes do fix), Rafael reportou pequeno e
+    # pediu pra parar de variar e fixar "sempre grande" -- eles fixaram em
+    # 820 (v0.8.2 lá, e ficou definitivo, sem reclamação depois). Aplicando
+    # o MESMO valor já validado por ele no projeto irmão, em vez de
+    # adivinhar um número novo. `autoscroll=True` (recurso mais novo do
+    # Streamlit, não existia quando o TIA.go foi escrito) mantido aqui em
+    # cima disso -- já confirmado ao vivo que mantém o scroll grudado na
+    # mensagem mais recente.
+    historico_box = st.container(height=820, autoscroll=True)
     with historico_box:
         for m in st.session_state.assistente_mensagens:
             with st.chat_message(m["role"]):
