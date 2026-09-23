@@ -17,10 +17,13 @@ Coluna esquerda (dashboard): consulta rapida de BP/DRE de 1 empresa —
 REUSA consultas_chat.consultar_bp_dre (a MESMA funcao que o chat chama
 como ferramenta), sem logica duplicada. Quando o chat acabou de fazer
 alguma consulta, a ULTIMA aparece tambem aqui em cima (mesma ideia do
-dash_extra reativo do app_tiago.py, so' que sem grafico Plotly — o
-volume de dado do EGC ainda e' pequeno demais (poucos periodos) pra um
-grafico valer a pena; se crescer, dá pra evoluir depois, sem precisar
-reescrever nada disso).
+dash_extra reativo do app_tiago.py, AGORA COM GRAFICO Plotly tambem --
+pedido do Rafael (23/09/2026) de replicar o padrao do TIA.go
+(go.Bar/go.Figure + st.plotly_chart, mesmo import ja usado la). Uma
+funcao _grafico_* por formato de resultado (contas por grupo,
+periodos por empresa, completude por periodo) -- indicadores fica SO'
+tabela de proposito (mistura x/R$/% no mesmo indicador, um grafico
+de barra unico ali enganaria por causa da escala).
 
 Coluna direita (chat): mesmo padrao de 2 fases do app_tiago.py (grava a
 pergunta + rerun; processa na recarga seguinte, sem pergunta pendente) —
@@ -31,10 +34,12 @@ Streamlit Cloud, nunca passado pra mim em chat) -- sem ele, a tela
 funciona normal (dashboard funciona), so' o chat fica desabilitado com
 aviso.
 """
+import re
 import sys
 from pathlib import Path
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -47,6 +52,67 @@ import formatacao  # noqa: E402
 
 NOME_POR_COD = {cod: nome for cod, nome, _cnpj in EMPRESAS_FIXAS}
 EMPRESAS_CODIGOS = [cod for cod, _nome, _cnpj in EMPRESAS_FIXAS]
+
+def _grafico_contas_por_grupo(df_contas: pd.DataFrame):
+    """
+    Barra horizontal com o total por GRUPO (Ativo Circulante, Passivo
+    Circulante etc) -- funciona tanto pra consultar_bp_dre (coluna
+    "valor") quanto consultar_visao_grupo (colunas "VALOR CONSOLIDADO",
+    "ENERMAIS ENERGIA" etc), igual ao fix de formatacao acima: nunca
+    assume 1 nome fixo, pega a 1a coluna de dinheiro disponivel.
+    Erik.AI (23/09/2026) -- pedido do Rafael de reusar o padrao do
+    TIA.go (go.Bar + st.plotly_chart) no dashboard do chat.
+    """
+    cols_dinheiro = [
+        c for c in df_contas.columns
+        if c not in ("grupo", "conta") and not str(c).strip().startswith("%")
+    ]
+    if not cols_dinheiro:
+        return None
+    col = "valor" if "valor" in cols_dinheiro else (
+        "VALOR CONSOLIDADO" if "VALOR CONSOLIDADO" in cols_dinheiro else cols_dinheiro[0]
+    )
+    agrupado = df_contas.groupby("grupo")[col].sum().sort_values()
+    fig = go.Figure(go.Bar(x=agrupado.values, y=agrupado.index, orientation="h", name=col))
+    fig.update_layout(height=320, margin=dict(t=20, l=10))
+    return fig
+
+
+def _grafico_periodos_por_empresa(linhas_periodos: list[dict]):
+    """Barra Empresa x Qtde de períodos ativos -- consultar_periodos."""
+    if not linhas_periodos:
+        return None
+    df = pd.DataFrame(linhas_periodos)
+    fig = go.Figure(go.Bar(x=df["Empresa"], y=df["Qtde"], name="Períodos"))
+    fig.update_layout(height=300, margin=dict(t=20))
+    return fig
+
+
+def _grafico_completude(linhas_completude: list[dict]):
+    """
+    Barra empilhada Completas x Pendentes por período -- extrai os 2
+    números do texto "Status" (ex.: "✅ Completo (6/6)"), sem mudar o
+    formato que visao_grupo.resumir_completude_por_periodo devolve.
+    """
+    if not linhas_completude:
+        return None
+    periodos, completas, pendentes = [], [], []
+    for l in linhas_completude:
+        m = re.search(r"\((\d+)/(\d+)\)", str(l.get("Status", "")))
+        if not m:
+            continue
+        n_completas, n_total = int(m.group(1)), int(m.group(2))
+        periodos.append(l.get("Período"))
+        completas.append(n_completas)
+        pendentes.append(n_total - n_completas)
+    if not periodos:
+        return None
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=periodos, y=completas, name="Completas"))
+    fig.add_trace(go.Bar(x=periodos, y=pendentes, name="Pendentes"))
+    fig.update_layout(barmode="stack", height=300, margin=dict(t=20))
+    return fig
+
 
 st.title("🤖 Erik.AI")
 
@@ -125,6 +191,9 @@ with col_dash:
                         df_contas[col] = df_contas[col].apply(formatacao.pct_br)
                     else:
                         df_contas[col] = df_contas[col].apply(formatacao.moeda_br)
+                fig_contas = _grafico_contas_por_grupo(df_contas)
+                if fig_contas is not None:
+                    st.plotly_chart(fig_contas, width="stretch")
                 st.dataframe(df_contas, hide_index=True, use_container_width=True)
             elif "periodos_por_empresa" in resultado:
                 # Fix 23/09/2026 (achado real do Rafael testando ao vivo): antes
@@ -143,6 +212,9 @@ with col_dash:
                     }
                     for cod, periodos in resultado["periodos_por_empresa"].items()
                 ]
+                fig_periodos = _grafico_periodos_por_empresa(linhas_periodos)
+                if fig_periodos is not None:
+                    st.plotly_chart(fig_periodos, width="stretch")
                 st.dataframe(pd.DataFrame(linhas_periodos), hide_index=True, use_container_width=True)
             elif "indicadores" in resultado:
                 # Erik.AI (23/09/2026) -- nova ferramenta consultar_indicadores.
@@ -171,6 +243,9 @@ with col_dash:
                 if not resultado["completude_por_periodo"]:
                     st.caption("Sem período nenhum encontrado pra essas empresas.")
                 else:
+                    fig_completude = _grafico_completude(resultado["completude_por_periodo"])
+                    if fig_completude is not None:
+                        st.plotly_chart(fig_completude, width="stretch")
                     st.dataframe(
                         pd.DataFrame(resultado["completude_por_periodo"]), hide_index=True, use_container_width=True,
                     )
