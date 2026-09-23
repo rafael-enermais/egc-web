@@ -24,6 +24,7 @@ from auth import require_login
 from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS
 import db
 import indicadores
+import visao_grupo
 
 st.set_page_config(page_title="EGC — EnerMais", page_icon="📊", layout="wide")
 
@@ -188,6 +189,110 @@ def pagina_inicio():
             "Líquida · Margem Líquida = Lucro Líquido ÷ Receita Líquida · ROA = Lucro "
             "Líquido ÷ Ativo Total · ROE = Lucro Líquido ÷ Patrimônio Líquido."
         )
+
+    # ─────────── KPI consolidado do grupo (23/09/2026) ───────────
+    # Retomando item combinado com o Rafael em 22/09 ("Salva o progresso,
+    # amanhã terminaremos com esses pontos"): mesmos indicadores contábeis
+    # acima, agora somando as 6 empresas do grupo. Zero mudança de lógica
+    # em indicadores.calcular_indicadores() -- só passa lançamentos de
+    # várias empresas de uma vez (o groupby(periodo,conta) já soma tudo
+    # junto). Intercompany já confirmado sem transação material entre as
+    # 6 empresas (perguntado direto ao Rafael antes de recomendar isto) --
+    # soma direta é segura, sem eliminação.
+    st.divider()
+    st.subheader("KPI consolidado do grupo")
+    cods_todos = [cod for cod, _nome, _cnpj in EMPRESAS_FIXAS]
+    periodos_grupo, lancs_bp_grupo, lancs_dre_grupo = [], [], []
+    try:
+        periodos_grupo = db.listar_periodos_grupo(conn, cods_todos, status="ATIVO")
+        lancs_bp_grupo = db.listar_lancamentos_grupo_periodos(conn, periodos_grupo, "BP", cods_todos, status="ATIVO")
+        lancs_dre_grupo = db.listar_lancamentos_grupo_periodos(conn, periodos_grupo, "DRE", cods_todos, status="ATIVO")
+        tabela_ind_grupo = indicadores.calcular_indicadores(lancs_bp_grupo, lancs_dre_grupo)
+    except Exception as exc:
+        st.warning(f"Não foi possível calcular os indicadores do grupo: {exc}")
+        _registrar_evento_seguro(conn, "inicio", "ERRO", "Falha ao calcular indicadores do grupo",
+                                  usuario=usuario, detalhe=str(exc))
+        tabela_ind_grupo = pd.DataFrame()
+
+    if tabela_ind_grupo.empty:
+        st.caption("Sem BP/DRE suficiente no grupo pra calcular indicadores consolidados ainda.")
+    else:
+        periodo_grupo = tabela_ind_grupo.index.max()
+        periodo_grupo_anterior = None
+        anteriores_grupo = tabela_ind_grupo.index[tabela_ind_grupo.index < periodo_grupo]
+        if len(anteriores_grupo) > 0:
+            periodo_grupo_anterior = anteriores_grupo.max()
+
+        def _fmt_grupo(col, formato):
+            valor = tabela_ind_grupo.loc[periodo_grupo, col]
+            delta = None
+            if periodo_grupo_anterior is not None and pd.notna(tabela_ind_grupo.loc[periodo_grupo_anterior, col]) and pd.notna(valor):
+                delta = valor - tabela_ind_grupo.loc[periodo_grupo_anterior, col]
+            if pd.isna(valor):
+                return "—", None
+            if formato == "pct":
+                return f"{valor:.1%}", (f"{delta:+.1%}" if delta is not None else None)
+            if formato == "x":
+                return f"{valor:.2f}x", (f"{delta:+.2f}x" if delta is not None else None)
+            return f"R$ {valor:,.2f}", (f"R$ {delta:+,.2f}" if delta is not None else None)
+
+        st.caption(
+            f"Consolidado das 6 empresas · Período de referência: {periodo_grupo.strftime('%m/%Y')}"
+            + (f" · comparado a {periodo_grupo_anterior.strftime('%m/%Y')}" if periodo_grupo_anterior is not None
+               else " · sem período anterior pra comparar ainda")
+        )
+
+        gk1, gk2, gk3 = st.columns(3)
+        for col, label, fmt, container in [
+            ("Liquidez Corrente", "Liquidez Corrente", "x", gk1),
+            ("Capital de Giro", "Capital de Giro", "R$", gk2),
+            ("Endividamento Geral", "Endividamento Geral", "pct", gk3),
+        ]:
+            texto, delta_txt = _fmt_grupo(col, fmt)
+            container.metric(label, texto, delta=delta_txt)
+
+        gk4, gk5, gk6, gk7 = st.columns(4)
+        for col, label, fmt, container in [
+            ("Margem Bruta", "Margem Bruta", "pct", gk4),
+            ("Margem Líquida", "Margem Líquida", "pct", gk5),
+            ("ROA", "ROA (Retorno s/ Ativo)", "pct", gk6),
+            ("ROE", "ROE (Retorno s/ PL)", "pct", gk7),
+        ]:
+            texto, delta_txt = _fmt_grupo(col, fmt)
+            container.metric(label, texto, delta=delta_txt)
+
+    # ─────────── Painel de pendências (23/09/2026) ───────────
+    # 2ª metade do mesmo item retomado acima: "quais pendências ainda
+    # faltam além do gerador de relatórios?" -- completude de dados por
+    # empresa × período. Zero query nova: reaproveita
+    # db.listar_periodos_grupo/listar_lancamentos_grupo_periodos (as
+    # mesmas já chamadas na seção acima e usadas por Visão Grupo).
+    st.divider()
+    st.subheader("Painel de pendências")
+    try:
+        completude = visao_grupo.calcular_completude_grupo(
+            periodos_grupo, lancs_bp_grupo, lancs_dre_grupo, EMPRESAS_FIXAS,
+        )
+    except Exception as exc:
+        st.warning(f"Não foi possível montar o painel de pendências: {exc}")
+        _registrar_evento_seguro(conn, "inicio", "ERRO", "Falha ao montar painel de pendências",
+                                  usuario=usuario, detalhe=str(exc))
+        completude = pd.DataFrame()
+
+    if completude.empty:
+        st.caption("Sem período nenhum no grupo ainda pra avaliar pendências.")
+    else:
+        completude_fmt = completude.assign(Período=completude["Período"].apply(lambda p: p.strftime("%m/%Y")))
+        pendentes = completude_fmt[completude_fmt["Status"] != "✅ Completo"].sort_values(
+            ["Período", "Empresa"], ascending=[False, True]
+        )
+        if pendentes.empty:
+            st.success("Todas as empresas com BP e DRE completos em todos os períodos ativos do grupo.")
+        else:
+            st.caption(f"{len(pendentes)} combinação(ões) empresa×período com dado faltando (BP e/ou DRE).")
+            st.dataframe(pendentes[["Período", "Empresa", "Status"]], hide_index=True, use_container_width=True)
+        with st.expander("Ver matriz completa (todas as empresas × períodos)"):
+            st.dataframe(completude_fmt[["Período", "Empresa", "Status"]], hide_index=True, use_container_width=True)
 
 
 paginas = [
