@@ -15,6 +15,11 @@ Cobre 2 cenarios principais:
      assistente_mensagens acumula os turnos e que assistente_ultima_
      ferramenta e' populado quando o chat usa uma ferramenta (aparece no
      dashboard, ver "Ultima consulta do chat").
+  3. Regressao real (23/09/2026, achado do Rafael testando ao vivo):
+     pergunta que aciona a ferramenta consultar_periodos (tool_use de
+     verdade, nao so' texto) -- confirma que o painel "Ultima consulta do
+     chat" mostra uma TABELA (Empresa/Periodos/Qtde), nao mais o st.json()
+     cru que parecia "bugado" ao lado da resposta em prosa do proprio chat.
 
 Historico mockado de proposito com valor: Decimal (mesma razao de
 sempre -- ver test_visao_grupo_app.py/test_dashboard_projecao_app.py:
@@ -98,6 +103,59 @@ def run():
         assert mensagens[1]["role"] == "assistant" and "1000,50" in mensagens[1]["content"]
         assert chamadas["n"] == 1, f"esperava 1 chamada a client.messages.create (sem tool_use), veio {chamadas['n']}"
         print("Cenario 2 OK -- pergunta/resposta funciona ponta a ponta com client mockado, historico acumulado certo")
+
+    # ── Cenario 3: pergunta que aciona tool_use consultar_periodos ────
+    # Reproduz exatamente o caso do Rafael (23/09/2026): "quantos periodos
+    # de lancamentos temos na base de dados?" -- o modelo chama
+    # consultar_periodos, ferramentas_usadas populado, dashboard tem que
+    # mostrar tabela, nao JSON cru.
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos", return_value=[datetime.date(2026, 6, 30), datetime.date(2025, 12, 31)]), \
+         patch.object(db, "listar_lancamentos", return_value=MOCK_LANCAMENTOS_SMG_BP):
+
+        chamadas3 = {"n": 0}
+
+        def fake_create_tool_use(**kw):
+            chamadas3["n"] += 1
+            if chamadas3["n"] == 1:
+                tool_use = SimpleNamespace(
+                    type="tool_use", id="tu_1", name="consultar_periodos", input={},
+                )
+                return SimpleNamespace(stop_reason="tool_use", content=[tool_use])
+            return SimpleNamespace(
+                stop_reason="end_turn",
+                content=[_texto("ENERGIA e SMG têm 2 períodos ativos cada: 06/2026 e 12/2025.")],
+            )
+
+        client_mock3 = SimpleNamespace(messages=SimpleNamespace(create=fake_create_tool_use))
+
+        at3 = AppTest.from_file(PAGE)
+        at3.secrets["ANTHROPIC_API_KEY"] = "sk-fake-nao-usada-de-verdade"
+        with patch("anthropic.Anthropic", return_value=client_mock3):
+            at3.run(timeout=30)
+            at3.chat_input[0].set_value("quantos periodos de lançamentos temos na base de dados?").run(timeout=30)
+            print("Depois de perguntar (tool_use), exception:", at3.exception)
+            assert not at3.exception, f"FALHOU (pergunta com tool_use): {at3.exception[0] if at3.exception else None}"
+
+        assert chamadas3["n"] == 2, f"esperava 2 chamadas (tool_use + resposta final), veio {chamadas3['n']}"
+        ultima = at3.session_state["assistente_ultima_ferramenta"]
+        assert ultima["nome"] == "consultar_periodos", f"esperava 'consultar_periodos', veio {ultima['nome']!r}"
+        assert "periodos_por_empresa" in ultima["resultado"], "resultado da ferramenta sem periodos_por_empresa"
+
+        # o painel "Ultima consulta do chat" tem que renderizar TABELA
+        # (nao mais st.json cru) -- procura um dataframe cujas colunas
+        # batem com Empresa/Periodos/Qtde, sem depender de indice fixo
+        # (a "Consulta rapida" de baixo tambem renderiza dataframe).
+        tabela_periodos = next(
+            (df.value for df in at3.dataframe if "Empresa" in df.value.columns and "Qtde" in df.value.columns),
+            None,
+        )
+        assert tabela_periodos is not None, "esperava uma tabela Empresa/Periodos/Qtde no painel 'Ultima consulta do chat'"
+        assert set(tabela_periodos["Empresa"]) >= {"Enermais Energia Ltda", "SMG Solucoes Ltda"} or len(tabela_periodos) >= 1, \
+            f"tabela de periodos vazia ou sem empresas esperadas: {tabela_periodos}"
+        assert (tabela_periodos["Qtde"] == 2).all(), f"esperava 2 periodos por empresa no mock, veio: {tabela_periodos}"
+        print("Cenario 3 OK -- tool_use consultar_periodos renderiza tabela Empresa/Periodos/Qtde no dashboard (fix do 'bug' relatado)")
 
     print("\nTODOS OS CENARIOS OK (dashboard sem chat, chat com client mockado)")
 
