@@ -588,6 +588,41 @@ def listar_eventos_recentes(
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
+def buscar_lancamentos_manuais(
+    conn, empresas_codigos: Optional[list[str]] = None, limite: int = 50,
+) -> list[dict]:
+    """
+    Lista lancamentos com origem 'MANUAL ...' (corrigidos a mao ao menos 1x),
+    de TODAS as empresas/periodos/tipos por padrao, mais recente primeiro por
+    atualizado_em -- criada pra resolver "editei uma conta ontem e nao lembro
+    qual" (Rafael, 23/09/2026): em vez de abrir empresa por empresa /
+    periodo por periodo na tela de Revisao/Correcao pra procurar visualmente,
+    esta busca cruza tudo de uma vez.  `empresas_codigos` filtra opcionalmente
+    (senao busca nas 6 empresas juntas).
+    """
+    filtros = ["origem LIKE 'MANUAL%%'"]
+    params: list = []
+    if empresas_codigos:
+        filtros.append("empresa_codigo = ANY(%s)")
+        params.append(empresas_codigos)
+    where = f"WHERE {' AND '.join(filtros)}"
+    params.append(limite)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT id, empresa_codigo, tipo, periodo, grupo, conta, valor, pdf_original,
+                   origem, usuario, atualizado_em
+            FROM egc.lancamentos
+            {where}
+            ORDER BY atualizado_em DESC
+            LIMIT %s
+            """,
+            params,
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
 # ─────────────────────────────────────────────
 #  CONTEXTO FISCAL (conhecimento de referencia — Reforma Tributaria)
 # ─────────────────────────────────────────────

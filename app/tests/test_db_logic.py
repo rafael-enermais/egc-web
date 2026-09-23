@@ -354,6 +354,34 @@ def test_listar_eventos_recentes_filtra_nivel_e_origem():
     print("OK: listar_eventos_recentes — filtro por nivel + origem monta WHERE certo")
 
 
+def test_buscar_lancamentos_manuais_sem_filtro_de_empresa():
+    cols = ["id", "empresa_codigo", "tipo", "periodo", "grupo", "conta", "valor", "pdf_original",
+            "origem", "usuario", "atualizado_em"]
+    linhas = [(1, "ENERGIA", "BP", datetime.date(2026, 8, 1), "ATIVO", "CLIENTES", 5000.0, 4500.0,
+               "MANUAL 08/2026", "a@b.com", datetime.datetime(2026, 9, 22, 15, 0))]
+    cur = FakeCursor(fetchall_result=linhas, description=[(c,) for c in cols])
+    conn = FakeConn(cur)
+    resultado = db.buscar_lancamentos_manuais(conn)
+    sql, params = cur.executed[0]
+    assert "origem LIKE 'MANUAL%" in sql
+    assert "empresa_codigo = ANY" not in sql  # sem filtro, busca nas 6 empresas juntas
+    assert "ORDER BY atualizado_em DESC" in sql
+    assert params == [50]
+    assert resultado[0]["empresa_codigo"] == "ENERGIA"
+    assert resultado[0]["origem"] == "MANUAL 08/2026"
+    print("OK: buscar_lancamentos_manuais — sem filtro de empresa, WHERE so' origem LIKE MANUAL%")
+
+
+def test_buscar_lancamentos_manuais_filtra_empresas_e_limite():
+    cur = FakeCursor()
+    conn = FakeConn(cur)
+    db.buscar_lancamentos_manuais(conn, empresas_codigos=["ENERGIA", "SMG"], limite=10)
+    sql, params = cur.executed[0]
+    assert "empresa_codigo = ANY(%s)" in sql
+    assert params == [["ENERGIA", "SMG"], 10]
+    print("OK: buscar_lancamentos_manuais — filtro por empresas + limite customizado")
+
+
 # ─────────────────────────────────────────────
 #  CONTEXTO FISCAL (Reforma Tributaria — 22/09/2026)
 # ─────────────────────────────────────────────

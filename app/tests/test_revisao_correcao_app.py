@@ -118,6 +118,57 @@ def test_log_de_eventos_sem_eventos_mostra_aviso_e_com_eventos_mostra_tabela():
         print("OK: Log de eventos — com evento mockado, tabela mostra Empresa/Período/Detalhe formatados certos")
 
 
+def test_busca_manuais_todas_empresas_sem_resultado_e_com_resultado():
+    # Cobre o item novo (23/09/2026, Rafael: "queria achar oq editei ontem e
+    # nao lembro qual, o log consegue puxar?") -- expander de busca CRUZADA
+    # (todas empresas/periodos) no topo da pagina, independente da selecao
+    # de empresa(s)/periodo(s) abaixo.
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos", return_value=[datetime.date(2026, 6, 30)]), \
+         patch.object(db, "listar_lancamentos", side_effect=lambda conn, cod, periodo, tipo, status="ATIVO": (
+             MOCK_LANCAMENTOS_BP if tipo == "BP" else []
+         )), \
+         patch.object(db, "buscar_lancamentos_manuais", return_value=[]):
+
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        assert not at.exception, f"excecao sem correcoes manuais: {at.exception}"
+        textos = " ".join(c.value for c in at.caption)
+        assert "Nenhuma correção manual encontrada" in textos
+        print("OK: Busca de correções manuais — sem nenhuma ainda, aviso informativo, sem exceção")
+
+    manuais_mock = [
+        {
+            "id": 7, "empresa_codigo": "SMG", "tipo": "BP", "periodo": datetime.date(2026, 8, 1),
+            "grupo": "ATIVO CIRCULANTE", "conta": "ESTOQUES", "valor": Decimal("3200.75"),
+            "pdf_original": Decimal("3000.00"), "origem": "MANUAL 08/2026",
+            "usuario": "teste@enermais.com.br", "atualizado_em": _dt.datetime(2026, 9, 22, 18, 30, 0),
+        },
+    ]
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos", return_value=[datetime.date(2026, 6, 30)]), \
+         patch.object(db, "listar_lancamentos", side_effect=lambda conn, cod, periodo, tipo, status="ATIVO": (
+             MOCK_LANCAMENTOS_BP if tipo == "BP" else []
+         )), \
+         patch.object(db, "buscar_lancamentos_manuais", return_value=manuais_mock):
+
+        at2 = AppTest.from_file(PAGE)
+        at2.run(timeout=30)
+        assert not at2.exception, f"excecao com correcao manual mockada: {at2.exception}"
+        # 1a tabela da pagina = busca de correcoes manuais (topo, antes da
+        # tabela BP da combinacao aberta)
+        tabela_busca = at2.dataframe[0].value
+        assert list(tabela_busca.columns) == [
+            "Empresa", "Período", "Tipo", "Conta", "Valor do PDF", "Valor atual", "Usuário", "Corrigido em",
+        ]
+        assert tabela_busca["Empresa"].iloc[0] == "SMG Solucoes Ltda"
+        assert tabela_busca["Valor atual"].iloc[0] == "R$ 3.200,75"
+        assert tabela_busca["Valor do PDF"].iloc[0] == "R$ 3.000,00"
+        print("OK: Busca de correções manuais — com resultado, tabela cruzada mostra empresa/período/valores formatados")
+
+
 if __name__ == "__main__":
     testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
     falhas = 0
