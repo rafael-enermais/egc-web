@@ -161,6 +161,57 @@ def run():
         assert (tabela_periodos["Qtde"] == 2).all(), f"esperava 2 periodos por empresa no mock, veio: {tabela_periodos}"
         print("Cenario 3 OK -- tool_use consultar_periodos renderiza tabela Empresa/Periodos/Qtde no dashboard (fix do 'bug' relatado)")
 
+    # ── Cenario 4: pergunta que aciona tool_use consultar_visao_grupo ──
+    # BUG REAL reportado ao vivo (23/09/2026, 2a leva): KeyError('valor')
+    # quebrando a pagina inteira -- consultar_visao_grupo devolve "contas"
+    # com colunas BEM diferentes de consultar_bp_dre ("VALOR CONSOLIDADO",
+    # "ENERMAIS ENERGIA", "% ENERGIA", "EMPRESAS CONSOLIDADORAS",
+    # "% CONSOLIDADORAS" -- nunca uma coluna chamada "valor"), e o fix de
+    # formatacao BR da 1a leva assumia cegamente essa coluna. Este cenario
+    # reproduz exatamente o caso (visao macro) e confirma que a pagina nao
+    # quebra mais e formata cada coluna (dinheiro vira R$, % vira %BR).
+    MOCK_LANCAMENTOS_GRUPO = [
+        {"empresa_codigo": "ENERGIA", "grupo": "ATIVO CIRCULANTE", "conta": "CLIENTES", "valor": Decimal("1000.50")},
+        {"empresa_codigo": "SMG", "grupo": "ATIVO CIRCULANTE", "conta": "CLIENTES", "valor": Decimal("500.00")},
+    ]
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"),          patch.object(conexao, "get_conn", return_value=None),          patch.object(db, "listar_periodos", return_value=[datetime.date(2026, 6, 30)]),          patch.object(db, "listar_lancamentos", return_value=MOCK_LANCAMENTOS_SMG_BP),          patch.object(db, "listar_periodos_grupo", return_value=[datetime.date(2026, 6, 30)]),          patch.object(db, "listar_lancamentos_grupo", return_value=MOCK_LANCAMENTOS_GRUPO):
+
+        chamadas4 = {"n": 0}
+
+        def fake_create_visao_grupo(**kw):
+            chamadas4["n"] += 1
+            if chamadas4["n"] == 1:
+                tool_use = SimpleNamespace(
+                    type="tool_use", id="tu_2", name="consultar_visao_grupo",
+                    input={"tipo": "BP", "empresas_codigos": ["ENERGIA", "SMG"], "visao": "macro"},
+                )
+                return SimpleNamespace(stop_reason="tool_use", content=[tool_use])
+            return SimpleNamespace(
+                stop_reason="end_turn",
+                content=[_texto("CLIENTES consolidado do grupo: R$ 1.500,50.")],
+            )
+
+        client_mock4 = SimpleNamespace(messages=SimpleNamespace(create=fake_create_visao_grupo))
+
+        at4 = AppTest.from_file(PAGE)
+        at4.secrets["ANTHROPIC_API_KEY"] = "sk-fake-nao-usada-de-verdade"
+        with patch("anthropic.Anthropic", return_value=client_mock4):
+            at4.run(timeout=30)
+            at4.chat_input[0].set_value("como está o CLIENTES consolidado do grupo?").run(timeout=30)
+            print("Depois de perguntar (tool_use visao_grupo), exception:", at4.exception)
+            assert not at4.exception, f"FALHOU (KeyError 'valor' reintroduzido?): {at4.exception[0] if at4.exception else None}"
+
+        ultima4 = at4.session_state["assistente_ultima_ferramenta"]
+        assert ultima4["nome"] == "consultar_visao_grupo", f"esperava 'consultar_visao_grupo', veio {ultima4['nome']!r}"
+        tabela_grupo = next(
+            (df.value for df in at4.dataframe if "VALOR CONSOLIDADO" in df.value.columns),
+            None,
+        )
+        assert tabela_grupo is not None, "esperava a tabela da visao_grupo no painel 'Ultima consulta do chat'"
+        assert tabela_grupo["VALOR CONSOLIDADO"].iloc[0] == "R$ 1.500,50",             f"coluna de dinheiro maiuscula nao formatou em BR: {tabela_grupo['VALOR CONSOLIDADO'].iloc[0]!r}"
+        assert "%" in tabela_grupo["% ENERGIA"].iloc[0],             f"coluna de percentual nao formatou como %: {tabela_grupo['% ENERGIA'].iloc[0]!r}"
+        print("Cenario 4 OK -- tool_use consultar_visao_grupo nao quebra mais a pagina, formata dinheiro e % pelo nome da coluna")
+
     print("\nTODOS OS CENARIOS OK (dashboard sem chat, chat com client mockado)")
 
 

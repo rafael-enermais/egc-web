@@ -100,12 +100,31 @@ with col_dash:
                     st.caption("Períodos disponíveis: " + ", ".join(resultado["periodos_disponiveis"]))
             elif "contas" in resultado and resultado["contas"]:
                 # Fix 23/09/2026 (mesmo achado do Rafael de formatacao
-                # americana): pre-formata "valor" em BR antes de exibir,
-                # sem mexer no resultado numerico original (usado so' pra
-                # exibicao aqui, o modelo ja recebeu o numero cru via
-                # tool_result).
+                # americana): pre-formata em BR antes de exibir, sem mexer
+                # no resultado numerico original (usado so' pra exibicao
+                # aqui, o modelo ja recebeu o numero cru via tool_result).
+                #
+                # BUG real 23/09/2026 (2a leva, reportado ao vivo: KeyError
+                # 'valor' quebrando a pagina inteira): "contas" tem 2 formatos
+                # bem diferentes dependendo de qual ferramenta rodou --
+                # consultar_bp_dre devolve {grupo, conta, valor} (1 coluna de
+                # dinheiro, minuscula), consultar_visao_grupo devolve
+                # {grupo, conta, "VALOR CONSOLIDADO", "ENERMAIS ENERGIA",
+                # "% ENERGIA", "EMPRESAS CONSOLIDADORAS", "% CONSOLIDADORAS"}
+                # (varias colunas de dinheiro MAIUSCULAS + colunas de % --
+                # ver visao_grupo.visao_macro/visao_especifica). O fix
+                # anterior assumia cegamente 1 coluna "valor", quebrando com
+                # KeyError sempre que o chat rodava consultar_visao_grupo.
+                # Fix: formata cada coluna numerica pelo NOME dela (%  vira
+                # pct_br, resto vira moeda_br), nunca assume um nome fixo.
                 df_contas = pd.DataFrame(resultado["contas"])
-                df_contas["valor"] = df_contas["valor"].apply(formatacao.moeda_br)
+                for col in df_contas.columns:
+                    if col in ("grupo", "conta"):
+                        continue
+                    if col.strip().startswith("%"):
+                        df_contas[col] = df_contas[col].apply(formatacao.pct_br)
+                    else:
+                        df_contas[col] = df_contas[col].apply(formatacao.moeda_br)
                 st.dataframe(df_contas, hide_index=True, use_container_width=True)
             elif "periodos_por_empresa" in resultado:
                 # Fix 23/09/2026 (achado real do Rafael testando ao vivo): antes
