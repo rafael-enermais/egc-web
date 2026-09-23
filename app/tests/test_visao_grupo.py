@@ -172,6 +172,58 @@ def test_montar_serie_kpis_grupo_lista_vazia_de_periodos_devolve_vazio():
     print("OK: montar_serie_kpis_grupo — lista de períodos vazia devolve DataFrame vazio com colunas certas")
 
 
+# ─────────────── calcular_completude_grupo (painel de pendências, 23/09/2026) ─
+
+EMPRESAS_MOCK = [
+    ("ENERGIA", "Enermais Energia Ltda", "47.040.664/0001-48"),
+    ("SMG", "SMG Solucoes Ltda", "18.387.666/0001-00"),
+]
+
+MOCK_LANCS_COMPLETUDE_BP = [
+    {"empresa_codigo": "ENERGIA", "periodo": datetime.date(2026, 5, 31), "grupo": "G", "conta": "TOTAL DO ATIVO", "valor": Decimal("1.00")},
+    {"empresa_codigo": "SMG", "periodo": datetime.date(2026, 5, 31), "grupo": "G", "conta": "TOTAL DO ATIVO", "valor": Decimal("1.00")},
+    # ENERGIA tem BP em 06/2026, SMG nao tem
+    {"empresa_codigo": "ENERGIA", "periodo": datetime.date(2026, 6, 30), "grupo": "G", "conta": "TOTAL DO ATIVO", "valor": Decimal("1.00")},
+]
+MOCK_LANCS_COMPLETUDE_DRE = [
+    {"empresa_codigo": "ENERGIA", "periodo": datetime.date(2026, 5, 31), "grupo": "G", "conta": "LUCRO BRUTO", "valor": Decimal("1.00")},
+    # SMG sem DRE nenhum em nenhum periodo -- so' BP em 05/2026
+]
+
+
+def test_calcular_completude_grupo_marca_completo_so_bp_so_dre_e_faltando():
+    periodos = [datetime.date(2026, 5, 31), datetime.date(2026, 6, 30)]
+    completude = visao_grupo.calcular_completude_grupo(
+        periodos, MOCK_LANCS_COMPLETUDE_BP, MOCK_LANCS_COMPLETUDE_DRE, EMPRESAS_MOCK,
+    )
+    assert len(completude) == 4, f"esperava 2 periodos x 2 empresas = 4 linhas, veio {len(completude)}"
+
+    def _status(cod, periodo):
+        linha = completude[(completude["empresa_codigo"] == cod) & (completude["Período"] == periodo)].iloc[0]
+        return linha["Status"]
+
+    assert _status("ENERGIA", datetime.date(2026, 5, 31)) == "✅ Completo"  # tem BP e DRE
+    assert _status("SMG", datetime.date(2026, 5, 31)) == "⚠️ Só BP"  # so' BP, sem DRE
+    assert _status("ENERGIA", datetime.date(2026, 6, 30)) == "⚠️ Só BP"  # so' BP, sem DRE em 06
+    assert _status("SMG", datetime.date(2026, 6, 30)) == "❌ Faltando"  # nenhum dos 2
+    print("OK: calcular_completude_grupo — Completo/Só BP/Só DRE/Faltando marcados certos por empresa x período")
+
+
+def test_calcular_completude_grupo_lista_vazia_de_periodos_devolve_vazio():
+    completude = visao_grupo.calcular_completude_grupo([], MOCK_LANCS_COMPLETUDE_BP, MOCK_LANCS_COMPLETUDE_DRE, EMPRESAS_MOCK)
+    assert len(completude) == 0
+    assert list(completude.columns) == ["Período", "Empresa", "empresa_codigo", "tem_bp", "tem_dre", "Status"]
+    print("OK: calcular_completude_grupo — lista de períodos vazia devolve DataFrame vazio com colunas certas")
+
+
+def test_calcular_completude_grupo_sem_lancamento_nenhum_marca_tudo_faltando():
+    periodos = [datetime.date(2026, 5, 31)]
+    completude = visao_grupo.calcular_completude_grupo(periodos, [], [], EMPRESAS_MOCK)
+    assert len(completude) == 2
+    assert (completude["Status"] == "❌ Faltando").all()
+    print("OK: calcular_completude_grupo — sem lançamento nenhum, todas as empresas ficam Faltando")
+
+
 if __name__ == "__main__":
     testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
     falhas = 0

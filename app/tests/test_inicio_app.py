@@ -11,6 +11,14 @@ historico nenhum ainda (caption informativo, sem excecao), e Decimal
 real do psycopg2 nao quebra o calculo (mesma classe de bug ja encontrada
 na Visao Grupo/Dashboard de Projecao).
 
+Cobre tambem as 2 secoes novas de 23/09/2026 (KPI consolidado do grupo +
+Painel de pendencias, item deferido em 22/09 -- "Salva o progresso,
+amanha terminaremos com esses pontos"): carga default com
+listar_periodos_grupo/listar_lancamentos_grupo_periodos mockados (grupo
+completo em 1 periodo, incompleto -- so' BP -- no outro), confirmando
+que o KPI consolidado soma as 2 empresas do mock e que o painel de
+pendencias lista so' a combinacao incompleta.
+
 Rodar: python3 tests/test_inicio_app.py
 """
 import sys
@@ -58,11 +66,40 @@ def _hist_side_effect(conn, empresa_codigo, tipo, status="ATIVO"):
     return HIST_BP if tipo == "BP" else HIST_DRE
 
 
+# Grupo (KPI consolidado + painel de pendencias, 23/09/2026): ENERGIA e SMG
+# com BP+DRE completos em P_MAI; em P_JUN so' ENERGIA tem BP (SMG sem
+# nada, DRE nenhuma empresa) -- garante 1 linha "Completo" e pendencias
+# reais no painel, sem inventar cenario totalmente feliz.
+LANCS_BP_GRUPO = [
+    {"empresa_codigo": "ENERGIA", "periodo": P_MAI, "grupo": "TOTAL", "conta": "TOTAL DO ATIVO", "valor": Decimal("1000000.00")},
+    {"empresa_codigo": "SMG", "periodo": P_MAI, "grupo": "TOTAL", "conta": "TOTAL DO ATIVO", "valor": Decimal("300000.00")},
+    {"empresa_codigo": "ENERGIA", "periodo": P_MAI, "grupo": "ATIVO CIRCULANTE", "conta": "TOTAL CIRCULANTE ATIVO", "valor": Decimal("200000.00")},
+    {"empresa_codigo": "SMG", "periodo": P_MAI, "grupo": "ATIVO CIRCULANTE", "conta": "TOTAL CIRCULANTE ATIVO", "valor": Decimal("60000.00")},
+    {"empresa_codigo": "ENERGIA", "periodo": P_MAI, "grupo": "PASSIVO CIRCULANTE", "conta": "TOTAL CIRCULANTE PASSIVO", "valor": Decimal("100000.00")},
+    {"empresa_codigo": "SMG", "periodo": P_MAI, "grupo": "PASSIVO CIRCULANTE", "conta": "TOTAL CIRCULANTE PASSIVO", "valor": Decimal("30000.00")},
+    {"empresa_codigo": "ENERGIA", "periodo": P_JUN, "grupo": "TOTAL", "conta": "TOTAL DO ATIVO", "valor": Decimal("1100000.00")},
+    {"empresa_codigo": "ENERGIA", "periodo": P_JUN, "grupo": "ATIVO CIRCULANTE", "conta": "TOTAL CIRCULANTE ATIVO", "valor": Decimal("250000.00")},
+    {"empresa_codigo": "ENERGIA", "periodo": P_JUN, "grupo": "PASSIVO CIRCULANTE", "conta": "TOTAL CIRCULANTE PASSIVO", "valor": Decimal("125000.00")},
+]
+LANCS_DRE_GRUPO = [
+    {"empresa_codigo": "ENERGIA", "periodo": P_MAI, "grupo": "RESULTADO", "conta": "RECEITA OPERACIONAL LIQUIDA", "valor": Decimal("300000.00")},
+    {"empresa_codigo": "SMG", "periodo": P_MAI, "grupo": "RESULTADO", "conta": "RECEITA OPERACIONAL LIQUIDA", "valor": Decimal("90000.00")},
+    {"empresa_codigo": "ENERGIA", "periodo": P_MAI, "grupo": "RESULTADO", "conta": "LUCRO LIQUIDO DO EXERCICIO", "valor": Decimal("50000.00")},
+    {"empresa_codigo": "SMG", "periodo": P_MAI, "grupo": "RESULTADO", "conta": "LUCRO LIQUIDO DO EXERCICIO", "valor": Decimal("15000.00")},
+]
+
+
+def _lancs_grupo_side_effect(conn, periodos, tipo, empresas_codigos, status="ATIVO"):
+    return LANCS_BP_GRUPO if tipo == "BP" else LANCS_DRE_GRUPO
+
+
 def run():
     with patch.object(auth, "require_login", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=[P_JUN, P_MAI]), \
-         patch.object(db, "listar_historico_grupo", side_effect=_hist_side_effect) as m_hist:
+         patch.object(db, "listar_historico_grupo", side_effect=_hist_side_effect) as m_hist, \
+         patch.object(db, "listar_periodos_grupo", return_value=[P_JUN, P_MAI]), \
+         patch.object(db, "listar_lancamentos_grupo_periodos", side_effect=_lancs_grupo_side_effect):
 
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
@@ -72,7 +109,10 @@ def run():
         # 3 KPIs (Liquidez/Capital de Giro/Endividamento) + 4 KPIs
         # (Margem Bruta/Líquida/ROA/ROE) = 7 st.metric na secao de indicadores
         # (+ 2 do bloco de periodos ativos/arquivados que ja existia = 9 total)
-        assert len(at.metric) == 9, f"esperava 9 metrics (2 periodos + 7 indicadores), veio {len(at.metric)}"
+        # -- at.metric ja reflete a pagina INTEIRA renderizada (inclui tambem
+        # os 7 metrics do KPI consolidado do grupo, secao nova de 23/09/2026,
+        # checada em detalhe mais abaixo); aqui so' confere que os labels da
+        # secao empresa-unica estao presentes.
         labels = {m.label for m in at.metric}
         for esperado in ["Liquidez Corrente", "Capital de Giro", "Endividamento Geral",
                           "Margem Bruta", "Margem Líquida", "ROA (Retorno s/ Ativo)", "ROE (Retorno s/ PL)"]:
@@ -85,6 +125,35 @@ def run():
         tabela = at.dataframe[0].value
         assert len(tabela) == 2, f"esperava 2 períodos na tabela histórica, veio {len(tabela)}"
         print("OK: expander com histórico completo (2 períodos) renderiza")
+
+        # --- KPI consolidado do grupo (23/09/2026) ---
+        labels_todos = [m.label for m in at.metric]
+        # 9 da secao empresa-unica + 7 do consolidado do grupo (mesmas 3+4)
+        assert len(at.metric) == 16, f"esperava 16 metrics (9 empresa única + 7 grupo), veio {len(at.metric)}"
+        assert labels_todos.count("Liquidez Corrente") == 2, "esperava 'Liquidez Corrente' 1x na secao empresa + 1x no grupo"
+        # Período de referência do grupo = P_JUN (mais recente com QUALQUER
+        # lançamento no grupo -- só ENERGIA/BP ali, SMG e DRE ficam NaN
+        # ("—"), o que é o comportamento correto e coerente com o painel de
+        # pendências abaixo marcar 06/2026 como incompleto).
+        # Liquidez Corrente do grupo em P_JUN = só ENERGIA (SMG sem BP nesse
+        # período): 250000/125000 = 2.00x.
+        liquidez_metric = next(m for i, m in enumerate(at.metric) if m.label == "Liquidez Corrente" and i >= 9)
+        assert liquidez_metric.value == "2.00x", f"Liquidez Corrente do grupo errada: {liquidez_metric.value} (esperava 2.00x)"
+        roa_metric = next(m for i, m in enumerate(at.metric) if m.label == "ROA (Retorno s/ Ativo)" and i >= 9)
+        assert roa_metric.value == "—", f"ROA do grupo deveria ser '—' (sem DRE em 06/2026), veio {roa_metric.value}"
+        print("OK: KPI consolidado do grupo soma ENERGIA+SMG (indicadores.calcular_indicadores reaproveitado sem mudar lógica), NaN vira '—' quando falta DRE do período")
+
+        # --- Painel de pendências (23/09/2026) ---
+        textos_caption = " ".join(c.value for c in at.caption)
+        assert "combinação" in textos_caption and "faltando" in textos_caption, \
+            f"esperava caption com contagem de pendências, veio: {textos_caption!r}"
+        # tabela de pendencias = primeiro dataframe apos os 2 de indicadores (empresa + grupo)
+        assert len(at.dataframe) >= 3, f"esperava pelo menos 3 dataframes (2 expanders de histórico + painel de pendências), veio {len(at.dataframe)}"
+        tabela_pendentes = at.dataframe[1].value
+        assert set(tabela_pendentes["Status"]) == {"⚠️ Só BP", "❌ Faltando"}, \
+            f"esperava só linhas incompletas no painel, veio status: {set(tabela_pendentes['Status'])}"
+        assert "✅ Completo" not in set(tabela_pendentes["Status"]), "painel de pendências não deve listar combinações completas"
+        print("OK: painel de pendências lista só empresa×período incompleto (ENERGIA/SMG em 06/2026)")
 
         # --- troca de empresa (mock ignora o código recebido, mas exercita o rerender) ---
         at.selectbox(key="inicio_empresa_sel").set_value(1)

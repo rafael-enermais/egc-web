@@ -96,6 +96,56 @@ def visao_especifica(pivot: pd.DataFrame, cods_selecionados: list[str], nome_por
     return saida
 
 
+def calcular_completude_grupo(
+    periodos: list, lancs_bp: list[dict], lancs_dre: list[dict],
+    empresas: list[tuple[str, str, str]],
+) -> pd.DataFrame:
+    """
+    Matriz de completude de dados por empresa x periodo -- usada no painel
+    de pendencias da Inicio (23/09/2026, retomando item deferido em
+    22/09: "quais pendencias ainda faltam alem do gerador de
+    relatorios?"). Zero query nova: lancs_bp/lancs_dre vem de
+    db.listar_lancamentos_grupo_periodos (mesma funcao ja usada no resumo
+    do grupo desta tela e na Inicio), so' reaproveita pra marcar presenca/
+    ausencia por (empresa, periodo).
+
+    periodos: lista de periodos a cobrir (normalmente
+    db.listar_periodos_grupo -- uniao com status ATIVO entre as empresas).
+    empresas: lista (codigo, nome, cnpj), mesmo formato de
+    conexao.EMPRESAS_FIXAS.
+
+    Retorna 1 linha por (periodo, empresa) -- colunas: Periodo (date),
+    Empresa (nome), empresa_codigo, tem_bp (bool), tem_dre (bool), Status
+    ("Completo"/"So' BP"/"So' DRE"/"Faltando"). Lista de periodos vazia
+    devolve DataFrame vazio com as mesmas colunas (nada pra iterar).
+    """
+    colunas = ["Período", "Empresa", "empresa_codigo", "tem_bp", "tem_dre", "Status"]
+    if not periodos:
+        return pd.DataFrame(columns=colunas)
+
+    set_bp = {(r["empresa_codigo"], r["periodo"]) for r in lancs_bp}
+    set_dre = {(r["empresa_codigo"], r["periodo"]) for r in lancs_dre}
+
+    linhas = []
+    for periodo in periodos:
+        for cod, nome, _cnpj in empresas:
+            tem_bp = (cod, periodo) in set_bp
+            tem_dre = (cod, periodo) in set_dre
+            if tem_bp and tem_dre:
+                status = "✅ Completo"
+            elif tem_bp:
+                status = "⚠️ Só BP"
+            elif tem_dre:
+                status = "⚠️ Só DRE"
+            else:
+                status = "❌ Faltando"
+            linhas.append({
+                "Período": periodo, "Empresa": nome, "empresa_codigo": cod,
+                "tem_bp": tem_bp, "tem_dre": tem_dre, "Status": status,
+            })
+    return pd.DataFrame(linhas, columns=colunas)
+
+
 def montar_serie_kpis_grupo(
     lancamentos_multi: list[dict], cods_selecionados: list[str], contas_kpi: list[str], periodos: list,
 ) -> pd.DataFrame:
