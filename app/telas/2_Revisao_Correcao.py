@@ -47,6 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from auth import usuario_atual  # noqa: E402
 from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS  # noqa: E402
 import db  # noqa: E402
+from validacoes import montar_detalhe_correcoes  # noqa: E402
 
 NOME_POR_COD = {cod: nome for cod, nome, _cnpj in EMPRESAS_FIXAS}
 
@@ -200,20 +201,29 @@ if st.button("💾 Salvar correções", type="primary"):
     alterados = 0
     erros = []
     for (cod, periodo, tipo), (df, df_edit) in secoes.items():
+        alteracoes_combo = []  # (conta, valor_antigo, valor_novo) só desta combinação, pro log
         for _, row_orig in df.iterrows():
             row_novo = df_edit.loc[df_edit["id"] == row_orig["id"]].iloc[0]
-            if float(row_novo["valor"]) != float(row_orig["valor"]):
+            valor_antigo = float(row_orig["valor"])
+            valor_novo = float(row_novo["valor"])
+            if valor_novo != valor_antigo:
                 try:
-                    db.salvar_correcao_manual(
-                        conn, int(row_orig["id"]), float(row_novo["valor"]), periodo, usuario
-                    )
+                    db.salvar_correcao_manual(conn, int(row_orig["id"]), valor_novo, periodo, usuario)
                     alterados += 1
+                    alteracoes_combo.append((row_orig.get("conta", "?"), valor_antigo, valor_novo))
                 except Exception as exc:
                     erros.append((row_orig.get("conta", "?"), str(exc)))
                     _log_seguro("ERRO", f"Falha ao salvar correção manual — conta '{row_orig.get('conta', '?')}'",
                                 empresa_codigo=cod, periodo=periodo, detalhe=str(exc))
+        if alteracoes_combo:
+            # detalhe com CADA conta + valor antigo -> novo (não só a contagem)
+            # -- é isso que o "Log de eventos" no fim da página mostra, pra
+            # conseguir achar depois qual conta foi editada e quando.
+            _log_seguro(
+                "INFO", f"{len(alteracoes_combo)} conta(s) corrigida(s) manualmente ({tipo})",
+                empresa_codigo=cod, periodo=periodo, detalhe=montar_detalhe_correcoes(alteracoes_combo),
+            )
     if alterados:
-        _log_seguro("INFO", f"{alterados} conta(s) corrigida(s) manualmente")
         st.success(f"{alterados} conta(s) corrigida(s) e gravada(s).")
     if erros:
         st.error(f"{len(erros)} conta(s) NÃO foram salvas (erro no banco) — ver detalhe no log de eventos: "
@@ -240,3 +250,33 @@ if adicionar:
             _log_seguro("ERRO", f"Falha ao adicionar conta ausente '{nova_conta.strip()}'",
                         empresa_codigo=cod_add, periodo=periodo_add, detalhe=str(exc))
             st.error(f"Não foi possível gravar: {exc}")
+
+# ─────────── Log de eventos desta tela (23/09/2026) ───────────
+# Pergunta direta do Rafael testando ao vivo: "o log consegue puxar se
+# houve edição?" -- ate' aqui a resposta era "os dados existem em
+# egc.eventos_sistema (task #16), mas so' dava pra consultar via SQL
+# Editor do Supabase" (ver docstring de db.listar_eventos_recentes,
+# nunca tinha UI nenhuma). Este expander expõe isso direto na tela onde
+# a correção acontece -- reaproveita db.listar_eventos_recentes (zero
+# query nova) + o detalhe por conta que o fix acima passou a gravar.
+st.divider()
+with st.expander("📋 Log de eventos desta tela (últimas correções, mais recente primeiro)"):
+    try:
+        eventos = db.listar_eventos_recentes(conn, limite=30, origem="revisao_correcao")
+    except Exception as exc:
+        st.warning(f"Não foi possível consultar o log de eventos: {exc}")
+        eventos = []
+    if not eventos:
+        st.caption("Nenhum evento registrado ainda nesta tela.")
+    else:
+        df_eventos = pd.DataFrame(eventos)
+        df_eventos["Empresa"] = df_eventos["empresa_codigo"].apply(lambda c: NOME_POR_COD.get(c, c) if c else "—")
+        df_eventos["Período"] = df_eventos["periodo"].apply(lambda p: p.strftime("%m/%Y") if p else "—")
+        df_eventos = df_eventos.rename(columns={
+            "criado_em": "Quando", "nivel": "Nível", "usuario": "Usuário",
+            "mensagem": "Mensagem", "detalhe": "Detalhe (conta: valor antigo → novo)",
+        })
+        st.dataframe(
+            df_eventos[["Quando", "Nível", "Empresa", "Período", "Usuário", "Mensagem", "Detalhe (conta: valor antigo → novo)"]],
+            hide_index=True, use_container_width=True,
+        )

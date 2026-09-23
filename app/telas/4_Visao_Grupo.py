@@ -57,6 +57,7 @@ from auth import usuario_atual  # noqa: E402
 from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS  # noqa: E402
 import db  # noqa: E402
 import visao_grupo  # noqa: E402
+import formatacao  # noqa: E402
 
 NOME_POR_COD = {cod: nome for cod, nome, _cnpj in EMPRESAS_FIXAS}
 
@@ -122,7 +123,10 @@ def _metric(col, serie, conta, label, periodo, periodo_ant):
     delta = None
     if periodo_ant is not None and pd.Timestamp(periodo_ant) in serie.index:
         delta = valor - serie.loc[pd.Timestamp(periodo_ant), conta]
-    col.metric(label, f"R$ {valor:,.2f}", delta=(f"R$ {delta:,.2f}" if delta is not None else None))
+    # Fix 23/09/2026 (achado do Rafael): f"R$ {v:,.2f}" e' formatacao
+    # americana (virgula de milhar, ponto decimal) -- formatacao.moeda_br
+    # aplica o padrao BR (ponto de milhar, virgula decimal).
+    col.metric(label, formatacao.moeda_br(valor), delta=(formatacao.moeda_br(delta, forcar_sinal=True) if delta is not None else None))
 
 
 k1, k2, k3, k4, k5 = st.columns(5)
@@ -166,30 +170,44 @@ for tipo_sel in ("BP", "DRE"):
 
     pivot = visao_grupo.montar_pivot_grupo(lancamentos, cods_selecionados)
 
+    # Fix 23/09/2026 (achado do Rafael): column_config.NumberColumn com
+    # format="R$ %.2f"/"percent" renderiza em padrao americano (sem
+    # separador de milhar, ponto decimal em vez de virgula) -- os valores
+    # NUMERICOS de visao_macro/visao_especifica continuam intactos (o chat
+    # via consultas_chat.consultar_visao_grupo reusa as mesmas funcoes e
+    # precisa do numero cru, nao do texto formatado); so' a COPIA exibida
+    # aqui e' pre-formatada como texto BR (formatacao.py), mesma solucao
+    # das outras telas.
     if visao.startswith("Macro"):
         saida = visao_grupo.visao_macro(pivot, cods_selecionados)
+        saida_fmt = saida.copy()
+        for col in ["VALOR CONSOLIDADO", "ENERMAIS ENERGIA", "EMPRESAS CONSOLIDADORAS"]:
+            saida_fmt[col] = saida_fmt[col].apply(formatacao.moeda_br)
+        for col in ["% ENERGIA", "% CONSOLIDADORAS"]:
+            saida_fmt[col] = saida_fmt[col].apply(formatacao.pct_br)
         column_config = {
             "grupo": st.column_config.TextColumn("Grupo", disabled=True),
             "conta": st.column_config.TextColumn("Conta", disabled=True),
-            "VALOR CONSOLIDADO": st.column_config.NumberColumn("Valor consolidado", format="R$ %.2f"),
-            "ENERMAIS ENERGIA": st.column_config.NumberColumn("Enermais Energia", format="R$ %.2f"),
-            "% ENERGIA": st.column_config.NumberColumn("% Energia", format="percent"),
-            "EMPRESAS CONSOLIDADORAS": st.column_config.NumberColumn("Empresas consolidadoras", format="R$ %.2f"),
-            "% CONSOLIDADORAS": st.column_config.NumberColumn("% Consolidadoras", format="percent"),
+            "VALOR CONSOLIDADO": st.column_config.TextColumn("Valor consolidado"),
+            "ENERMAIS ENERGIA": st.column_config.TextColumn("Enermais Energia"),
+            "% ENERGIA": st.column_config.TextColumn("% Energia"),
+            "EMPRESAS CONSOLIDADORAS": st.column_config.TextColumn("Empresas consolidadoras"),
+            "% CONSOLIDADORAS": st.column_config.TextColumn("% Consolidadoras"),
         }
     else:
         saida = visao_grupo.visao_especifica(pivot, cods_selecionados, NOME_POR_COD)
+        saida_fmt = saida.copy()
+        saida_fmt["VALOR CONSOLIDADO"] = saida_fmt["VALOR CONSOLIDADO"].apply(formatacao.moeda_br)
         column_config = {
             "grupo": st.column_config.TextColumn("Grupo", disabled=True),
             "conta": st.column_config.TextColumn("Conta", disabled=True),
-            "VALOR CONSOLIDADO": st.column_config.NumberColumn("Valor consolidado", format="R$ %.2f"),
+            "VALOR CONSOLIDADO": st.column_config.TextColumn("Valor consolidado"),
         }
         for cod in cods_selecionados:
-            column_config[NOME_POR_COD[cod]] = st.column_config.NumberColumn(
-                f"{NOME_POR_COD[cod]} ({cod})", format="R$ %.2f"
-            )
+            saida_fmt[NOME_POR_COD[cod]] = saida_fmt[NOME_POR_COD[cod]].apply(formatacao.moeda_br)
+            column_config[NOME_POR_COD[cod]] = st.column_config.TextColumn(f"{NOME_POR_COD[cod]} ({cod})")
 
-    st.dataframe(saida, column_config=column_config, hide_index=True, use_container_width=True)
+    st.dataframe(saida_fmt, column_config=column_config, hide_index=True, use_container_width=True)
     st.caption(f"{len(pivot)} conta(s) distinta(s) de {tipo_sel} · {len(cods_selecionados)} empresa(s) selecionada(s).")
 
 if not algum_dado:

@@ -137,23 +137,34 @@ def run():
         # pendências abaixo marcar 06/2026 como incompleto).
         # Liquidez Corrente do grupo em P_JUN = só ENERGIA (SMG sem BP nesse
         # período): 250000/125000 = 2.00x.
+        # Fix 23/09/2026 (achado do Rafael): formatação BR agora (vírgula
+        # decimal), não mais o "2.00x" americano de antes.
         liquidez_metric = next(m for i, m in enumerate(at.metric) if m.label == "Liquidez Corrente" and i >= 9)
-        assert liquidez_metric.value == "2.00x", f"Liquidez Corrente do grupo errada: {liquidez_metric.value} (esperava 2.00x)"
+        assert liquidez_metric.value == "2,00x", f"Liquidez Corrente do grupo errada: {liquidez_metric.value} (esperava 2,00x)"
         roa_metric = next(m for i, m in enumerate(at.metric) if m.label == "ROA (Retorno s/ Ativo)" and i >= 9)
         assert roa_metric.value == "—", f"ROA do grupo deveria ser '—' (sem DRE em 06/2026), veio {roa_metric.value}"
         print("OK: KPI consolidado do grupo soma ENERGIA+SMG (indicadores.calcular_indicadores reaproveitado sem mudar lógica), NaN vira '—' quando falta DRE do período")
 
-        # --- Painel de pendências (23/09/2026) ---
+        # --- Painel de pendências (23/09/2026, resumido em 1 tabela na 2ª leva) ---
+        # Fix 23/09/2026: era 2 tabelas parecidas (pendentes soltas + matriz
+        # completa num expander) -- "parece repetida" (Rafael). Agora é 1
+        # tabela só, macro por período (visao_grupo.resumir_completude_por_periodo).
         textos_caption = " ".join(c.value for c in at.caption)
-        assert "combinação" in textos_caption and "faltando" in textos_caption, \
-            f"esperava caption com contagem de pendências, veio: {textos_caption!r}"
-        # tabela de pendencias = primeiro dataframe apos os 2 de indicadores (empresa + grupo)
-        assert len(at.dataframe) >= 3, f"esperava pelo menos 3 dataframes (2 expanders de histórico + painel de pendências), veio {len(at.dataframe)}"
-        tabela_pendentes = at.dataframe[1].value
-        assert set(tabela_pendentes["Status"]) == {"⚠️ Só BP", "❌ Faltando"}, \
-            f"esperava só linhas incompletas no painel, veio status: {set(tabela_pendentes['Status'])}"
-        assert "✅ Completo" not in set(tabela_pendentes["Status"]), "painel de pendências não deve listar combinações completas"
-        print("OK: painel de pendências lista só empresa×período incompleto (ENERGIA/SMG em 06/2026)")
+        assert "período" in textos_caption and "faltando" in textos_caption, \
+            f"esperava caption com contagem de períodos incompletos, veio: {textos_caption!r}"
+        assert len(at.dataframe) >= 2, f"esperava pelo menos 2 dataframes (expander de histórico + painel de pendências), veio {len(at.dataframe)}"
+        resumo_pendencias = at.dataframe[1].value
+        assert list(resumo_pendencias.columns) == ["Período", "Status", "Empresas pendentes"], \
+            f"colunas erradas no painel de pendências: {list(resumo_pendencias.columns)}"
+        assert len(resumo_pendencias) == 2, f"esperava 1 linha por período (05/2026 e 06/2026), veio {len(resumo_pendencias)}"
+        # 6 empresas no total (EMPRESAS_FIXAS) -- só ENERGIA/SMG têm dado no mock,
+        # as outras 4 ficam "Faltando" nos 2 períodos, então nenhum período fecha 100%
+        linha_mai = resumo_pendencias[resumo_pendencias["Período"] == "05/2026"].iloc[0]
+        assert linha_mai["Status"] == "⚠️ Incompleto (2/6)", f"status de 05/2026 errado: {linha_mai['Status']!r}"
+        linha_jun = resumo_pendencias[resumo_pendencias["Período"] == "06/2026"].iloc[0]
+        assert linha_jun["Status"] == "⚠️ Incompleto (0/6)", f"status de 06/2026 errado: {linha_jun['Status']!r}"
+        assert "Enermais Energia Ltda" in linha_jun["Empresas pendentes"], "ENERGIA (só BP, sem DRE) deveria estar pendente em 06/2026"
+        print("OK: painel de pendências resumido em 1 tabela macro por período (sem duplicar pendentes + matriz completa)")
 
         # --- troca de empresa (mock ignora o código recebido, mas exercita o rerender) ---
         at.selectbox(key="inicio_empresa_sel").set_value(1)

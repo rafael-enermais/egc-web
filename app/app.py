@@ -25,6 +25,7 @@ from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS
 import db
 import indicadores
 import visao_grupo
+import formatacao
 
 st.set_page_config(page_title="EGC — EnerMais", page_icon="📊", layout="wide")
 
@@ -133,14 +134,14 @@ def pagina_inicio():
         if pd.isna(valor):
             return "—", None
         if formato == "pct":
-            texto = f"{valor:.1%}"
-            delta_txt = f"{delta:+.1%}" if delta is not None else None
+            texto = formatacao.pct_br(valor)
+            delta_txt = formatacao.pct_br(delta, forcar_sinal=True) if delta is not None else None
         elif formato == "x":
-            texto = f"{valor:.2f}x"
-            delta_txt = f"{delta:+.2f}x" if delta is not None else None
+            texto = formatacao.numero_br(valor, sufixo="x")
+            delta_txt = formatacao.numero_br(delta, sufixo="x", forcar_sinal=True) if delta is not None else None
         else:  # "R$"
-            texto = f"R$ {valor:,.2f}"
-            delta_txt = f"R$ {delta:+,.2f}" if delta is not None else None
+            texto = formatacao.moeda_br(valor)
+            delta_txt = formatacao.moeda_br(delta, forcar_sinal=True) if delta is not None else None
         return texto, delta_txt
 
     st.caption(f"Período de referência: {periodo_ind.strftime('%m/%Y')}"
@@ -166,19 +167,19 @@ def pagina_inicio():
         container.metric(label, texto, delta=delta_txt)
 
     with st.expander("Histórico completo dos indicadores"):
-        st.dataframe(
-            tabela_ind.rename(index=lambda d: d.strftime("%m/%Y")),
-            column_config={
-                "Liquidez Corrente": st.column_config.NumberColumn(format="%.2fx"),
-                "Capital de Giro": st.column_config.NumberColumn(format="R$ %.2f"),
-                "Endividamento Geral": st.column_config.NumberColumn(format="percent"),
-                "Margem Bruta": st.column_config.NumberColumn(format="percent"),
-                "Margem Líquida": st.column_config.NumberColumn(format="percent"),
-                "ROA": st.column_config.NumberColumn(format="percent"),
-                "ROE": st.column_config.NumberColumn(format="percent"),
-            },
-            use_container_width=True,
+        # Fix 23/09/2026 (achado do Rafael): column_config.NumberColumn com
+        # format="R$ %.2f"/"percent" renderiza no padrao americano (sem
+        # separador de milhar, ponto decimal) -- pre-formata cada coluna
+        # como texto BR (formatacao.py) em vez de depender do formatador
+        # numerico do Streamlit, mesma solucao aplicada nas outras telas.
+        tabela_ind_fmt = tabela_ind.rename(index=lambda d: d.strftime("%m/%Y")).copy()
+        tabela_ind_fmt["Liquidez Corrente"] = tabela_ind_fmt["Liquidez Corrente"].apply(
+            lambda v: formatacao.numero_br(v, sufixo="x")
         )
+        tabela_ind_fmt["Capital de Giro"] = tabela_ind_fmt["Capital de Giro"].apply(formatacao.moeda_br)
+        for col in ["Endividamento Geral", "Margem Bruta", "Margem Líquida", "ROA", "ROE"]:
+            tabela_ind_fmt[col] = tabela_ind_fmt[col].apply(formatacao.pct_br)
+        st.dataframe(tabela_ind_fmt, use_container_width=True)
         st.caption(
             "Liquidez seca não entra: as 6 empresas do grupo (EPC/energia) não têm "
             "conta de Estoques no BP extraído hoje — ficaria idêntica à Liquidez "
@@ -231,10 +232,10 @@ def pagina_inicio():
             if pd.isna(valor):
                 return "—", None
             if formato == "pct":
-                return f"{valor:.1%}", (f"{delta:+.1%}" if delta is not None else None)
+                return formatacao.pct_br(valor), (formatacao.pct_br(delta, forcar_sinal=True) if delta is not None else None)
             if formato == "x":
-                return f"{valor:.2f}x", (f"{delta:+.2f}x" if delta is not None else None)
-            return f"R$ {valor:,.2f}", (f"R$ {delta:+,.2f}" if delta is not None else None)
+                return formatacao.numero_br(valor, sufixo="x"), (formatacao.numero_br(delta, sufixo="x", forcar_sinal=True) if delta is not None else None)
+            return formatacao.moeda_br(valor), (formatacao.moeda_br(delta, forcar_sinal=True) if delta is not None else None)
 
         st.caption(
             f"Consolidado das 6 empresas · Período de referência: {periodo_grupo.strftime('%m/%Y')}"
@@ -261,38 +262,42 @@ def pagina_inicio():
             texto, delta_txt = _fmt_grupo(col, fmt)
             container.metric(label, texto, delta=delta_txt)
 
-    # ─────────── Painel de pendências (23/09/2026) ───────────
-    # 2ª metade do mesmo item retomado acima: "quais pendências ainda
-    # faltam além do gerador de relatórios?" -- completude de dados por
+    # ─────────── Painel de pendências (23/09/2026, resumido em 23/09/2026 —
+    # 2ª leva de feedback ao vivo) ───────────
+    # 2ª metade do item retomado em 22/09: "quais pendências ainda faltam
+    # além do gerador de relatórios?" -- completude de dados por
     # empresa × período. Zero query nova: reaproveita
     # db.listar_periodos_grupo/listar_lancamentos_grupo_periodos (as
     # mesmas já chamadas na seção acima e usadas por Visão Grupo).
+    #
+    # Fix (mesmo dia, 2ª leva): a 1ª versão tinha 2 tabelas parecidas
+    # (pendentes soltas + matriz completa num expander) -- "parece
+    # repetida" (Rafael). Resumido numa ÚNICA tabela macro por período
+    # (visao_grupo.resumir_completude_por_periodo): status do período
+    # inteiro + quais empresas faltam, sem precisar abrir nada.
     st.divider()
     st.subheader("Painel de pendências")
     try:
         completude = visao_grupo.calcular_completude_grupo(
             periodos_grupo, lancs_bp_grupo, lancs_dre_grupo, EMPRESAS_FIXAS,
         )
+        resumo_pendencias = visao_grupo.resumir_completude_por_periodo(completude)
     except Exception as exc:
         st.warning(f"Não foi possível montar o painel de pendências: {exc}")
         _registrar_evento_seguro(conn, "inicio", "ERRO", "Falha ao montar painel de pendências",
                                   usuario=usuario, detalhe=str(exc))
-        completude = pd.DataFrame()
+        resumo_pendencias = pd.DataFrame()
 
-    if completude.empty:
+    if resumo_pendencias.empty:
         st.caption("Sem período nenhum no grupo ainda pra avaliar pendências.")
     else:
-        completude_fmt = completude.assign(Período=completude["Período"].apply(lambda p: p.strftime("%m/%Y")))
-        pendentes = completude_fmt[completude_fmt["Status"] != "✅ Completo"].sort_values(
-            ["Período", "Empresa"], ascending=[False, True]
-        )
-        if pendentes.empty:
-            st.success("Todas as empresas com BP e DRE completos em todos os períodos ativos do grupo.")
+        resumo_fmt = resumo_pendencias.assign(Período=resumo_pendencias["Período"].apply(lambda p: p.strftime("%m/%Y")))
+        n_incompletos = (resumo_fmt["Status"].str.startswith("⚠️")).sum()
+        if n_incompletos == 0:
+            st.success("Todos os períodos do grupo com BP e DRE completos nas 6 empresas.")
         else:
-            st.caption(f"{len(pendentes)} combinação(ões) empresa×período com dado faltando (BP e/ou DRE).")
-            st.dataframe(pendentes[["Período", "Empresa", "Status"]], hide_index=True, use_container_width=True)
-        with st.expander("Ver matriz completa (todas as empresas × períodos)"):
-            st.dataframe(completude_fmt[["Período", "Empresa", "Status"]], hide_index=True, use_container_width=True)
+            st.caption(f"{n_incompletos} período(s) com pelo menos 1 empresa faltando BP e/ou DRE.")
+        st.dataframe(resumo_fmt, hide_index=True, use_container_width=True)
 
 
 paginas = [

@@ -43,6 +43,7 @@ from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS  # noqa: E402
 import chat_egc  # noqa: E402
 import consultas_chat  # noqa: E402
 import db  # noqa: E402
+import formatacao  # noqa: E402
 
 NOME_POR_COD = {cod: nome for cod, nome, _cnpj in EMPRESAS_FIXAS}
 EMPRESAS_CODIGOS = [cod for cod, _nome, _cnpj in EMPRESAS_FIXAS]
@@ -98,7 +99,14 @@ with col_dash:
                 if resultado.get("periodos_disponiveis"):
                     st.caption("Períodos disponíveis: " + ", ".join(resultado["periodos_disponiveis"]))
             elif "contas" in resultado and resultado["contas"]:
-                st.dataframe(pd.DataFrame(resultado["contas"]), hide_index=True, use_container_width=True)
+                # Fix 23/09/2026 (mesmo achado do Rafael de formatacao
+                # americana): pre-formata "valor" em BR antes de exibir,
+                # sem mexer no resultado numerico original (usado so' pra
+                # exibicao aqui, o modelo ja recebeu o numero cru via
+                # tool_result).
+                df_contas = pd.DataFrame(resultado["contas"])
+                df_contas["valor"] = df_contas["valor"].apply(formatacao.moeda_br)
+                st.dataframe(df_contas, hide_index=True, use_container_width=True)
             elif "periodos_por_empresa" in resultado:
                 # Fix 23/09/2026 (achado real do Rafael testando ao vivo): antes
                 # disto era st.json() cru -- funcionava, mas parecia "bugado" do
@@ -134,9 +142,11 @@ with col_dash:
         st.info(resultado_rapido["erro"])
     else:
         st.caption(f"{nome_empresa} · {resultado_rapido['periodo']} · {resultado_rapido['quantidade_contas']} conta(s)")
+        df_rapida = pd.DataFrame(resultado_rapido["contas"])
+        df_rapida["valor"] = df_rapida["valor"].apply(formatacao.moeda_br)
         st.dataframe(
-            pd.DataFrame(resultado_rapido["contas"]),
-            column_config={"valor": st.column_config.NumberColumn("Valor", format="R$ %.2f")},
+            df_rapida,
+            column_config={"valor": st.column_config.TextColumn("Valor")},
             hide_index=True, use_container_width=True,
         )
 
@@ -158,7 +168,7 @@ with col_chat:
     if "assistente_mensagens" not in st.session_state:
         st.session_state.assistente_mensagens = []
 
-    historico_box = st.container(height=440)
+    historico_box = st.container(height="stretch")
     with historico_box:
         for m in st.session_state.assistente_mensagens:
             with st.chat_message(m["role"]):
