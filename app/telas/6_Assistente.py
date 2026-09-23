@@ -100,7 +100,23 @@ with col_dash:
             elif "contas" in resultado and resultado["contas"]:
                 st.dataframe(pd.DataFrame(resultado["contas"]), hide_index=True, use_container_width=True)
             elif "periodos_por_empresa" in resultado:
-                st.json(resultado["periodos_por_empresa"])
+                # Fix 23/09/2026 (achado real do Rafael testando ao vivo): antes
+                # disto era st.json() cru -- funcionava, mas parecia "bugado" do
+                # lado do dashboard (JSON bruto recolhivel) do lado do resultado
+                # limpo que o proprio chat mostra em texto (mesma consulta,
+                # 2 aparencias bem diferentes). Agora usa a mesma tabela
+                # Empresa/Periodos/Qtde que o modelo ja monta em prosa na
+                # resposta de texto -- consistente, sem mudar nenhuma ferramenta
+                # nem o formato que consultas_chat.consultar_periodos devolve.
+                linhas_periodos = [
+                    {
+                        "Empresa": NOME_POR_COD.get(cod, cod),
+                        "Períodos disponíveis": ", ".join(sorted(periodos)) if periodos else "—",
+                        "Qtde": len(periodos),
+                    }
+                    for cod, periodos in resultado["periodos_por_empresa"].items()
+                ]
+                st.dataframe(pd.DataFrame(linhas_periodos), hide_index=True, use_container_width=True)
             else:
                 st.caption("Sem dado pra exibir dessa consulta.")
         st.divider()
