@@ -168,7 +168,17 @@ with col_chat:
     if "assistente_mensagens" not in st.session_state:
         st.session_state.assistente_mensagens = []
 
-    historico_box = st.container(height="stretch")
+    # 23/09/2026 (feedback ao vivo): height="stretch" ficou pior -- caixa
+    # nasce vazia lá em cima e cresce infinito conforme o chat cresce, em
+    # vez de ter altura FIXA com a conversa crescendo pra cima como chat de
+    # verdade. Não consegui acessar a pasta do TIA.go neste dispositivo pra
+    # comparar linha a linha (pasta não está conectada nesta sessão) -- o
+    # fix abaixo é o padrão nativo e documentado do Streamlit pra esse caso
+    # exato: container com altura FIXA em pixels (não "stretch"/"content")
+    # + autoscroll=True, que mantém o scroll grudado na mensagem mais
+    # recente conforme o histórico cresce, com o chat_input sempre fixo
+    # embaixo da página (comportamento nativo do st.chat_input, não muda).
+    historico_box = st.container(height=480, autoscroll=True)
     with historico_box:
         for m in st.session_state.assistente_mensagens:
             with st.chat_message(m["role"]):

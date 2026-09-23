@@ -48,6 +48,7 @@ from auth import usuario_atual  # noqa: E402
 from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS  # noqa: E402
 import db  # noqa: E402
 from validacoes import montar_detalhe_correcoes  # noqa: E402
+import formatacao  # noqa: E402
 
 NOME_POR_COD = {cod: nome for cod, nome, _cnpj in EMPRESAS_FIXAS}
 
@@ -67,6 +68,35 @@ st.caption(
     "indicador — não dá pra clicar nela; ela marca sozinha quando aquela conta já foi corrigida "
     "manualmente pelo menos uma vez."
 )
+
+with st.expander("🔎 Achei uma conta que editei e não lembro onde? Busque aqui (todas as empresas)"):
+    st.caption(
+        "Lista as últimas correções manuais feitas em QUALQUER empresa/período, mais recente "
+        "primeiro -- não depende da seleção de empresa/período abaixo."
+    )
+    limite_busca = st.slider("Quantas mostrar", min_value=10, max_value=100, value=30, step=10,
+                              key="busca_manuais_limite")
+    try:
+        manuais = db.buscar_lancamentos_manuais(conn, limite=limite_busca)
+    except Exception as exc:
+        st.warning(f"Não foi possível buscar as correções manuais: {exc}")
+        manuais = []
+    if not manuais:
+        st.caption("Nenhuma correção manual encontrada ainda.")
+    else:
+        df_manuais = pd.DataFrame(manuais)
+        df_manuais["Empresa"] = df_manuais["empresa_codigo"].apply(lambda c: NOME_POR_COD.get(c, c))
+        df_manuais["Período"] = df_manuais["periodo"].apply(lambda p: p.strftime("%m/%Y") if p else "—")
+        df_manuais["Valor atual"] = df_manuais["valor"].apply(formatacao.moeda_br)
+        df_manuais["Valor do PDF"] = df_manuais["pdf_original"].apply(formatacao.moeda_br)
+        df_manuais = df_manuais.rename(columns={
+            "tipo": "Tipo", "conta": "Conta", "usuario": "Usuário", "atualizado_em": "Corrigido em",
+        })
+        st.dataframe(
+            df_manuais[["Empresa", "Período", "Tipo", "Conta", "Valor do PDF", "Valor atual",
+                        "Usuário", "Corrigido em"]],
+            hide_index=True, use_container_width=True,
+        )
 
 nomes_emp = [f"{nome} ({cod})" for cod, nome, _cnpj in EMPRESAS_FIXAS]
 idxs_sel = st.multiselect(
@@ -164,7 +194,7 @@ for cod, periodo in combinacoes:
                 column_config=COLUMN_CONFIG,
                 use_container_width=True,
                 hide_index=True,
-                key=f"editor_{cod}_{periodo}_{tipo}",
+                key=f"editor_{cod}_{periodo}_{tipo}_v{st.session_state.get('revisao_editor_versao', 0)}",
             )
             secoes[(cod, periodo, tipo)] = (df, df_edit)
 
@@ -224,6 +254,7 @@ if st.button("💾 Salvar correções", type="primary"):
                 empresa_codigo=cod, periodo=periodo, detalhe=montar_detalhe_correcoes(alteracoes_combo),
             )
     if alterados:
+        st.session_state["revisao_editor_versao"] = st.session_state.get("revisao_editor_versao", 0) + 1
         st.success(f"{alterados} conta(s) corrigida(s) e gravada(s).")
     if erros:
         st.error(f"{len(erros)} conta(s) NÃO foram salvas (erro no banco) — ver detalhe no log de eventos: "
