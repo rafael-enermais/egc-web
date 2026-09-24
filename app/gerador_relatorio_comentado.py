@@ -229,13 +229,38 @@ def _fundo_marca_dagua(c):
               mask="auto", preserve_ratio=False)
 
 
+def _logo_dados(dados):
+    """Path do logo certo pro escopo do relatorio. Regra do Rafael
+    (25/09/2026, resposta ao ponto 3 da checagem multi-empresa/periodo):
+    'quando mais de 1 CNPJ, logo grupo, se nao separado'. `empresas_codigos`
+    (lista, opcional) sinaliza o escopo; sem ela, cai no comportamento de
+    sempre (1 empresa via `empresa_codigo`) -- 100% retrocompativel."""
+    codigos = dados.get("empresas_codigos")
+    if codigos and len(codigos) > 1:
+        return LOGO.get("GRUPO")
+    return LOGO.get(dados.get("empresa_codigo"))
+
+
+def _linha_identificacao_empresa(dados):
+    """Texto da linha 'CNPJ ...' (capa/fechamento). Multi-empresa (>1 CNPJ)
+    nao tem 1 CNPJ pra mostrar -- mostra quantas empresas compoem o
+    relatorio em vez disso. `dados['empresa_nome']` continua sendo quem
+    decide o nome grande mostrado acima desta linha (contrato de dados da
+    Fase 2: pra escopo de grupo, a camada de dados deve preencher
+    `empresa_nome` com o nome do grupo, ex. 'Grupo Enermais')."""
+    codigos = dados.get("empresas_codigos")
+    if codigos and len(codigos) > 1:
+        return f"{len(codigos)} empresas do grupo"
+    return f"CNPJ {dados.get('cnpj', '')}"
+
+
 def _header(c, dados, subtitulo_pagina):
     # faixa superior navy -> orange -- gradiente suave (N fatias finas,
     # ver faixa_gradiente()), substitui os 2 blocos solidos do piloto
     # v1 (pedido do Rafael 24/09: "puxar a foto de fundo com a torre tb").
     faixa_gradiente(c, 0, 0, PAGE_W, 5, NAVY, ORANGE)
 
-    logo_path = LOGO.get(dados["empresa_codigo"])
+    logo_path = _logo_dados(dados)
     if logo_path and os.path.exists(logo_path):
         # logo um pouco maior (pedido do Rafael 24/09) -- 130x37pt -> 165x47pt
         image(c, logo_path, MARGEM, 16, MARGEM + 165, 63, mask="auto", preserve_ratio=True)
@@ -562,14 +587,33 @@ def grafico_barra_empilhada(c, x0, x1, y_top, altura, segmentos):
 
 
 # ---------------------------------------------------------- tabela do anexo
-def _linha_anexo(c, x, largura, y_top, tipo, label, valor_str, altura_linha, primeira=False):
+def _linha_anexo(c, x, largura, y_top, tipo, label, valores, altura_linha, primeira=False,
+                  valor_col_w=0.0, gap_col=6.0):
     """Uma linha da tabela de anexo (pagina 8). `tipo`: grupo / conta /
     subconta / subtotal / total. Devolve o y_top da proxima linha.
+
+    `valores`: lista de strings ja formatadas. Com 1 item = comportamento
+    de sempre (1 empresa/periodo, valor colado na borda direita). Com 2+
+    = colunas lado a lado (multi-empresa/multi-periodo, pedido do Rafael
+    25/09/2026 -- 'vamos construir ja o multi-empresa-periodo'), cada uma
+    com largura fixa `valor_col_w` passada por `_coluna_anexo`.
 
     Rotulo longo (que colidiria com o valor na mesma linha, achado real
     testando com "Obrig. Trabalhistas e Previdenciárias" e "Obrigações
     Tributárias (Parcelamentos)") quebra em ate 2 linhas -- o valor fica
     so' na 1a linha, alinhado a direita."""
+    valores = valores or [""]
+    n_col = len(valores)
+    if valor_col_w <= 0:
+        valor_col_w = largura  # 1 coluna full-width -- igual a sempre
+
+    def _draw_valores(y_baseline, fonte_v, tamanho_v, cor_v):
+        for i, v in enumerate(valores):
+            if not v:
+                continue
+            x_direita = x + largura - (n_col - 1 - i) * (valor_col_w + gap_col)
+            txt(c, x_direita, y_baseline, v, font=fonte_v, size=tamanho_v, color=cor_v, align="right")
+
     if tipo == "grupo":
         y_top += 0 if primeira else 7  # respiro antes de cada novo grupo (exceto o 1o)
         txt(c, x, y_top, label.upper(), font="bold", size=9, color=NAVY)
@@ -578,7 +622,7 @@ def _linha_anexo(c, x, largura, y_top, tipo, label, valor_str, altura_linha, pri
         y_top += 4
         rect(c, x, y_top, x + largura, y_top + altura_linha + 6, fill=NAVY)
         txt(c, x + 8, y_top + altura_linha / 2 + 4, label.upper(), font="bold", size=9.5, color="#FFFFFF")
-        txt(c, x + largura - 8, y_top + altura_linha / 2 + 4, valor_str, font="bold", size=9.5, color="#FFFFFF", align="right")
+        _draw_valores(y_top + altura_linha / 2 + 4, "bold", 9.5, "#FFFFFF")
         return y_top + altura_linha + 10
 
     indent = {"conta": 8, "subtotal": 8, "subconta": 22}.get(tipo, 8)
@@ -592,13 +636,15 @@ def _linha_anexo(c, x, largura, y_top, tipo, label, valor_str, altura_linha, pri
         c.setLineWidth(0.5)
         c.line(x, Y(y_top - 2), x + largura, Y(y_top - 2))
 
-    valor_w = stringWidth(valor_str, FONT["bold" if negrito else "regular"], tamanho) if valor_str else 0
-    largura_label = largura - indent - valor_w - 8
+    if n_col > 1:
+        valores_w_total = n_col * valor_col_w + (n_col - 1) * gap_col
+    else:
+        valores_w_total = stringWidth(valores[0], FONT["bold" if negrito else "regular"], tamanho) if valores[0] else 0
+    largura_label = largura - indent - valores_w_total - 8
     linhas_label = _wrap_text(label, FONT[fonte], tamanho, largura_label) if largura_label > 20 else [label]
 
     txt(c, x + indent, y_top + 9, linhas_label[0], font=fonte, size=tamanho, color=cor)
-    if valor_str:
-        txt(c, x + largura, y_top + 9, valor_str, font=fonte, size=tamanho, color=cor, align="right")
+    _draw_valores(y_top + 9, fonte, tamanho, cor)
     y_prox = y_top + altura_linha
     for linha_extra in linhas_label[1:]:
         txt(c, x + indent, y_prox + 9, linha_extra, font=fonte, size=tamanho, color=cor)
@@ -608,11 +654,36 @@ def _linha_anexo(c, x, largura, y_top, tipo, label, valor_str, altura_linha, pri
     return y_prox
 
 
-def _coluna_anexo(c, x, largura, y_top, linhas, altura_linha=13.0):
+def _coluna_anexo(c, x, largura, y_top, linhas, altura_linha=13.0, titulos_colunas=None):
+    """`linhas`: tuplas (tipo, label, *valores_num) -- 1 valor numerico por
+    empresa/periodo do escopo do relatorio (1 valor = layout classico,
+    2+ = multi-coluna). `titulos_colunas`: lista de titulos (nome da
+    empresa, ou o periodo -- ex. '2024'/'2025'/'2026' pra comparativo
+    ano a ano) desenhados como cabecalho da tabela; None/1 item = sem
+    cabecalho, layout classico (retrocompativel com Ativo/Passivo atual)."""
     y = y_top
+    n_col = len(titulos_colunas) if titulos_colunas else 1
+    valor_col_w = 0.0
+    gap_col = 6.0
+    if n_col > 1:
+        # reserva proporcional (nao fixa) pro rotulo -- com reserva fixa
+        # pequena (30pt) e bloco estreito (ex. Ativo/Passivo lado a lado),
+        # a reserva colapsava a quase 0 e o rotulo comprido invadia a
+        # coluna de valor sem quebrar linha (achado real testando 2
+        # empresas): _linha_anexo so' quebra o rotulo se sobrar >20pt.
+        label_min = max(largura * 0.30, 90.0)
+        valor_col_w = max((largura - label_min - (n_col - 1) * gap_col) / n_col, 46.0)
+        for i, titulo in enumerate(titulos_colunas):
+            x_direita = x + largura - (n_col - 1 - i) * (valor_col_w + gap_col)
+            txt(c, x_direita, y, titulo.upper(), font="bold", size=7.5, color=GREY_TEXT, align="right")
+        c.setStrokeColor(HexColor(BORDER_LIGHT))
+        c.setLineWidth(0.5)
+        c.line(x, Y(y + 4), x + largura, Y(y + 4))
+        y += 12
     for i, (tipo, label, *resto) in enumerate(linhas):
-        valor_str = moeda_br(resto[0]) if resto else ""
-        y = _linha_anexo(c, x, largura, y, tipo, label, valor_str, altura_linha, primeira=(i == 0))
+        valores = [moeda_br(v) if v not in (None, "") else "" for v in resto] if resto else []
+        y = _linha_anexo(c, x, largura, y, tipo, label, valores, altura_linha,
+                          primeira=(i == 0), valor_col_w=valor_col_w, gap_col=gap_col)
     return y
 
 
@@ -670,7 +741,7 @@ def pagina_capa(c, dados, pagina: int, total_paginas: int):
 
     # bloco de conteudo (logo/titulo/pilula) subiu ~120pt -- no modelo real
     # fica na metade superior da pagina, nao no meio vertical.
-    logo_path = LOGO.get(dados["empresa_codigo"])
+    logo_path = _logo_dados(dados)
     if logo_path and os.path.exists(logo_path):
         image(c, logo_path, MARGEM, 130, MARGEM + 260, 210, mask="auto", preserve_ratio=True)
 
@@ -681,7 +752,7 @@ def pagina_capa(c, dados, pagina: int, total_paginas: int):
     txt(c, MARGEM, 310, "Demonstrativo", font="heavy", size=30, color=NAVY)
     txt(c, MARGEM, 345, "Comentado", font="heavy", size=30, color=NAVY)
     txt(c, MARGEM, 380, dados["empresa_nome"], font="regular", size=12, color=GREY_TEXT)
-    txt(c, MARGEM, 398, f"CNPJ {dados.get('cnpj', '')}", font="regular", size=12, color=GREY_TEXT)
+    txt(c, MARGEM, 398, _linha_identificacao_empresa(dados), font="regular", size=12, color=GREY_TEXT)
 
     rect(c, MARGEM, 428, MARGEM + 250, 458, fill=ORANGE, radius=15)
     txt(c, MARGEM + 20, 447, f"PERÍODO · {dados['periodo_label'].upper()}", font="bold", size=10, color="#FFFFFF")
@@ -1047,33 +1118,62 @@ def pagina_balanco(c, dados, pagina: int, total_paginas: int):
 def pagina_anexo(c, dados, pagina: int, total_paginas: int):
     """Detalhamento de contas do BP. `dados['anexo_ativo']` e
     `dados['anexo_passivo']`: listas de tuplas
-    ('grupo'|'conta'|'subconta'|'subtotal'|'total', label[, valor])."""
+    ('grupo'|'conta'|'subconta'|'subtotal'|'total', label, *valores) --
+    1 valor por tupla no caso classico (1 empresa, 1 periodo), 2+ valores
+    quando `dados['anexo_colunas']` traz mais de 1 titulo (multi-empresa
+    ou multi-periodo, pedido do Rafael 25/09/2026 -- 'vamos construir ja
+    o multi-empresa-periodo, ja deixamos pronto'). Contrato de dados da
+    Fase 2: `len(valores) == len(anexo_colunas)` em toda tupla; a camada
+    de dados e' quem monta essas listas (BP e' foto — cada coluna usa 1
+    data de referencia; nunca somar BP entre periodos)."""
     d = dados
     _header(c, dados, "Anexos")
 
     rect(c, MARGEM, 96, MARGEM + 72, 116, fill=NAVY, radius=3)
     txt(c, MARGEM + 36, 110, "ANEXOS", font="bold", size=9, color="#FFFFFF", align="center")
     txt(c, MARGEM + 84, 112, "Detalhamento de Contas — Balanço Patrimonial", font="heavy", size=14.5, color=NAVY)
-    txt(c, MARGEM, 134, f"{d['empresa_nome']} · Período: {d['data_posicao']} · valores em R$",
-        font="regular", size=9, color=GREY_TEXT)
 
-    col_w = (CONTEUDO_W - 24) / 2
-    x_esq, x_dir = MARGEM, MARGEM + col_w + 24
-    y_esq = _coluna_anexo(c, x_esq, col_w, 162, d.get("anexo_ativo", []))
-    y_dir = _coluna_anexo(c, x_dir, col_w, 162, d.get("anexo_passivo", []))
+    titulos_colunas = d.get("anexo_colunas")  # None/1 item = 1 empresa/periodo (layout classico)
+    multi = bool(titulos_colunas) and len(titulos_colunas) > 1
+    if multi:
+        subtitulo = f"{d.get('anexo_escopo_label', d['empresa_nome'])} · valores em R$"
+    else:
+        subtitulo = f"{d['empresa_nome']} · Período: {d['data_posicao']} · valores em R$"
+    txt(c, MARGEM, 134, subtitulo, font="regular", size=9, color=GREY_TEXT)
+
+    if multi:
+        # multi-coluna (2+ empresas/periodos) nao cabe bem no layout
+        # classico de 2 blocos lado a lado -- cada bloco ficaria estreito
+        # demais pro rotulo + N valores (achado real testando 2 empresas:
+        # rotulo colidia com o valor). Empilha Ativo/Passivo em largura
+        # cheia em vez de lado a lado; so' este caminho muda -- o layout
+        # classico (1 empresa/periodo) abaixo fica 100% como sempre.
+        y_esq = _coluna_anexo(c, MARGEM, CONTEUDO_W, 162, d.get("anexo_ativo", []), titulos_colunas=titulos_colunas)
+        y_dir = _coluna_anexo(c, MARGEM, CONTEUDO_W, y_esq + 14, d.get("anexo_passivo", []), titulos_colunas=titulos_colunas)
+    else:
+        col_w = (CONTEUDO_W - 24) / 2
+        x_esq, x_dir = MARGEM, MARGEM + col_w + 24
+        y_esq = _coluna_anexo(c, x_esq, col_w, 162, d.get("anexo_ativo", []), titulos_colunas=titulos_colunas)
+        y_dir = _coluna_anexo(c, x_dir, col_w, 162, d.get("anexo_passivo", []), titulos_colunas=titulos_colunas)
 
     # nota de rodape -- se a tabela crescer demais (muitas contas), reduz a
     # fonte pra nao colidir com o rodape da pagina em vez de estourar
     y_nota = max(y_esq, y_dir) + 16
     tamanho_nota = 8 if y_nota < 760 else 7
+    if multi:
+        nota_texto = (
+            "Valores extraídos do Balanço Patrimonial e da DRE de cada empresa/período (SPED contábil). "
+            "Em cada coluna, o Total do Ativo confere com o Total do Passivo + Patrimônio Líquido."
+        )
+    else:
+        nota_texto = (
+            f"Valores extraídos do Balanço Patrimonial e da DRE do período (SPED contábil). Total do Ativo "
+            f"({moeda_br(d['total_ativo'])}) confere com o Total do Passivo + Patrimônio Líquido "
+            f"({moeda_br(d['total_ativo'])})."
+        )
     paragrafo(
-        c, MARGEM, y_nota,
-        f"Valores extraídos do Balanço Patrimonial e da DRE do período (SPED contábil). Total do Ativo "
-        f"({moeda_br(d['total_ativo'])}) confere com o Total do Passivo + Patrimônio Líquido "
-        f"({moeda_br(d['total_ativo'])}). No relatório integrado ao aplicativo, este anexo é gerado "
-        f"automaticamente a partir da base de dados, com opção de 1 ou mais empresas e 1 ou mais períodos "
-        f"lado a lado.",
-        CONTEUDO_W, font="regular", size=tamanho_nota, color=GREY_TEXT, leading=tamanho_nota + 3,
+        c, MARGEM, y_nota, nota_texto, CONTEUDO_W,
+        font="regular", size=tamanho_nota, color=GREY_TEXT, leading=tamanho_nota + 3,
     )
 
     _footer(c, pagina, total_paginas)
@@ -1118,11 +1218,11 @@ def pagina_fechamento(c, dados, pagina: int, total_paginas: int):
 
     y += 40
     rect(c, MARGEM, y, MARGEM + CONTEUDO_W, y + 90, fill=GREY_BG, stroke=BORDER_LIGHT, width=0.75, radius=6)
-    logo_path = LOGO.get(d["empresa_codigo"])
+    logo_path = _logo_dados(d)
     if logo_path and os.path.exists(logo_path):
         image(c, logo_path, MARGEM + 18, y + 18, MARGEM + 148, y + 54, mask="auto", preserve_ratio=True)
     txt(c, MARGEM + 18, y + 72, d["empresa_nome"], font="bold", size=9.5, color=NAVY)
-    txt(c, MARGEM + 18, y + 84, f"CNPJ {d.get('cnpj', '')}", font="regular", size=9, color=GREY_TEXT)
+    txt(c, MARGEM + 18, y + 84, _linha_identificacao_empresa(d), font="regular", size=9, color=GREY_TEXT)
     txt(c, MARGEM + CONTEUDO_W - 18, y + 72, d.get("email_empresa", ""), font="regular", size=9, color=GREY_TEXT, align="right")
     txt(c, MARGEM + CONTEUDO_W - 18, y + 84, d.get("site_empresa", ""), font="regular", size=9, color=GREY_TEXT, align="right")
 
