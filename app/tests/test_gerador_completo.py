@@ -98,6 +98,55 @@ def test_anexo_com_lista_longa_nao_lanca_excecao():
     print("OK: anexo com lista longa (25 contas) não lança exceção (pode transbordar visualmente -- não validado aqui)")
 
 
+def test_anexo_multi_coluna_empresas_e_multi_periodo_ano_a_ano():
+    """Ponto 2 e 3 da checagem multi-empresa/multi-periodo (pedido do
+    Rafael 25/09/2026): 'vamos construir ja o multi-empresa-periodo' +
+    'quando mais de 1 CNPJ, logo grupo'. So' garante que o pipeline nao
+    quebra com N colunas (2 empresas, depois 3 anos comparando ano a
+    ano) e que o logo de grupo entra quando `empresas_codigos` tem mais
+    de 1 item -- nao valida pixel."""
+    linhas_2col = [
+        ("grupo", "ATIVO"),
+        ("conta", "Disponível", 100.0, 150.0),
+        ("total", "TOTAL DO ATIVO", 100.0, 150.0),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        caminho = os.path.join(tmp, "anexo_multi_empresa.pdf")
+        dados = dict(
+            BASE,
+            empresa_nome="Grupo Enermais",
+            empresas_codigos=["ENERGIA", "SMG"],
+            anexo_colunas=["Enermais Energia", "SMG Soluções"],
+            anexo_escopo_label="Grupo Enermais",
+            anexo_ativo=linhas_2col,
+            anexo_passivo=linhas_2col,
+        )
+        g.gerar_pdf_completo(dados, caminho)
+        assert os.path.getsize(caminho) > 5000
+        # logo de grupo tem que ser o escolhido (nao o de 1 empresa)
+        assert g._logo_dados(dados) == g.LOGO.get("GRUPO")
+
+    linhas_3col = [
+        ("grupo", "ATIVO"),
+        ("conta", "Disponível", 100.0, 120.0, 140.0),
+        ("total", "TOTAL DO ATIVO", 100.0, 120.0, 140.0),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        caminho = os.path.join(tmp, "anexo_3_anos.pdf")
+        dados = dict(
+            BASE,
+            anexo_colunas=["2024", "2025", "2026"],
+            anexo_escopo_label="Enermais Energia · 2024 a 2026",
+            anexo_ativo=linhas_3col,
+            anexo_passivo=linhas_3col,
+        )
+        g.gerar_pdf_completo(dados, caminho)
+        assert os.path.getsize(caminho) > 5000
+        # 1 CNPJ so' (sem empresas_codigos) continua usando o logo individual
+        assert g._logo_dados(dados) == g.LOGO.get("ENERGIA")
+    print("OK: anexo multi-coluna (2 empresas, depois 3 anos ano a ano) não lança exceção; logo de escopo correto nos 2 casos")
+
+
 if __name__ == "__main__":
     testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
     falhas = 0
