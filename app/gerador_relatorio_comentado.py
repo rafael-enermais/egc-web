@@ -48,6 +48,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, "assets_relatorio")
 FONT_DIR = os.path.join(ASSETS, "fonts")
 LOGO_DIR = os.path.join(ASSETS, "logos")
+# Marca d'agua (torres de transmissao) extraida com transparencia do
+# proprio PDF-modelo real (pdfimages + smask recombinado, 24/09/2026) --
+# mesmo asset exato usado no modelo, nao um substituto.
+TORRE_WATERMARK = os.path.join(ASSETS, "torre_watermark.png")
 
 PAGE_W, PAGE_H = 595.0, 842.0  # A4 retrato em pt -- mesmo tamanho do PDF-modelo (confirmado via pdfinfo)
 
@@ -132,6 +136,29 @@ def rect(c, x0, y0_top, x1, y1_top, fill=None, stroke=None, width=1, radius=0):
     c.restoreState()
 
 
+def _interp_cor(cor_a: str, cor_b: str, t: float) -> str:
+    """Interpola linearmente entre 2 cores hex, t em [0,1]."""
+    a = HexColor(cor_a)
+    b = HexColor(cor_b)
+    r = a.red + (b.red - a.red) * t
+    g = a.green + (b.green - a.green) * t
+    b_ = a.blue + (b.blue - a.blue) * t
+    return f"#{int(r * 255):02x}{int(g * 255):02x}{int(b_ * 255):02x}"
+
+
+def faixa_gradiente(c, x0, y0_top, x1, y1_top, cor_a, cor_b, passos=60):
+    """Retangulo preenchido com gradiente horizontal suave (reportlab nao
+    tem shading linear simples via canvas puro -- aproxima com N fatias
+    verticais finas, mesmo truque usado no modelo real, so' que la e'
+    nativo do editor que gerou o PDF-modelo)."""
+    largura_passo = (x1 - x0) / passos
+    for i in range(passos):
+        t = i / (passos - 1)
+        cor = _interp_cor(cor_a, cor_b, t)
+        xa = x0 + i * largura_passo
+        rect(c, xa, y0_top, xa + largura_passo + 0.5, y1_top, fill=cor)
+
+
 def image(c, path, x0, y0_top, x1, y1_top, mask="auto", preserve_ratio=True):
     if preserve_ratio:
         ir = ImageReader(path)
@@ -181,17 +208,28 @@ MARGEM = 42.0
 CONTEUDO_W = PAGE_W - 2 * MARGEM
 
 
+def _fundo_marca_dagua(c):
+    """Marca d'agua das torres, canto inferior esquerdo, atras de todo o
+    resto -- por isso e' a primeira coisa desenhada na pagina. Asset ja
+    vem com transparencia (smask), preserva proporcao."""
+    if os.path.exists(TORRE_WATERMARK):
+        largura = PAGE_W * 0.92
+        altura = largura  # asset e' quase quadrado (900x905)
+        image(c, TORRE_WATERMARK, -PAGE_W * 0.08, PAGE_H - altura * 0.68,
+              largura - PAGE_W * 0.08, PAGE_H + altura * 0.32,
+              mask="auto", preserve_ratio=True)
+
+
 def _header(c, dados, subtitulo_pagina):
-    # faixa superior navy -> orange (aprox. gradiente do modelo: navy na
-    # maior parte, orange nos ~12% finais -- reportlab nao tem gradiente
-    # nativo simples, simulado com 2 blocos solidos; refinar depois se o
-    # Rafael achar a transicao dura demais)
-    rect(c, 0, 0, PAGE_W * 0.88, 5, fill=NAVY)
-    rect(c, PAGE_W * 0.88, 0, PAGE_W, 5, fill=ORANGE)
+    # faixa superior navy -> orange -- gradiente suave (N fatias finas,
+    # ver faixa_gradiente()), substitui os 2 blocos solidos do piloto
+    # v1 (pedido do Rafael 24/09: "puxar a foto de fundo com a torre tb").
+    faixa_gradiente(c, 0, 0, PAGE_W, 5, NAVY, ORANGE)
 
     logo_path = LOGO.get(dados["empresa_codigo"])
     if logo_path and os.path.exists(logo_path):
-        image(c, logo_path, MARGEM, 18, MARGEM + 130, 55, mask="auto", preserve_ratio=True)
+        # logo um pouco maior (pedido do Rafael 24/09) -- 130x37pt -> 165x47pt
+        image(c, logo_path, MARGEM, 16, MARGEM + 165, 63, mask="auto", preserve_ratio=True)
 
     txt(c, PAGE_W - MARGEM, 32, dados["cabecalho_relatorio"].upper(),
         font="bold", size=8.5, color=NAVY, align="right")
@@ -239,28 +277,37 @@ def _kpi_pequeno(c, x0, x1, y0, y1, label, valor, complemento, cor_borda):
 
 def _leitura_executiva(dados) -> list[str]:
     """Frases-modelo (24/09/2026, decisao do Rafael: nunca geracao livre
-    por IA) preenchidas com valor real de `dados`. Sinal do resultado
-    (lucro/prejuizo, alta/queda) escolhido em runtime -- nunca escrito
-    fixo, senao um periodo com lucro real sairia com o texto errado."""
+    por IA) preenchidas com valor real de `dados`.
+
+    Texto NEUTRO por decisao explicita do Rafael (24/09/2026, mesma
+    sessao que pediu a torre no fundo): nada de qualificar o numero
+    ("operacao saudavel", "margem abaixo do usual", "positivo"/
+    "negativo" como adjetivo) -- so' o fato e o numero com sinal
+    (moeda_br/pct_br ja poe "-" sozinho quando negativo, forcar_sinal=True
+    poe "+" explicito no positivo). A MESMA frase tem que servir pra
+    lucro ou prejuizo, EBITDA positivo ou negativo, sem trocar palavra
+    nenhuma -- e' o que os testes abaixo verificam (nao pode reintroduzir
+    'lucro'/'prejuizo'/'positivo'/'negativo' condicional aqui)."""
     d = dados
-    lucro_prejuizo = "lucro" if d["resultado_liquido"] >= 0 else "prejuízo"
     p1 = (
         f"No período de referência, a {d['empresa_nome']} registrou receita "
         f"operacional líquida de {moeda_br(d['receita_liquida'])} com margem "
-        f"bruta de {pct_br(d['margem_bruta'])} — "
-        f"{'operação estruturalmente saudável' if d['margem_bruta'] >= 0.5 else 'margem operacional abaixo do usual'}. "
-        f"Isolando efeitos financeiros e de depreciação, o período gerou EBITDA "
-        f"{'positivo' if d['ebitda'] >= 0 else 'negativo'} de {moeda_br(abs(d['ebitda']))}."
+        f"bruta de {pct_br(d['margem_bruta'])}. Isolando efeitos financeiros e "
+        f"de depreciação, o EBITDA do período foi de "
+        f"{moeda_br(d['ebitda'], forcar_sinal=True)} (margem de "
+        f"{pct_br(d['margem_ebitda'], forcar_sinal=True)})."
     )
     p2 = (
-        f"O resultado líquido do período foi {lucro_prejuizo} de "
-        f"{moeda_br(abs(d['resultado_liquido']))} (margem de {pct_br(d['margem_liquida'], forcar_sinal=True)}), "
-        f"com despesas operacionais de {moeda_br(d['despesas_operacionais'])}."
+        f"O resultado líquido do período foi de "
+        f"{moeda_br(d['resultado_liquido'], forcar_sinal=True)} (margem de "
+        f"{pct_br(d['margem_liquida'], forcar_sinal=True)}), com despesas "
+        f"operacionais de {moeda_br(d['despesas_operacionais'])}."
     )
     return [p1, p2]
 
 
 def pagina_destaques(c, dados, pagina: int, total_paginas: int):
+    _fundo_marca_dagua(c)
     _header(c, dados, "Destaques do Período")
 
     txt(c, MARGEM, 100, f"Destaques {dados['periodo_label']}", font="heavy", size=20, color=NAVY)
