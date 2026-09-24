@@ -25,13 +25,34 @@ operacional).
 Contas usadas (todas ja extraidas pelo parser hoje, nenhuma nova):
   BP:  TOTAL DO ATIVO, TOTAL CIRCULANTE ATIVO, TOTAL CIRCULANTE PASSIVO,
        TOTAL NAO CIRCULANTE PASSIVO, TOTAL PATRIMONIO LIQUIDO
-  DRE: RECEITA OPERACIONAL LIQUIDA, LUCRO BRUTO, LUCRO LIQUIDO DO EXERCICIO
+  DRE: RECEITA OPERACIONAL LIQUIDA, LUCRO BRUTO, LUCRO LIQUIDO DO EXERCICIO,
+       LUCRO OPERACIONAL LIQUIDO, DESPESAS FINANCEIRAS, RECEITAS FINANCEIRAS,
+       DEPRECIACOES, AMORTIZACOES
 
 "TOTAL DO PASSIVO" (que ja existe em egc.v_indicadores) NAO e' usado pra
 endividamento -- no BP brasileiro essa linha soma Passivo exigivel +
 Patrimonio Liquido (e' por isso que TOTAL DO ATIVO = TOTAL DO PASSIVO
 sempre fecha). Endividamento geral usa só o passivo exigivel de verdade
 (Circulante + Nao Circulante), sem o PL misturado.
+
+EBITDA (24/09/2026 -- pedido da diretoria via Rafael, so' virou viavel
+depois do fix em parser_egc.py que passou a extrair Depreciacoes/
+Amortizacoes do periodo, que faltava ate 23/09/2026):
+  resultado_financeiro = DESPESAS FINANCEIRAS + RECEITAS FINANCEIRAS
+    (a 1a ja vem negativa, a 2a positiva -- soma direta da o liquido)
+  EBIT = LUCRO OPERACIONAL LIQUIDO - resultado_financeiro
+    (LUCRO OPERACIONAL LIQUIDO nesse layout de DRE ja SAI liquido do
+    resultado financeiro -- subtrair de novo "desfaz" isso e devolve o
+    resultado so' da operacao, antes de juros)
+  D&A = DEPRECIACOES + AMORTIZACOES (ambas negativas ou 0 -- ausentes
+    no periodo = 0, tratado como zero real, nao NaN: ver
+    extrair_deprec_amortiz() em parser_egc.py, "nunca inventa numero"
+    so' vale pra criar linha nova, zero por ausencia e' informacao real)
+  EBITDA = EBIT - D&A (subtrair um numero negativo soma de volta)
+  Margem EBITDA = EBITDA / RECEITA OPERACIONAL LIQUIDA
+
+  Sem LUCRO OPERACIONAL LIQUIDO no periodo (BP/DRE incompleto), EBITDA
+  fica NaN -- nao computa "meio EBITDA" com dado faltando.
 """
 from __future__ import annotations
 
@@ -48,6 +69,11 @@ CONTAS_DRE = [
     "RECEITA OPERACIONAL LIQUIDA",
     "LUCRO BRUTO",
     "LUCRO LIQUIDO DO EXERCICIO",
+    "LUCRO OPERACIONAL LIQUIDO",
+    "DESPESAS FINANCEIRAS",
+    "RECEITAS FINANCEIRAS",
+    "DEPRECIACOES",
+    "AMORTIZACOES",
 ]
 
 COLUNAS_INDICADORES = [
@@ -58,6 +84,8 @@ COLUNAS_INDICADORES = [
     "Margem Líquida",
     "ROA",
     "ROE",
+    "EBITDA",
+    "Margem EBITDA",
 ]
 
 
@@ -116,6 +144,16 @@ def calcular_indicadores(lancamentos_bp: list[dict], lancamentos_dre: list[dict]
     out["Margem Líquida"] = _div(dre["LUCRO LIQUIDO DO EXERCICIO"], dre["RECEITA OPERACIONAL LIQUIDA"])
     out["ROA"] = _div(dre["LUCRO LIQUIDO DO EXERCICIO"], bp["TOTAL DO ATIVO"])
     out["ROE"] = _div(dre["LUCRO LIQUIDO DO EXERCICIO"], bp["TOTAL PATRIMONIO LIQUIDO"])
+
+    # EBITDA (24/09/2026) -- ver formula comentada no topo do modulo.
+    # fillna(0) so' nos componentes aditivos (resultado financeiro e D&A
+    # -- ausencia real vale 0), NUNCA no LUCRO OPERACIONAL LIQUIDO em si
+    # (ausencia dele = EBITDA desconhecido nesse periodo, fica NaN).
+    resultado_financeiro = dre["DESPESAS FINANCEIRAS"].fillna(0) + dre["RECEITAS FINANCEIRAS"].fillna(0)
+    d_a = dre["DEPRECIACOES"].fillna(0) + dre["AMORTIZACOES"].fillna(0)
+    ebit = dre["LUCRO OPERACIONAL LIQUIDO"] - resultado_financeiro
+    out["EBITDA"] = ebit - d_a
+    out["Margem EBITDA"] = _div(out["EBITDA"], dre["RECEITA OPERACIONAL LIQUIDA"])
 
     out.index = pd.to_datetime(out.index)
     out.index.name = "periodo"

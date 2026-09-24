@@ -223,6 +223,7 @@ with col_dash:
                 FORMATO_INDICADOR = {
                     "Liquidez Corrente": "x", "Capital de Giro": "R$", "Endividamento Geral": "pct",
                     "Margem Bruta": "pct", "Margem Líquida": "pct", "ROA": "pct", "ROE": "pct",
+                    "EBITDA": "R$", "Margem EBITDA": "pct",
                 }
                 st.caption(f"Período: {resultado['periodo']} · Empresas: {', '.join(resultado['empresas_incluidas'])}")
                 linhas_ind = []

@@ -106,7 +106,8 @@ TOOLS = [
         "name": "consultar_indicadores",
         "description": (
             "Indicadores contabeis (Liquidez Corrente, Capital de Giro, Endividamento "
-            "Geral, Margem Bruta, Margem Liquida, ROA, ROE) no periodo mais recente "
+            "Geral, Margem Bruta, Margem Liquida, ROA, ROE, EBITDA, Margem EBITDA) no "
+            "periodo mais recente "
             "disponivel. 1 empresa em 'empresas' -> indicadores so' dela; 2+ empresas "
             "(ou vazio/omitido, que usa todas as 6) -> indicadores CONSOLIDADOS do "
             "grupo (soma antes de calcular os indices). Use pra perguntas tipo "
@@ -228,7 +229,8 @@ def montar_system_prompt(
         "consultar_bp_dre/consultar_visao_grupo direto (eles ja' usam o mais recente "
         "sozinhos).\n"
         "- Pergunta sobre saude financeira/indice (liquidez, endividamento, margem, "
-        "ROA, ROE), de 1 empresa ou do grupo consolidado -> consultar_indicadores.\n"
+        "ROA, ROE, EBITDA, Margem EBITDA), de 1 empresa ou do grupo consolidado -> "
+        "consultar_indicadores.\n"
         "- Pergunta sobre o que falta, o que esta incompleto, quais periodos/empresas "
         "sem dado -> consultar_completude."
         + bloco_contexto_fiscal

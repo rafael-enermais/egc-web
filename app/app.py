@@ -166,6 +166,17 @@ def pagina_inicio():
         texto, delta_txt = _fmt(col, fmt)
         container.metric(label, texto, delta=delta_txt)
 
+    # EBITDA (24/09/2026, pedido da diretoria via Rafael) -- linha propria,
+    # so' virou viavel depois do fix em parser_egc.py que passou a extrair
+    # Depreciacoes/Amortizacoes do periodo (formula em indicadores.py).
+    k8, k9 = st.columns(2)
+    for col, label, fmt, container in [
+        ("EBITDA", "EBITDA", "R$", k8),
+        ("Margem EBITDA", "Margem EBITDA", "pct", k9),
+    ]:
+        texto, delta_txt = _fmt(col, fmt)
+        container.metric(label, texto, delta=delta_txt)
+
     with st.expander("Histórico completo dos indicadores"):
         # Fix 23/09/2026 (achado do Rafael): column_config.NumberColumn com
         # format="R$ %.2f"/"percent" renderiza no padrao americano (sem
@@ -177,7 +188,8 @@ def pagina_inicio():
             lambda v: formatacao.numero_br(v, sufixo="x")
         )
         tabela_ind_fmt["Capital de Giro"] = tabela_ind_fmt["Capital de Giro"].apply(formatacao.moeda_br)
-        for col in ["Endividamento Geral", "Margem Bruta", "Margem Líquida", "ROA", "ROE"]:
+        tabela_ind_fmt["EBITDA"] = tabela_ind_fmt["EBITDA"].apply(formatacao.moeda_br)
+        for col in ["Endividamento Geral", "Margem Bruta", "Margem Líquida", "ROA", "ROE", "Margem EBITDA"]:
             tabela_ind_fmt[col] = tabela_ind_fmt[col].apply(formatacao.pct_br)
         st.dataframe(tabela_ind_fmt, use_container_width=True)
         st.caption(
@@ -258,6 +270,14 @@ def pagina_inicio():
             ("Margem Líquida", "Margem Líquida", "pct", gk5),
             ("ROA", "ROA (Retorno s/ Ativo)", "pct", gk6),
             ("ROE", "ROE (Retorno s/ PL)", "pct", gk7),
+        ]:
+            texto, delta_txt = _fmt_grupo(col, fmt)
+            container.metric(label, texto, delta=delta_txt)
+
+        gk8, gk9 = st.columns(2)
+        for col, label, fmt, container in [
+            ("EBITDA", "EBITDA", "R$", gk8),
+            ("Margem EBITDA", "Margem EBITDA", "pct", gk9),
         ]:
             texto, delta_txt = _fmt_grupo(col, fmt)
             container.metric(label, texto, delta=delta_txt)
