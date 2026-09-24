@@ -21,6 +21,8 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Optional
 
+import psycopg2.errors
+
 # psycopg2 so e importado por quem realmente abre conexao (app.py);
 # este modulo usa apenas a interface DB-API (cursor/execute/fetchall),
 # entao roda com QUALQUER driver compativel (psycopg2, ou um mock nos
@@ -93,12 +95,21 @@ def inserir_lancamentos(
     rows: list,
     arquivo_pdf: str,
     usuario: Optional[str] = None,
+    periodo_inicio: Optional[date] = None,
+    granularidade: Optional[str] = None,
 ) -> int:
     """
     Insere o lote extraido do PDF. `rows` no formato de saida do parser
     (parser_egc.build_output): BP = [grupo, conta, valor_br, origem];
     DRE = [conta, valor_br, grupo, origem]. Valor chega como string
     BR-formatada (ex. "1.094.484,54") — convertida pra numeric aqui.
+
+    periodo_inicio/granularidade (24/09/2026): intervalo real declarado
+    no proprio PDF ("Periodo: X a Y") e a classificacao mensal/
+    trimestral/semestral/anual derivada dele (parser_egc.
+    calcular_granularidade). Opcionais e None por padrao -- BP nao tem
+    intervalo (e foto de 1 data) e chamadores antigos continuam
+    funcionando sem passar nada.
     """
     from parser_egc import br_to_float
 
@@ -109,17 +120,39 @@ def inserir_lancamentos(
         else:  # DRE — ordem de colunas diferente no parser
             conta, valor_br, grupo, origem = r
         valor = br_to_float(valor_br)
-        registros.append((empresa_codigo, tipo, periodo, grupo, conta, valor, origem, arquivo_pdf, usuario))
+        registros.append((
+            empresa_codigo, tipo, periodo, grupo, conta, valor, origem,
+            arquivo_pdf, usuario, periodo_inicio, granularidade,
+        ))
 
     with conn.cursor() as cur:
-        cur.executemany(
-            """
-            INSERT INTO egc.lancamentos
-                (empresa_codigo, tipo, periodo, grupo, conta, valor, origem, arquivo_pdf, usuario)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            registros,
-        )
+        try:
+            cur.executemany(
+                """
+                INSERT INTO egc.lancamentos
+                    (empresa_codigo, tipo, periodo, grupo, conta, valor, origem,
+                     arquivo_pdf, usuario, periodo_inicio, granularidade)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                registros,
+            )
+        except psycopg2.errors.UndefinedColumn:
+            # Fallback (24/09/2026): migracao da Fase 1 (colunas
+            # periodo_inicio/granularidade) ainda nao rodou no banco --
+            # nao trava a importacao por causa disso, so' grava sem as 2
+            # colunas novas (mesmo comportamento de antes). Reverte a
+            # transacao interrompida pelo erro antes de tentar de novo.
+            conn.rollback()
+            registros_sem_novas = [r[:-2] for r in registros]
+            cur.executemany(
+                """
+                INSERT INTO egc.lancamentos
+                    (empresa_codigo, tipo, periodo, grupo, conta, valor, origem,
+                     arquivo_pdf, usuario)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                registros_sem_novas,
+            )
         return cur.rowcount
 
 

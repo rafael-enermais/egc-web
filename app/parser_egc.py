@@ -128,6 +128,7 @@ import csv
 import re
 import sys
 import unicodedata
+from datetime import datetime
 from pathlib import Path
 
 try:
@@ -626,16 +627,29 @@ def detect_format_and_type(pdf_path: Path):
                     break
 
     # Bug 4c: regex período aceita "à" além de "a"
+    # periodo_inicio (24/09/2026, Rafael pediu granularidade real pro
+    # seletor de mes/trimestre/semestre/ano): o PDF ja' declara "Periodo:
+    # DD/MM/AAAA a DD/MM/AAAA" -- a data de INICIO sempre foi lida (grupo
+    # 1 do regex) mas descartada, so' o fim (grupo 2) virava `periodo`.
+    # Guardando as 2 agora pra calcular_granularidade() poder dizer se o
+    # PDF cobre 1 mes, 1 trimestre, 1 semestre ou o ano inteiro -- sem
+    # isso nao da pra saber, pra nenhum periodo ja' importado, se "06/2026"
+    # veio de um fechamento so' de junho ou do 2o trimestre inteiro (risco
+    # real que o Rafael apontou: nao inventar granularidade por delta,
+    # so' usar o que o proprio PDF declara).
+    periodo_inicio = ""
     m = re.search(r"Per[ií]odo[:\s]+(\d{2}/\d{2}/\d{4})\s*(?:[àa]\s*(\d{2}/\d{2}/\d{4}))?",
                   texto, re.I)
     if m:
         periodo = m.group(2) or m.group(1)
+        periodo_inicio = m.group(1) if m.group(2) else ""
     else:
         m = re.search(r"(\d{2}/\d{2}/\d{4})\s*(?:[àa]\s*(\d{2}/\d{2}/\d{4}))?", texto)
         if m:
             periodo = m.group(2) or m.group(1)
+            periodo_inicio = m.group(1) if m.group(2) else ""
 
-    return fmt, tipo, empresa, cnpj, periodo
+    return fmt, tipo, empresa, cnpj, periodo, periodo_inicio
 
 
 # ─────────────────────────────────────────────
@@ -945,14 +959,49 @@ def parse_duplo(pdf_path: Path, tipo: str, origem: str) -> list:
 
 
 # ─────────────────────────────────────────────
+#  GRANULARIDADE REAL DO PERIODO (24/09/2026)
+# ─────────────────────────────────────────────
+
+def calcular_granularidade(periodo_inicio: str, periodo_fim: str) -> str:
+    """
+    Classifica o INTERVALO REAL declarado no proprio PDF ("Periodo: X a
+    Y") em mensal/trimestral/semestral/anual -- nunca por calculo/delta
+    entre 2 fechamentos diferentes (isso e' estimativa, nao dado real;
+    decisao do Rafael 24/09/2026: "sempre com valores reais e corretos").
+    String vazia (sem intervalo declarado no PDF, so' 1 data) devolve ""
+    -- 'nunca inventa numero' vale pra granularidade tambem.
+    """
+    if not periodo_inicio or not periodo_fim:
+        return ""
+    try:
+        d_ini = datetime.strptime(periodo_inicio, "%d/%m/%Y").date()
+        d_fim = datetime.strptime(periodo_fim, "%d/%m/%Y").date()
+    except ValueError:
+        return ""
+    dias = (d_fim - d_ini).days + 1
+    if dias <= 0:
+        return ""
+    if dias <= 32:
+        return "mensal"
+    if dias <= 95:
+        return "trimestral"
+    if dias <= 185:
+        return "semestral"
+    if dias <= 370:
+        return "anual"
+    return "outra"
+
+
+# ─────────────────────────────────────────────
 #  DISPATCHER PRINCIPAL
 # ─────────────────────────────────────────────
 
 def processar_pdf(pdf_path: Path):
     bp_rows, dre_rows, log, meta = [], [], [], []
     try:
-        fmt, tipo, empresa, cnpj, periodo = detect_format_and_type(pdf_path)
-        meta.append([empresa, cnpj, periodo, pdf_path.name, tipo, fmt])
+        fmt, tipo, empresa, cnpj, periodo, periodo_inicio = detect_format_and_type(pdf_path)
+        granularidade = calcular_granularidade(periodo_inicio, periodo)
+        meta.append([empresa, cnpj, periodo, pdf_path.name, tipo, fmt, periodo_inicio, granularidade])
         origem = f"PDF {periodo}" if periodo else f"PDF {pdf_path.stem}"
 
         if tipo == "DESCONHECIDO":
@@ -1068,7 +1117,8 @@ def main():
     write_tsv(outdir / "enermais_log.tsv",
               ["NIVEL", "ARQUIVO", "TIPO", "MENSAGEM"], all_log)
     write_tsv(outdir / "enermais_meta.tsv",
-              ["EMPRESA", "CNPJ", "PERIODO", "ARQUIVO", "TIPO", "FORMATO"], all_meta)
+              ["EMPRESA", "CNPJ", "PERIODO", "ARQUIVO", "TIPO", "FORMATO",
+               "PERIODO_INICIO", "GRANULARIDADE"], all_meta)
 
     print(f"OK: BP={len(all_bp)} DRE={len(all_dre)} LOG={len(all_log)}")
     for entry in all_log:
