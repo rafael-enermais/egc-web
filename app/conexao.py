@@ -17,7 +17,7 @@ import psycopg2
 # (mesma regra de sempre, so' que agora com 1 casa a mais de folga antes
 # do "1.0" oficial). Reiniciado em 0.1.0 nesta mudanca (era "0.7"/"0.8"/
 # "0.9" de 1 casa so').
-APP_VERSION = "0.13.0"
+APP_VERSION = "0.14.0"
 
 EMPRESAS_FIXAS = [
     ("ENERGIA", "Enermais Energia Ltda", "47.040.664/0001-48"),

@@ -310,8 +310,27 @@ DRE_TARGETS = [
                                                       "LUCRO/PREJUIZO LIQUIDO",
                                                       "PREJUIZO LIQUIDO DO EXERCICIO",
                                                       "RESULTADO DO EXERCICIO",
-                                                      "RESULTADO ANTES DA CS E IR",
                                                       "LUCRO LIQUIDO"]),
+    # FIX_20260924 (bug real achado auditando os 20 DRE unicos da pasta
+    # do vault): "RESULTADO ANTES DA CS E IR" tinha alias pra
+    # LUCRO LIQUIDO DO EXERCICIO acima -- certo quando o DRE nao
+    # provisiona CSLL/IRPJ como linha propria (a maioria dos casos, os 2
+    # valores saem iguais mesmo), ERRADO quando provisiona (Enermais
+    # Energia 05/2026 e Enermais Construtora 2T2026 na amostra: R$ 231k e
+    # R$ 204k de diferenca real). Como o "found" so' guarda o 1o match e
+    # "Resultado Antes da CS e IR" sempre aparece ANTES de "(=) Lucro
+    # Liquido do Exercicio" no layout, o alias sequestrava o valor errado
+    # (pre-CSLL/IR) sempre que os 2 existiam separados. Alias removido:
+    # os 4 aliases que sobraram acima ja cobrem 100% das 20 amostras.
+    #
+    # DEPRECIACOES/AMORTIZACOES NAO entram no mecanismo normal de
+    # DRE_TARGETS (aliases vazios de proposito, ver process_candidates) --
+    # pode haver MAIS DE 1 linha por periodo (ex.: "Depreciacoes" +
+    # "Depreciacao de Veiculos" separadas, achado real em amostra real,
+    # 2024.12 Enermais Energia) e o mecanismo de 1o-match-vence perderia a
+    # 2a linha. extrair_deprec_amortiz() soma TODAS as linhas do periodo.
+    ("DESPESAS",  "DEPRECIACOES",                    []),
+    ("DESPESAS",  "AMORTIZACOES",                    []),
 ]
 
 # Contas exclusivas do ATIVO (contexto)
@@ -399,6 +418,40 @@ def update_context(desc_n: str, current: str) -> str:
     if ("PATRIMONIO" in desc_n or "PATRIMOMIO" in desc_n) and len(desc_n) < 30:
         return "PATRIMONIO"
     return current
+
+
+def extrair_deprec_amortiz(candidates: list) -> dict:
+    """
+    Soma TODAS as linhas de depreciacao/amortizacao do periodo -- pode
+    haver mais de 1 sublinha no mesmo DRE (achado real em amostra:
+    2024.12 Enermais Energia tem "Depreciacoes" (96.965,67) E
+    "Depreciacao de Veiculos" (167.490,27) como linhas SEPARADAS dentro
+    de Administrativas -- as 2 sao despesa real do periodo, somar so' a
+    1a subestimaria o total em ~63% nesse caso). Por isso NAO usa o
+    mecanismo normal de DRE_TARGETS (found[nome] = 1o match, ver
+    process_candidates) -- ali perderia a 2a linha em diante.
+
+    candidates: mesma lista (desc, valor, bloco) que process_candidates
+    recebe -- aqui sempre so' candidatos de DRE (BP nunca passa por
+    process_candidates com tipo=="DRE", ver parse_sped/parse_texto/
+    parse_duplo), entao nunca cruza com "Depreciacao Acumulada" do BP
+    (chave diferente, contexto diferente, sem risco de mistura).
+
+    Retorna só as chaves que de fato apareceram no período (Rafael pediu
+    'nunca inventa número' -- sem depreciação real no período, não entra
+    linha nenhuma, igual a qualquer outro alvo ausente de DRE_TARGETS).
+    """
+    total = {"DEPRECIACOES": 0.0, "AMORTIZACOES": 0.0}
+    achou = {"DEPRECIACOES": False, "AMORTIZACOES": False}
+    for desc_raw, val, _bloco in candidates:
+        desc_n = norm(desc_raw)
+        if "DEPRECIA" in desc_n:
+            total["DEPRECIACOES"] += val
+            achou["DEPRECIACOES"] = True
+        elif "AMORTIZ" in desc_n:
+            total["AMORTIZACOES"] += val
+            achou["AMORTIZACOES"] = True
+    return {k: v for k, v in total.items() if achou[k]}
 
 
 def calcular_derivados_dre(found: dict) -> dict:
@@ -500,6 +553,7 @@ def process_candidates(candidates, targets, tipo, origem):
 
     if tipo == "DRE":
         found = calcular_derivados_dre(found)
+        found.update(extrair_deprec_amortiz(candidates))
     return build_output(found, targets, tipo, origem)
 
 
