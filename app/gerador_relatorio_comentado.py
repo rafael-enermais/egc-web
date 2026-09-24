@@ -255,6 +255,33 @@ def _footer(c, pagina, total_paginas):
         font="regular", size=8.5, color=GREY_TEXT, align="center")
 
 
+def _valor_com_unidade(c, x, y_top, valor_completo, font_num="heavy", size_num=25,
+                        cor_num=NAVY, unidade="MM", font_unidade="regular",
+                        size_unidade=None, cor_unidade=None):
+    """Desenha o valor com a unidade (' MM') menor e mais leve que o
+    numero -- igual ao modelo real (25/09/2026, pedido do Rafael: 'MM' no
+    piloto saia do mesmo tamanho/peso do numero, ficando pesado demais).
+    Se `valor_completo` nao terminar em ' <unidade>' desenha tudo do
+    mesmo jeito de antes (nao quebra leituras sem unidade)."""
+    sufixo = f" {unidade}"
+    if size_unidade is None:
+        size_unidade = round(size_num * 0.56, 1)
+    if cor_unidade is None:
+        cor_unidade = cor_num
+    if not valor_completo.endswith(sufixo):
+        txt(c, x, y_top, valor_completo, font=font_num, size=size_num, color=cor_num)
+        return
+    numero = valor_completo[: -len(sufixo)]
+    y = Y(y_top)
+    c.setFont(FONT[font_num], size_num)
+    c.setFillColor(HexColor(cor_num))
+    c.drawString(x, y, numero)
+    w = stringWidth(numero, FONT[font_num], size_num)
+    c.setFont(FONT[font_unidade], size_unidade)
+    c.setFillColor(HexColor(cor_unidade))
+    c.drawString(x + w + 4, y, unidade)
+
+
 def _kpi_grande(c, x0, x1, y0, y1, label, valor, complemento, invertido=False):
     """Card de KPI grande (2 por linha) -- borda navy/fundo branco por
     padrao, ou fundo navy solido com texto branco/laranja quando
@@ -269,7 +296,7 @@ def _kpi_grande(c, x0, x1, y0, y1, label, valor, complemento, invertido=False):
 
     pad = 16
     txt(c, x0 + pad, y0 + 22, label.upper(), font="bold", size=9, color=cor_label)
-    txt(c, x0 + pad, y0 + 50, valor, font="heavy", size=25, color=cor_valor)
+    _valor_com_unidade(c, x0 + pad, y0 + 50, valor, font_num="heavy", size_num=25, cor_num=cor_valor)
     paragrafo(c, x0 + pad, y0 + 68, complemento, x1 - x0 - 2 * pad,
               font="regular", size=9, color=cor_comp, leading=12)
 
@@ -280,7 +307,7 @@ def _kpi_pequeno(c, x0, x1, y0, y1, label, valor, complemento, cor_borda):
     pad = 12
     paragrafo(c, x0 + pad, y0 + 16, label.upper(), x1 - x0 - 2 * pad,
               font="bold", size=7.6, color=NAVY, leading=9.5)
-    txt(c, x0 + pad, y0 + 42, valor, font="heavy", size=16, color=NAVY)
+    _valor_com_unidade(c, x0 + pad, y0 + 42, valor, font_num="heavy", size_num=16, cor_num=NAVY)
     txt(c, x0 + pad, y0 + 58, complemento, font="regular", size=8, color=GREY_TEXT)
 
 
@@ -607,8 +634,8 @@ def pagina_capa(c, dados, pagina: int, total_paginas: int):
     c.saveState()
     c.setFillColor(HexColor(NAVY))
     p = c.beginPath()
-    topo_x = PAGE_W * 0.80
-    base_x = PAGE_W * 0.72
+    topo_x = PAGE_W * 0.793
+    base_x = PAGE_W * 0.667
     p.moveTo(topo_x, PAGE_H)
     p.lineTo(PAGE_W, PAGE_H)
     p.lineTo(PAGE_W, 0)
