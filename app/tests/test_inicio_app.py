@@ -34,6 +34,7 @@ from streamlit.testing.v1 import AppTest  # noqa: E402
 import auth  # noqa: E402
 import conexao  # noqa: E402
 import db  # noqa: E402
+import formatacao  # noqa: E402
 
 PAGE = str(Path(__file__).resolve().parent.parent / "app.py")
 
@@ -59,6 +60,11 @@ HIST_DRE = [
     {"periodo": P_JUN, "grupo": "RESULTADO", "conta": "RECEITA OPERACIONAL LIQUIDA", "valor": Decimal("320000.00")},
     {"periodo": P_JUN, "grupo": "RESULTADO", "conta": "LUCRO BRUTO", "valor": Decimal("120000.00")},
     {"periodo": P_JUN, "grupo": "RESULTADO", "conta": "LUCRO LIQUIDO DO EXERCICIO", "valor": Decimal("60000.00")},
+    # EBITDA (24/09/2026): so' no periodo mais recente, de proposito --
+    # testa tambem que P_MAI sem essas contas nao quebra nada (NaN vira
+    # "-" no metric, ja coberto pelo caso "sem DRE" do grupo mais abaixo).
+    {"periodo": P_JUN, "grupo": "RESULTADO", "conta": "LUCRO OPERACIONAL LIQUIDO", "valor": Decimal("80000.00")},
+    {"periodo": P_JUN, "grupo": "DESPESAS", "conta": "DESPESAS FINANCEIRAS", "valor": Decimal("-10000.00")},
 ]
 
 
@@ -115,9 +121,24 @@ def run():
         # secao empresa-unica estao presentes.
         labels = {m.label for m in at.metric}
         for esperado in ["Liquidez Corrente", "Capital de Giro", "Endividamento Geral",
-                          "Margem Bruta", "Margem Líquida", "ROA (Retorno s/ Ativo)", "ROE (Retorno s/ PL)"]:
+                          "Margem Bruta", "Margem Líquida", "ROA (Retorno s/ Ativo)", "ROE (Retorno s/ PL)",
+                          "EBITDA", "Margem EBITDA"]:
             assert esperado in labels, f"faltou o indicador {esperado!r} nos metrics: {labels}"
-        print("OK: 7 indicadores contábeis renderizados como st.metric, sem exceção com Decimal real")
+        print("OK: 9 indicadores contábeis renderizados como st.metric, sem exceção com Decimal real")
+
+        # EBITDA da empresa única em P_JUN: LUCRO OPERACIONAL LIQUIDO 80.000
+        # - DESPESAS FINANCEIRAS (-10.000, sem RECEITAS FINANCEIRAS no mock,
+        # tratada como 0) = 90.000; sem Depreciações/Amortizações no mock
+        # (D&A = 0). Calculado via formatacao.py (não chuta arredondamento
+        # na mão -- mesma formatação BR que o app usa de verdade).
+        ebitda_esperado_num = 80000.00 - (-10000.00)
+        # Indices: c1/c2 (periodos ativos/arquivados) = 0,1; k1..k9 (indicadores da
+        # empresa unica, incl. EBITDA/Margem EBITDA) = 2..10; grupo comeca em 11.
+        ebitda_metric = next(m for i, m in enumerate(at.metric) if m.label == "EBITDA" and i < 11)
+        assert ebitda_metric.value == formatacao.moeda_br(ebitda_esperado_num),             f"EBITDA da empresa errado: {ebitda_metric.value} (esperava {formatacao.moeda_br(ebitda_esperado_num)})"
+        margem_ebitda_metric = next(m for i, m in enumerate(at.metric) if m.label == "Margem EBITDA" and i < 11)
+        assert margem_ebitda_metric.value == formatacao.pct_br(ebitda_esperado_num / 320000.00),             f"Margem EBITDA da empresa errada: {margem_ebitda_metric.value}"
+        print("OK: EBITDA/Margem EBITDA da empresa única batem cálculo manual (formula em indicadores.py)")
 
         assert m_hist.call_count >= 2, "esperava pelo menos 2 chamadas (BP e DRE) a listar_historico_grupo"
 
@@ -128,8 +149,9 @@ def run():
 
         # --- KPI consolidado do grupo (23/09/2026) ---
         labels_todos = [m.label for m in at.metric]
-        # 9 da secao empresa-unica + 7 do consolidado do grupo (mesmas 3+4)
-        assert len(at.metric) == 16, f"esperava 16 metrics (9 empresa única + 7 grupo), veio {len(at.metric)}"
+        # 11 da secao empresa-unica (7 originais + EBITDA/Margem EBITDA) +
+        # 9 do consolidado do grupo (mesmas 7 + EBITDA/Margem EBITDA)
+        assert len(at.metric) == 20, f"esperava 20 metrics (11 empresa única + 9 grupo, com EBITDA/Margem EBITDA desde 24/09/2026), veio {len(at.metric)}"
         assert labels_todos.count("Liquidez Corrente") == 2, "esperava 'Liquidez Corrente' 1x na secao empresa + 1x no grupo"
         # Período de referência do grupo = P_JUN (mais recente com QUALQUER
         # lançamento no grupo -- só ENERGIA/BP ali, SMG e DRE ficam NaN
@@ -139,10 +161,15 @@ def run():
         # período): 250000/125000 = 2.00x.
         # Fix 23/09/2026 (achado do Rafael): formatação BR agora (vírgula
         # decimal), não mais o "2.00x" americano de antes.
-        liquidez_metric = next(m for i, m in enumerate(at.metric) if m.label == "Liquidez Corrente" and i >= 9)
+        liquidez_metric = next(m for i, m in enumerate(at.metric) if m.label == "Liquidez Corrente" and i >= 11)
         assert liquidez_metric.value == "2,00x", f"Liquidez Corrente do grupo errada: {liquidez_metric.value} (esperava 2,00x)"
-        roa_metric = next(m for i, m in enumerate(at.metric) if m.label == "ROA (Retorno s/ Ativo)" and i >= 9)
+        roa_metric = next(m for i, m in enumerate(at.metric) if m.label == "ROA (Retorno s/ Ativo)" and i >= 11)
         assert roa_metric.value == "—", f"ROA do grupo deveria ser '—' (sem DRE em 06/2026), veio {roa_metric.value}"
+        # Grupo nunca ganhou LUCRO OPERACIONAL LIQUIDO no mock (LANCS_DRE_GRUPO
+        # so' tem RECEITA/LUCRO LIQUIDO) -- EBITDA do grupo deve ficar "-"
+        # (NaN), nao quebrar nem inventar numero.
+        ebitda_grupo_metric = next(m for i, m in enumerate(at.metric) if m.label == "EBITDA" and i >= 11)
+        assert ebitda_grupo_metric.value == "—",             f"EBITDA do grupo deveria ser '—' (sem LUCRO OPERACIONAL LIQUIDO no mock), veio {ebitda_grupo_metric.value}"
         print("OK: KPI consolidado do grupo soma ENERGIA+SMG (indicadores.calcular_indicadores reaproveitado sem mudar lógica), NaN vira '—' quando falta DRE do período")
 
         # --- Painel de pendências (23/09/2026, resumido em 1 tabela na 2ª leva) ---
