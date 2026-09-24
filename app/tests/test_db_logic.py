@@ -75,19 +75,28 @@ def test_inserir_lancamentos_bp_e_dre_ordem_de_colunas():
     n = db.inserir_lancamentos(conn, "ENERGIA", "BP", datetime.date(2023, 12, 31), bp_rows, "arq.pdf", "maria")
     sql, registros = cur.executed[0]
     assert n == 1
-    empresa, tipo, periodo, grupo, conta, valor, origem, arquivo, usuario = registros[0]
+    (empresa, tipo, periodo, grupo, conta, valor, origem, arquivo, usuario,
+     periodo_inicio, granularidade) = registros[0]
     assert (empresa, tipo, grupo, conta, valor, origem) == (
         "ENERGIA", "BP", "ATIVO CIRCULANTE", "CLIENTES", 1094484.54, "PDF 31/12/2023"
     )
+    # periodo_inicio/granularidade (24/09/2026): opcionais, None quando o
+    # chamador nao passa (comportamento antigo preservado).
+    assert (periodo_inicio, granularidade) == (None, None)
 
     cur2 = FakeCursor()
     conn2 = FakeConn(cur2)
     dre_rows = [["RECEITA OPERACIONAL LIQUIDA", "500.000,00", "RECEITAS", "PDF 31/12/2023"]]
-    db.inserir_lancamentos(conn2, "ENERGIA", "DRE", datetime.date(2023, 12, 31), dre_rows, "arq2.pdf", "maria")
+    db.inserir_lancamentos(
+        conn2, "ENERGIA", "DRE", datetime.date(2023, 12, 31), dre_rows, "arq2.pdf", "maria",
+        periodo_inicio=datetime.date(2023, 1, 1), granularidade="anual",
+    )
     _, registros2 = cur2.executed[0]
-    empresa, tipo, periodo, grupo, conta, valor, origem, arquivo, usuario = registros2[0]
+    (empresa, tipo, periodo, grupo, conta, valor, origem, arquivo, usuario,
+     periodo_inicio2, granularidade2) = registros2[0]
     assert (grupo, conta, valor) == ("RECEITAS", "RECEITA OPERACIONAL LIQUIDA", 500000.00)
-    print("OK: inserir_lancamentos (BP e DRE com ordem de coluna correta)")
+    assert (periodo_inicio2, granularidade2) == (datetime.date(2023, 1, 1), "anual")
+    print("OK: inserir_lancamentos (BP e DRE com ordem de coluna correta, periodo_inicio/granularidade opcionais)")
 
 
 def test_salvar_correcao_manual_preserva_pdf_original_so_na_1a_edicao():

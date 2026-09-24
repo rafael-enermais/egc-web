@@ -45,7 +45,10 @@ def chave_ordenacao_previa(r: dict):
     ordenacao dos que tem dado.
     """
     if r.get("meta"):
-        empresa, cnpj, periodo, _nome_arq, tipo, _fmt = r["meta"][0]
+        # *_resto absorve periodo_inicio/granularidade (24/09/2026) sem
+        # quebrar se algum meta antigo (teste, cache) ainda tiver so' 6
+        # campos.
+        empresa, cnpj, periodo, _nome_arq, tipo, _fmt, *_resto = r["meta"][0]
         try:
             periodo_data = _dt.datetime.strptime(periodo, "%d/%m/%Y").date()
         except Exception:

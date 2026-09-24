@@ -86,11 +86,14 @@ def pagina_inicio():
         conn = get_conn()
         periodos_ativos = db.listar_periodos(conn, cod_empresa, status="ATIVO")
         periodos_inativos = db.listar_periodos(conn, cod_empresa, status="INATIVO")
-        c1, c2 = st.columns(2)
-        c1.metric(f"Períodos ativos — {nome_empresa}", len(periodos_ativos))
-        c2.metric("Períodos arquivados", len(periodos_inativos))
+        # Redesenho 24/09/2026 (esboço aprovado pelo Rafael): 2 metric cards
+        # grandes so' pra 2 numeros viravam a primeira coisa que a contadora
+        # via na tela, competindo com os indicadores de verdade. 1 linha
+        # compacta com a mesma informacao.
+        faixa_periodos = f"**{len(periodos_ativos)}** períodos ativos · **{len(periodos_inativos)}** arquivados"
         if periodos_ativos:
-            st.caption("Últimos períodos ativos: " + ", ".join(p.strftime("%m/%Y") for p in periodos_ativos[:6]))
+            faixa_periodos += " · Últimos: " + ", ".join(p.strftime("%m/%Y") for p in periodos_ativos[:6])
+        st.caption(faixa_periodos)
     except Exception as exc:
         st.warning(f"Não foi possível consultar o banco ainda: {exc}")
         _registrar_evento_seguro(conn, "inicio", "ERRO", "Falha ao consultar períodos",
@@ -147,6 +150,11 @@ def pagina_inicio():
     st.caption(f"Período de referência: {periodo_ind.strftime('%m/%Y')}"
                + (f" · comparado a {periodo_ind_anterior.strftime('%m/%Y')}" if periodo_ind_anterior is not None else " · sem período anterior pra comparar ainda"))
 
+    # Redesenho 24/09/2026 (esboço aprovado pelo Rafael): os 9 indicadores
+    # agora vem agrupados por tema em vez de 3 filas soltas -- mais facil
+    # de escanear, e o EBITDA (pedido explicito da diretoria) ganha
+    # destaque visual em vez de se perder junto dos outros 7.
+    st.caption("LIQUIDEZ & ENDIVIDAMENTO")
     k1, k2, k3 = st.columns(3)
     for col, label, fmt, container in [
         ("Liquidez Corrente", "Liquidez Corrente", "x", k1),
@@ -156,6 +164,7 @@ def pagina_inicio():
         texto, delta_txt = _fmt(col, fmt)
         container.metric(label, texto, delta=delta_txt)
 
+    st.caption("RENTABILIDADE")
     k4, k5, k6, k7 = st.columns(4)
     for col, label, fmt, container in [
         ("Margem Bruta", "Margem Bruta", "pct", k4),
@@ -169,13 +178,17 @@ def pagina_inicio():
     # EBITDA (24/09/2026, pedido da diretoria via Rafael) -- linha propria,
     # so' virou viavel depois do fix em parser_egc.py que passou a extrair
     # Depreciacoes/Amortizacoes do periodo (formula em indicadores.py).
-    k8, k9 = st.columns(2)
-    for col, label, fmt, container in [
-        ("EBITDA", "EBITDA", "R$", k8),
-        ("Margem EBITDA", "Margem EBITDA", "pct", k9),
-    ]:
-        texto, delta_txt = _fmt(col, fmt)
-        container.metric(label, texto, delta=delta_txt)
+    # Container com borda separa visualmente do resto -- destaque pedido
+    # explicitamente, pra nao ficar igual aos outros 7 indicadores.
+    st.caption("RESULTADO OPERACIONAL")
+    with st.container(border=True):
+        k8, k9 = st.columns(2)
+        for col, label, fmt, container in [
+            ("EBITDA", "EBITDA", "R$", k8),
+            ("Margem EBITDA", "Margem EBITDA", "pct", k9),
+        ]:
+            texto, delta_txt = _fmt(col, fmt)
+            container.metric(label, texto, delta=delta_txt)
 
     with st.expander("Histórico completo dos indicadores"):
         # Fix 23/09/2026 (achado do Rafael): column_config.NumberColumn com
@@ -255,6 +268,11 @@ def pagina_inicio():
                else " · sem período anterior pra comparar ainda")
         )
 
+        st.caption(
+            "🏢 " + " · ".join(nome for _cod, nome, _cnpj in EMPRESAS_FIXAS)
+        )
+
+        st.caption("LIQUIDEZ & ENDIVIDAMENTO")
         gk1, gk2, gk3 = st.columns(3)
         for col, label, fmt, container in [
             ("Liquidez Corrente", "Liquidez Corrente", "x", gk1),
@@ -264,6 +282,7 @@ def pagina_inicio():
             texto, delta_txt = _fmt_grupo(col, fmt)
             container.metric(label, texto, delta=delta_txt)
 
+        st.caption("RENTABILIDADE")
         gk4, gk5, gk6, gk7 = st.columns(4)
         for col, label, fmt, container in [
             ("Margem Bruta", "Margem Bruta", "pct", gk4),
@@ -274,13 +293,15 @@ def pagina_inicio():
             texto, delta_txt = _fmt_grupo(col, fmt)
             container.metric(label, texto, delta=delta_txt)
 
-        gk8, gk9 = st.columns(2)
-        for col, label, fmt, container in [
-            ("EBITDA", "EBITDA", "R$", gk8),
-            ("Margem EBITDA", "Margem EBITDA", "pct", gk9),
-        ]:
-            texto, delta_txt = _fmt_grupo(col, fmt)
-            container.metric(label, texto, delta=delta_txt)
+        st.caption("RESULTADO OPERACIONAL")
+        with st.container(border=True):
+            gk8, gk9 = st.columns(2)
+            for col, label, fmt, container in [
+                ("EBITDA", "EBITDA", "R$", gk8),
+                ("Margem EBITDA", "Margem EBITDA", "pct", gk9),
+            ]:
+                texto, delta_txt = _fmt_grupo(col, fmt)
+                container.metric(label, texto, delta=delta_txt)
 
     # ─────────── Painel de pendências (23/09/2026, resumido em 23/09/2026 —
     # 2ª leva de feedback ao vivo) ───────────

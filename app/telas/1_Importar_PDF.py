@@ -168,8 +168,15 @@ if resultados:
             r["_sem_dados"] = False
 
             if r["meta"]:
-                empresa, cnpj, periodo, nome_arq, tipo, fmt = r["meta"][0]
+                empresa, cnpj, periodo, nome_arq, tipo, fmt, periodo_inicio, granularidade = r["meta"][0]
                 st.write(f"**Empresa detectada no PDF:** {empresa} ({cnpj or 'CNPJ não identificado'}) — **Período:** {periodo} — **Tipo:** {tipo} — **Formato:** {fmt}")
+                # Granularidade real (24/09/2026): so' mostra quando o proprio
+                # PDF declarou o intervalo -- BP nao tem (e foto de 1 data),
+                # e nunca e' inferida por calculo, so' lida do documento.
+                if periodo_inicio and granularidade:
+                    st.caption(f"📅 Cobertura detectada: {periodo_inicio} a {periodo} — **{granularidade}**")
+                elif tipo == "DRE":
+                    st.caption("📅 Cobertura: não consegui identificar o intervalo declarado no PDF (granularidade ficará em branco).")
 
                 resolucao = empresa_por_cnpj(cnpj)
                 if resolucao:
@@ -275,7 +282,7 @@ if resultados:
                 for r in grupo["itens"]:
                     if not r["meta"]:
                         continue
-                    empresa_nome, cnpj, periodo, nome_arq, tipo_doc, fmt = r["meta"][0]
+                    empresa_nome, cnpj, periodo, nome_arq, tipo_doc, fmt, periodo_inicio, granularidade = r["meta"][0]
                     try:
                         periodo_date = _dt.datetime.strptime(periodo, "%d/%m/%Y").date()
                     except Exception:
@@ -283,13 +290,22 @@ if resultados:
                         pulados.append(r["arquivo"])
                         continue
 
+                    periodo_inicio_date = None
+                    if periodo_inicio:
+                        try:
+                            periodo_inicio_date = _dt.datetime.strptime(periodo_inicio, "%d/%m/%Y").date()
+                        except Exception:
+                            periodo_inicio_date = None
+                    granularidade_val = granularidade or None
+
                     for tipo, rows in (("BP", r["bp_rows"]), ("DRE", r["dre_rows"])):
                         if not rows:
                             continue
                         try:
                             n_inativados = db.inativar_periodo_existente(conn, cod_g, periodo_date, tipo)
                             n_gravados = db.inserir_lancamentos(
-                                conn, cod_g, tipo, periodo_date, rows, r["arquivo"], usuario
+                                conn, cod_g, tipo, periodo_date, rows, r["arquivo"], usuario,
+                                periodo_inicio=periodo_inicio_date, granularidade=granularidade_val,
                             )
                             total_gravado += n_gravados
                             nivel = "AVISO" if n_inativados else "OK"
