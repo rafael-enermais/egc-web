@@ -45,7 +45,7 @@ def test_calcula_todos_indicadores_com_decimal_sem_typeerror():
     tabela = indicadores.calcular_indicadores(LANCS_BP, LANCS_DRE)
     assert list(tabela.columns) == indicadores.COLUNAS_INDICADORES
     assert len(tabela) == 2
-    print("OK: calcular_indicadores nao quebra com Decimal (psycopg2 real), 7 colunas, 2 periodos")
+    print(f"OK: calcular_indicadores nao quebra com Decimal (psycopg2 real), {len(indicadores.COLUNAS_INDICADORES)} colunas, 2 periodos")
 
 
 def test_liquidez_corrente_e_capital_de_giro_batem_a_mao():
@@ -66,6 +66,19 @@ def test_endividamento_usa_passivo_exigivel_sem_misturar_pl():
     esperado = (110000.0 + 40000.0) / 1100000.0
     assert abs(jun["Endividamento Geral"] - esperado) < 1e-6
     print("OK: Endividamento Geral usa só passivo exigível (circulante+não circulante), não TOTAL DO PASSIVO")
+
+
+def test_alavancagem_usa_passivo_exigivel_sobre_pl():
+    # Alavancagem = passivo exigivel (circulante + nao circulante) / PL --
+    # "R$ X de capital de terceiros pra cada R$ 1,00 de capital proprio",
+    # leitura que aparece nos modelos de relatorio comentado (pagina de
+    # Balanco Patrimonial). Mesmo numerador do Endividamento Geral, PL no
+    # denominador em vez de Ativo total.
+    tabela = indicadores.calcular_indicadores(LANCS_BP, LANCS_DRE)
+    jun = tabela.loc[__import__("pandas").Timestamp(P_JUN)]
+    esperado = (110000.0 + 40000.0) / 950000.0
+    assert abs(jun["Alavancagem"] - esperado) < 1e-6
+    print("OK: Alavancagem usa passivo exigível sobre PL (não Ativo total)")
 
 
 def test_margens_roa_roe_batem_a_mao():
