@@ -210,14 +210,25 @@ CONTEUDO_W = PAGE_W - 2 * MARGEM
 
 def _fundo_marca_dagua(c):
     """Marca d'agua das torres, canto inferior esquerdo, atras de todo o
-    resto -- por isso e' a primeira coisa desenhada na pagina. Asset ja
-    vem com transparencia (smask), preserva proporcao."""
+    resto -- por isso e' a primeira coisa desenhada na pagina.
+
+    Posicao/tamanho calculados por engenharia reversa do PDF-modelo real
+    (pikepdf, leitura da matriz de transformacao do Form XObject /X9 na
+    pagina 2): a marca ocupa o retangulo x:[0, 416.4pt] / y_top:[446.88pt,
+    842.4pt] numa pagina de 595.92x842.88pt -- ou seja, ~70% da largura,
+    canto inferior esquerdo, do meio da pagina ate' a borda de baixo.
+    Convertido pra fracao de PAGE_W/PAGE_H (que aqui sao 595.0/842.0) pra
+    nao depender do valor exato de pt usado. IMPORTANTE: usa o asset CRU
+    extraido via pdfimages (900x905, so' a torre) -- uma tentativa
+    anterior de recortar a marca direto do render da pagina-modelo
+    acabou capturando tambem o texto real do paragrafo por cima dela
+    (25/09/2026), grudando texto errado atras do texto novo. O asset cru
+    nao tem esse problema, so' precisa da caixa de destino certa."""
     if os.path.exists(TORRE_WATERMARK):
-        largura = PAGE_W * 0.92
-        altura = largura  # asset e' quase quadrado (900x905)
-        image(c, TORRE_WATERMARK, -PAGE_W * 0.08, PAGE_H - altura * 0.68,
-              largura - PAGE_W * 0.08, PAGE_H + altura * 0.32,
-              mask="auto", preserve_ratio=True)
+        x0, x1 = 0.0, PAGE_W * 0.699
+        y0_top, y1_top = PAGE_H * 0.530, PAGE_H
+        image(c, TORRE_WATERMARK, x0, y0_top, x1, y1_top,
+              mask="auto", preserve_ratio=False)
 
 
 def _header(c, dados, subtitulo_pagina):
