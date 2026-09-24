@@ -592,8 +592,15 @@ def _coluna_anexo(c, x, largura, y_top, linhas, altura_linha=13.0):
 # ------------------------------------------------------------------ pagina 1
 def pagina_capa(c, dados, pagina: int, total_paginas: int):
     """Capa -- painel diagonal navy a direita, logo + titulo a esquerda,
-    pilula laranja com o periodo. Sem a marca d'agua de torre (a capa do
-    modelo nao a usa -- o painel navy solido faz esse papel visual)."""
+    pilula laranja com o periodo.
+
+    CORRECAO 25/09/2026: a premissa antiga aqui ("a capa do modelo nao usa
+    marca d'agua, o painel solido faz esse papel visual") estava ERRADA --
+    conferida pixel a pixel contra o modelo real via comparador (artifact),
+    o painel navy tem sim (1) linhas diagonais finas e (2) um icone
+    translucido (marca C+raio, versao clara) no canto inferior direito.
+    Extraido do proprio PDF-modelo (pdfimages + smask, mesma tecnica do
+    torre_watermark) -- app/assets_relatorio/capa_marca_pale.png."""
     faixa_gradiente(c, 0, 0, PAGE_W, 5, NAVY, ORANGE)
 
     # painel diagonal a direita (~78% -> 100% da largura, inclinado)
@@ -608,23 +615,49 @@ def pagina_capa(c, dados, pagina: int, total_paginas: int):
     p.lineTo(base_x, 0)
     p.close()
     c.drawPath(p, fill=1, stroke=0)
+
+    # linhas diagonais finas dentro do painel, mesmo angulo do corte,
+    # clipadas pro path do painel -- decorativo, replica o modelo real.
+    c.clipPath(p, stroke=0, fill=0)
+    c.setStrokeColor(HexColor("#FFFFFF"))
+    c.setLineWidth(0.6)
+    if hasattr(c, "setStrokeAlpha"):
+        c.setStrokeAlpha(0.07)
+    inclinacao = (topo_x - base_x) / PAGE_H  # dx por dy do corte do painel
+    passo = 34
+    x = base_x - PAGE_H
+    while x < PAGE_W + PAGE_H:
+        c.line(x, 0, x + inclinacao * PAGE_H, PAGE_H)
+        x += passo
+    if hasattr(c, "setStrokeAlpha"):
+        c.setStrokeAlpha(1)
     c.restoreState()
 
+    # icone de marca translucido, canto inferior direito do painel --
+    # posicao/tamanho por engenharia reversa do PDF-modelo (pikepdf, CTM
+    # do XObject /X9 na pagina 1): caixa ~x:[441,548]/y_top:[636,806]pt
+    # na pagina 595x842 deste modulo.
+    marca_path = os.path.join(ASSETS, "capa_marca_pale.png")
+    if os.path.exists(marca_path):
+        image(c, marca_path, 435, 630, 552, 812, mask="auto", preserve_ratio=True)
+
+    # bloco de conteudo (logo/titulo/pilula) subiu ~120pt -- no modelo real
+    # fica na metade superior da pagina, nao no meio vertical.
     logo_path = LOGO.get(dados["empresa_codigo"])
     if logo_path and os.path.exists(logo_path):
-        image(c, logo_path, MARGEM, 250, MARGEM + 260, 330, mask="auto", preserve_ratio=True)
+        image(c, logo_path, MARGEM, 130, MARGEM + 260, 210, mask="auto", preserve_ratio=True)
 
     c.setStrokeColor(HexColor(ORANGE))
     c.setLineWidth(3)
-    c.line(MARGEM, Y(388), MARGEM + 46, Y(388))
+    c.line(MARGEM, Y(268), MARGEM + 46, Y(268))
 
-    txt(c, MARGEM, 430, "Demonstrativo", font="heavy", size=30, color=NAVY)
-    txt(c, MARGEM, 465, "Comentado", font="heavy", size=30, color=NAVY)
-    txt(c, MARGEM, 500, dados["empresa_nome"], font="regular", size=12, color=GREY_TEXT)
-    txt(c, MARGEM, 518, f"CNPJ {dados.get('cnpj', '')}", font="regular", size=12, color=GREY_TEXT)
+    txt(c, MARGEM, 310, "Demonstrativo", font="heavy", size=30, color=NAVY)
+    txt(c, MARGEM, 345, "Comentado", font="heavy", size=30, color=NAVY)
+    txt(c, MARGEM, 380, dados["empresa_nome"], font="regular", size=12, color=GREY_TEXT)
+    txt(c, MARGEM, 398, f"CNPJ {dados.get('cnpj', '')}", font="regular", size=12, color=GREY_TEXT)
 
-    rect(c, MARGEM, 548, MARGEM + 250, 578, fill=ORANGE, radius=15)
-    txt(c, MARGEM + 20, 567, f"PERÍODO · {dados['periodo_label'].upper()}", font="bold", size=10, color="#FFFFFF")
+    rect(c, MARGEM, 428, MARGEM + 250, 458, fill=ORANGE, radius=15)
+    txt(c, MARGEM + 20, 447, f"PERÍODO · {dados['periodo_label'].upper()}", font="bold", size=10, color="#FFFFFF")
 
 
 # ------------------------------------------------------------------ pagina 3
