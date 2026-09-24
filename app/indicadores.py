@@ -80,6 +80,7 @@ COLUNAS_INDICADORES = [
     "Liquidez Corrente",
     "Capital de Giro",
     "Endividamento Geral",
+    "Alavancagem",
     "Margem Bruta",
     "Margem Líquida",
     "ROA",
@@ -140,6 +141,12 @@ def calcular_indicadores(lancamentos_bp: list[dict], lancamentos_dre: list[dict]
     out["Liquidez Corrente"] = _div(ativo_circ, passivo_circ)
     out["Capital de Giro"] = ativo_circ - passivo_circ
     out["Endividamento Geral"] = _div(passivo_exigivel, bp["TOTAL DO ATIVO"])
+    # Alavancagem (24/09/2026, pedido junto do gerador de relatorio comentado):
+    # R$ de capital de terceiros pra cada R$ 1,00 de capital proprio.
+    # Mesmo passivo_exigivel do Endividamento Geral, so' muda o denominador
+    # (PL em vez de Ativo total) -- e' a leitura "5,40x" que aparece nos
+    # modelos de relatorio comentado (COMERCIAL/TECNICO), pagina de Balanco.
+    out["Alavancagem"] = _div(passivo_exigivel, bp["TOTAL PATRIMONIO LIQUIDO"])
     out["Margem Bruta"] = _div(dre["LUCRO BRUTO"], dre["RECEITA OPERACIONAL LIQUIDA"])
     out["Margem Líquida"] = _div(dre["LUCRO LIQUIDO DO EXERCICIO"], dre["RECEITA OPERACIONAL LIQUIDA"])
     out["ROA"] = _div(dre["LUCRO LIQUIDO DO EXERCICIO"], bp["TOTAL DO ATIVO"])
