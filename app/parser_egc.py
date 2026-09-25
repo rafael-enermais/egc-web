@@ -307,6 +307,22 @@ DRE_TARGETS = [
                                                       "CARTAO CORPORATIVO"]),
     ("RESULTADO", "LUCRO OPERACIONAL LIQUIDO",       ["LUCRO OPERACIONAL LIQUIDO",
                                                       "PREJUIZO OPERACIONAL LIQUIDO"]),
+    # FIX_20260925 (pedido do Rafael): CSLL/IRPJ do periodo, quando o
+    # regime e' lucro real (aparece como 2 linhas de totalizador entre
+    # LUCRO OPERACIONAL LIQUIDO e LUCRO LIQUIDO DO EXERCICIO -- conferido
+    # no PDF real "Enermais Energia - DRE - 05.2026", onde
+    # PROVISAO PARA CONTRIBUICAO SOCIAL = -62.900,81 e
+    # PROVISAO PARA IMPOSTO DE RENDA = -168.724,46, soma R$ 231.625,27,
+    # o mesmo numero ja usado manualmente no relatorio Modelo A validado
+    # em 00-handoff.md secao 61). Em lucro presumido (2023-2025 no grupo,
+    # ver secao 61) essas 2 linhas NAO existem -- IRPJ/CSLL fica dentro
+    # das DEDUCOES DA RECEITA BRUTA, sem linha propria -- e' esperado que
+    # os 2 campos abaixo fiquem ausentes (found) nesses periodos, nao um
+    # bug. Cada alias e' o texto EXATO do totalizador (nao dos itens
+    # "Csll"/"Irpj" individuais, mesmo padrao ja usado p/ "ADMINISTRATIVAS"
+    # acima -- grupo com 1 filho so', total = filho).
+    ("DESPESAS",  "PROVISAO CSLL",                   ["PROVISAO PARA CONTRIBUICAO SOCIAL"]),
+    ("DESPESAS",  "PROVISAO IRPJ",                   ["PROVISAO PARA IMPOSTO DE RENDA"]),
     ("RESULTADO", "LUCRO LIQUIDO DO EXERCICIO",      ["LUCRO LIQUIDO DO EXERCICIO",
                                                       "LUCRO/PREJUIZO LIQUIDO",
                                                       "PREJUIZO LIQUIDO DO EXERCICIO",
