@@ -79,10 +79,11 @@ if _ultima_sync:
     st.caption(f"🔄 Última sincronização automática: {_ultima_sync.strftime('%d/%m/%Y %H:%M')} "
                "(roda sozinha todo dia às 04h -- use o botão abaixo só se precisar de dado mais fresco agora)")
 else:
-    st.warning(
+    st.error(
         "Ainda não há nenhuma sincronização registrada com o Sienge. "
-        "Clique em \"Atualizar do Sienge\" abaixo antes de rodar a primeira conferência "
-        "-- sem isso, todas as notas vão aparecer como não encontradas."
+        "Clique em \"Atualizar do Sienge\" abaixo -- o passo 2 (subir manifesto/rodar "
+        "conferência) só libera depois da primeira sincronização, pra não gerar "
+        "\"não encontrada\" em massa por falta de dado, não por nota realmente pendente."
     )
 
 col_ini, col_fim, col_btn = st.columns([1, 1, 1])
@@ -116,10 +117,16 @@ st.divider()
 
 # ─────────────────────────── 2. Upload do manifesto ───────────────────────────
 st.subheader("2. Subir o manifesto de NF-e (.xlsx da Receita Federal)")
-periodo_referencia = st.text_input("Período de referência (ex.: 08/2026)", key="nf_periodo_ref")
-arquivo = st.file_uploader("Planilha do manifesto", type=["xlsx"], key="nf_upload")
 
-if arquivo is not None and st.button("▶️ Rodar conferência", key="nf_btn_rodar"):
+_sync_liberado = _ultima_sync is not None
+if not _sync_liberado:
+    st.caption("🔒 Bloqueado até a primeira sincronização com o Sienge (passo 1 acima).")
+
+periodo_referencia = st.text_input("Período de referência (ex.: 08/2026)", key="nf_periodo_ref",
+                                    disabled=not _sync_liberado)
+arquivo = st.file_uploader("Planilha do manifesto", type=["xlsx"], key="nf_upload", disabled=not _sync_liberado)
+
+if arquivo is not None and st.button("▶️ Rodar conferência", key="nf_btn_rodar", disabled=not _sync_liberado):
     if not periodo_referencia.strip():
         st.warning("Informe o período de referência antes de rodar a conferência.")
         st.stop()
