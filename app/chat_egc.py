@@ -148,6 +148,42 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "consultar_notas_fiscais_kpi",
+        "description": (
+            "KPI da conferencia de Notas Fiscais x Sienge (feature de 25/09/2026, "
+            "SEM RELACAO com BP/DRE -- e' um fluxo separado: a contadora sobe o "
+            "manifesto de NF-e da Receita Federal e o sistema compara contra o "
+            "Contas a Pagar do Sienge). Devolve, por rodada de conferencia ja "
+            "rodada: quantas notas, quantas foram encontradas lancadas no Sienge, "
+            "quantas ficaram pendentes, e a taxa de conciliacao. Use pra perguntas "
+            "tipo 'quantas notas fiscais faltam lancar', 'como esta a conciliacao "
+            "de notas da Energia', 'evolucao das pendencias de nota fiscal'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "empresa": {"type": "string", "description": "Codigo de 1 empresa -- vazio/omitido traz todas as rodadas ja feitas de qualquer empresa."},
+            },
+        },
+    },
+    {
+        "name": "consultar_notas_pendentes",
+        "description": (
+            "Lista as notas fiscais AINDA PENDENTES (nao encontradas no Sienge, ou "
+            "com valor/numero divergente) da conferencia mais recente -- inclui o "
+            "numero da nota, fornecedor, CNPJ, valor, e por que ficou pendente. Use "
+            "pra perguntas tipo 'quais notas estao faltando no Sienge', 'por que a "
+            "nota X nao foi encontrada', 'lista as pendencias da Renovaveis'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "empresa": {"type": "string", "description": "Codigo de 1 empresa -- vazio/omitido traz de todas."},
+                "limite": {"type": "integer", "description": "Maximo de pendencias a retornar (padrao 20)."},
+            },
+        },
+    },
 ]
 
 
@@ -232,7 +268,11 @@ def montar_system_prompt(
         "ROA, ROE, EBITDA, Margem EBITDA), de 1 empresa ou do grupo consolidado -> "
         "consultar_indicadores.\n"
         "- Pergunta sobre o que falta, o que esta incompleto, quais periodos/empresas "
-        "sem dado -> consultar_completude."
+        "sem dado -> consultar_completude.\n"
+        "- Pergunta sobre CONFERENCIA DE NOTA FISCAL x SIENGE (fluxo separado do "
+        "BP/DRE) -- KPI/evolucao de quantas notas foram conciliadas -> "
+        "consultar_notas_fiscais_kpi; lista de notas pendentes/o que falta lancar "
+        "-> consultar_notas_pendentes."
         + bloco_contexto_fiscal
     )
 
@@ -256,6 +296,10 @@ def executar_ferramenta(conn, nome: str, entrada: dict, empresas_codigos: list[s
     if nome == "consultar_completude":
         empresas = entrada.get("empresas") or empresas_codigos
         return consultas_chat.consultar_completude(conn, empresas)
+    if nome == "consultar_notas_fiscais_kpi":
+        return consultas_chat.consultar_notas_fiscais_kpi(conn, entrada.get("empresa"))
+    if nome == "consultar_notas_pendentes":
+        return consultas_chat.consultar_notas_pendentes(conn, entrada.get("empresa"), entrada.get("limite", 20))
     return {"erro": f"ferramenta desconhecida: {nome}"}
 
 

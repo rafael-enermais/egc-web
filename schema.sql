@@ -353,3 +353,140 @@ CREATE POLICY egc_app_full_access ON egc.contexto_fiscal FOR ALL TO egc_app USIN
 
 -- Fim dos blocos 9-10. Rodar so' esses 2 blocos no SQL Editor do Supabase
 -- (projeto radar-comercial) -- nao precisa rodar o arquivo inteiro de novo.
+
+-- =====================================================================
+-- 11. Notas Fiscais x Sienge — conciliação (pedido do Rafael 25/09/2026:
+--     "a contadora precisa comparar com oq ta lançado no Sienge, pra ver
+--     quais notas faltam subir e pq"). Import 100% separado do fluxo
+--     BP/DRE existente (egc.lancamentos) -- nenhuma tabela abaixo é lida
+--     nem escrita por parser_egc.py/db.py do fluxo de Importar PDF.
+--
+--     Log de erro reaproveita egc.eventos_sistema (bloco 9) com
+--     origem='notas_fiscais' -- não cria tabela de log nova.
+--
+--     Validado contra a API real do Sienge antes de desenhar este schema
+--     (ver EGC 00-handoff.md seção 62): accessKeyNumber só vem
+--     preenchido em ~14% dos títulos, por isso NÃO é chave única de
+--     match -- o critério principal é CNPJ+número+valor, com a chave
+--     como confirmação extra quando presente.
+-- =====================================================================
+
+-- Snapshot local dos títulos do Sienge (Contas a Pagar) — sincronizado
+-- sob demanda (botão "Atualizar do Sienge" na tela), não em tempo real.
+-- Guarda TODOS os tipos de documento no período (não só NFE/NF) pra
+-- permitir busca de 2º passe (fallback) sem restringir tipo.
+CREATE TABLE IF NOT EXISTS egc.nf_bills_sync (
+  bill_id                     bigint PRIMARY KEY,
+  debtor_id                   integer,
+  creditor_id                 integer,
+  document_identification_id text,
+  document_number             text,
+  issue_date                  date,
+  total_invoice_amount        numeric(14,2),
+  access_key_number           text,
+  status                      text,
+  sincronizado_em             timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_nf_bills_sync_creditor ON egc.nf_bills_sync (creditor_id);
+CREATE INDEX IF NOT EXISTS idx_nf_bills_sync_doc      ON egc.nf_bills_sync (document_identification_id, document_number);
+
+-- Snapshot local dos credores do Sienge — de-para creditorId -> CNPJ.
+CREATE TABLE IF NOT EXISTS egc.nf_creditors_sync (
+  creditor_id      integer PRIMARY KEY,
+  nome             text,
+  nome_fantasia    text,
+  cnpj             text,
+  cpf              text,
+  sincronizado_em  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_nf_creditors_cnpj ON egc.nf_creditors_sync (cnpj);
+
+-- Cada linha = 1 nota da planilha da Receita, sob um import_id (1 upload
+-- = 1 rodada de conferência = 1 import_id). Nunca é sobrescrita por uma
+-- rodada nova -- é o histórico de "o que foi conferido, quando".
+CREATE TABLE IF NOT EXISTS egc.nf_manifesto_import (
+  id                  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  import_id           uuid NOT NULL,
+  empresa_codigo      text NOT NULL,
+  periodo_referencia  text NOT NULL,
+  numero_nota         text,
+  numero_normalizado  text,
+  tipo_documento      text,
+  data_emissao        date,
+  valor               numeric(14,2),
+  cfop                text,
+  fornecedor_nome     text,
+  fornecedor_cnpj     text,
+  cnpj_normalizado    text,
+  uf                  text,
+  chave_acesso        text,
+  chave_modelo        text,
+  chave_serie         text,
+  chave_numero        text,
+  arquivo_nome        text,
+  criado_por          text,
+  criado_em           timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_nf_manifesto_import_id ON egc.nf_manifesto_import (import_id);
+CREATE INDEX IF NOT EXISTS idx_nf_manifesto_empresa    ON egc.nf_manifesto_import (empresa_codigo, periodo_referencia);
+
+-- Resultado do matching, 1 linha por nota do manifesto. pendencia_status
+-- é o "lastro" pedido (fica com histórico até correção/verificação no
+-- Sienge, nunca é apagado -- só muda de status).
+CREATE TABLE IF NOT EXISTS egc.nf_conciliacao (
+  id                bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  import_id         uuid NOT NULL,
+  manifesto_id      bigint NOT NULL REFERENCES egc.nf_manifesto_import(id),
+  status            text NOT NULL CHECK (status IN ('LANCADA','NAO_ENCONTRADA','VALOR_DIVERGENTE','NUMERO_DIVERGENTE')),
+  sienge_bill_id    bigint,
+  sienge_valor      numeric(14,2),
+  confianca         text,
+  observacao        text,
+  pendencia_status  text CHECK (pendencia_status IS NULL OR pendencia_status IN ('PENDENTE','ENVIADO_SUPRIMENTOS','RESOLVIDO','DESCARTADO')),
+  atualizado_por    text,
+  atualizado_em     timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_nf_conciliacao_import ON egc.nf_conciliacao (import_id);
+CREATE INDEX IF NOT EXISTS idx_nf_conciliacao_status  ON egc.nf_conciliacao (status, pendencia_status);
+
+-- 1 linha por rodada de conferência -- alimenta os KPIs (quantas notas,
+-- quantas no Sienge, quantas pendências) sem precisar reagregar tudo.
+CREATE TABLE IF NOT EXISTS egc.nf_import_historico (
+  id                  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  import_id           uuid NOT NULL UNIQUE,
+  empresa_codigo      text NOT NULL,
+  periodo_referencia  text NOT NULL,
+  total_notas         integer NOT NULL DEFAULT 0,
+  total_lancadas      integer NOT NULL DEFAULT 0,
+  total_pendencias    integer NOT NULL DEFAULT 0,
+  arquivo_nome        text,
+  usuario             text,
+  criado_em           timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_nf_import_historico_empresa ON egc.nf_import_historico (empresa_codigo, criado_em DESC);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON
+  egc.nf_bills_sync, egc.nf_creditors_sync, egc.nf_manifesto_import,
+  egc.nf_conciliacao, egc.nf_import_historico
+TO egc_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA egc TO egc_app;
+
+ALTER TABLE egc.nf_bills_sync        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE egc.nf_creditors_sync    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE egc.nf_manifesto_import  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE egc.nf_conciliacao       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE egc.nf_import_historico  ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS egc_app_full_access ON egc.nf_bills_sync;
+CREATE POLICY egc_app_full_access ON egc.nf_bills_sync FOR ALL TO egc_app USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS egc_app_full_access ON egc.nf_creditors_sync;
+CREATE POLICY egc_app_full_access ON egc.nf_creditors_sync FOR ALL TO egc_app USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS egc_app_full_access ON egc.nf_manifesto_import;
+CREATE POLICY egc_app_full_access ON egc.nf_manifesto_import FOR ALL TO egc_app USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS egc_app_full_access ON egc.nf_conciliacao;
+CREATE POLICY egc_app_full_access ON egc.nf_conciliacao FOR ALL TO egc_app USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS egc_app_full_access ON egc.nf_import_historico;
+CREATE POLICY egc_app_full_access ON egc.nf_import_historico FOR ALL TO egc_app USING (true) WITH CHECK (true);
+
+-- Fim do bloco 11. Rodar so' este bloco no SQL Editor do Supabase
+-- (projeto radar-comercial) -- nao precisa rodar o arquivo inteiro de novo.

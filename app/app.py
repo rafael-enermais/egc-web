@@ -347,6 +347,10 @@ paginas = [
     st.Page("telas/2_Revisao_Correcao.py", title="Revisão/Correção", icon="✏️"),
     st.Page("telas/3_Arquivar_Recuperar.py", title="Arquivar/Recuperar", icon="🗄️"),
     st.Page("telas/4_Visao_Grupo.py", title="Visão Grupo", icon="🏢"),
+    # Notas Fiscais x Sienge (25/09/2026) -- fluxo 100% separado do
+    # BP/DRE: manifesto de NF-e da Receita Federal x Contas a Pagar do
+    # Sienge. Ver EGC 00-handoff.md seção 62 pro desenho.
+    st.Page("telas/7_Notas_Fiscais.py", title="Notas Fiscais", icon="🧾"),
     # Dashboard de Projeção removido do menu por pedido do Rafael
     # (22/09/2026): numeros ficavam irreais em horizonte longo com pouco
     # historico real (tendencia linear sem teto). Codigo e tabelas
