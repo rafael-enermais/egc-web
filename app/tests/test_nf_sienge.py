@@ -167,3 +167,19 @@ def test_listar_pendencias_abertas_filtra_status_correto():
     assert "status <> 'LANCADA'" in sql
     assert "PENDENTE" in sql and "ENVIADO_SUPRIMENTOS" in sql
     assert params == ("ENERGIA", "ENERGIA", 10)
+
+
+def test_ultima_sincronizacao_pega_o_mais_antigo_dos_dois():
+    import datetime
+    ts = datetime.datetime(2026, 9, 25, 4, 0, 0)
+    cur = FakeCursor(fetchall_result=[(ts,)])
+    conn = FakeConn(cur)
+    r = nf_sienge.ultima_sincronizacao(conn)
+    assert r == ts
+    assert "LEAST" in cur.executed[0][0]
+
+
+def test_ultima_sincronizacao_none_quando_nunca_sincronizou():
+    cur = FakeCursor(fetchall_result=[(None,)])
+    conn = FakeConn(cur)
+    assert nf_sienge.ultima_sincronizacao(conn) is None
