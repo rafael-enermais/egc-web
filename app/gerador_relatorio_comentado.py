@@ -1246,20 +1246,28 @@ PAGINAS = [
 ]
 
 
-def gerar_pdf_completo(dados: dict, caminho_saida: str) -> str:
-    """Gera o PDF completo de 9 paginas (25/09/2026 -- apos aceite do
-    Rafael da pagina 2/Destaques). Mesma funcao serve qualquer empresa/
-    periodo -- todo o conteudo vem de `dados`, nenhuma conta e' hardcoded
-    aqui (so' na fixture de teste, que usa os valores reais do PDF-modelo
-    pra comparacao)."""
+def gerar_pdf_completo(dados: dict, caminho_saida: str, incluir_pagina_resultado: bool = True) -> str:
+    """Gera o PDF completo (9 paginas, ou 8 se incluir_pagina_resultado=False
+    -- 25/09/2026, apos aceite do Rafael da pagina 2/Destaques). Mesma
+    funcao serve qualquer empresa/periodo -- todo o conteudo vem de
+    `dados`, nenhuma conta e' hardcoded aqui (so' na fixture de teste, que
+    usa os valores reais do PDF-modelo pra comparacao).
+
+    incluir_pagina_resultado=False (25/09/2026, Fase 2/dado real, pedido
+    do Rafael): pula pagina_resultado (Formacao do Resultado) -- essa
+    pagina depende de dados['csll_irpj'], que so existe de verdade em
+    periodo de LUCRO REAL (2026+ no grupo). Em lucro presumido (2023-2025)
+    o CSLL/IRPJ vem embutido nas Deducoes da Receita Bruta, sem linha
+    propria -- colocar 0 ali seria numero fabricado (nao aconteceu "zero
+    imposto", so nao tem linha separada), entao a camada de dados pede
+    pra pular a pagina em vez de inventar. Paginas renumeradas
+    automaticamente (total_paginas reflete a contagem real, nao fixo em 9)."""
     _registrar_fontes()
     c = canvas.Canvas(caminho_saida, pagesize=(PAGE_W, PAGE_H))
-    total = len(PAGINAS)
-    for i, pagina_fn in enumerate(PAGINAS, start=1):
-        if pagina_fn is pagina_capa:
-            pagina_fn(c, dados, pagina=i, total_paginas=total)
-        else:
-            pagina_fn(c, dados, pagina=i, total_paginas=total)
+    paginas = PAGINAS if incluir_pagina_resultado else [p for p in PAGINAS if p is not pagina_resultado]
+    total = len(paginas)
+    for i, pagina_fn in enumerate(paginas, start=1):
+        pagina_fn(c, dados, pagina=i, total_paginas=total)
         c.showPage()
     c.save()
     return caminho_saida
