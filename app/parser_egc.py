@@ -1089,6 +1089,115 @@ def processar_pdf(pdf_path: Path):
 
 
 # ─────────────────────────────────────────────
+#  EXTRAÇÃO DE ITENS (sub-contas) — usado pelo relatorio comentado
+# ─────────────────────────────────────────────
+
+def extrair_despesas_admin_itens(pdf_path: Path) -> list:
+    """
+    FIX_20260925b (pedido do Rafael — Fase 2 do gerador de relatorio
+    comentado, campo `despesas_admin_itens`): extrai as sub-contas dentro
+    do grupo "Administrativas" da DRE (ex.: "Salários e Ordenados",
+    "Serviços Profissionais"), que o fluxo BP/DRE normal NAO captura --
+    DRE_TARGETS so' guarda o TOTAL do grupo ("ADMINISTRATIVAS"), pelo
+    mesmo padrao ja usado p/ CSLL/IRPJ (grupo com N filhos, so' o total
+    e' alvo).
+
+    Funcao ADITIVA e independente: nao mexe em parse_texto/parse_sped/
+    parse_duplo/process_candidates, nao muda a saida do TSV nem o `found`
+    usado pelo fluxo BP/DRE -- reusa so' as funcoes puras ja validadas
+    (norm, extract_last_value, clean_desc, match_target) pra minimizar
+    risco de regressao no que ja esta em producao.
+
+    Confirmado nos DRE reais (Enermais Energia SPED 2025, Enermais
+    Construtora SPED 2025, Construtora 2T2026, Energia 2T2026 -- ver
+    00-handoff.md secao 66): toda DRE da Enermais tem fmt=TEXTO (SPED so'
+    ocorre em BP), e o grupo "Administrativas" e' sempre 1 linha isolada
+    (bate um alias de "ADMINISTRATIVAS" em DRE_TARGETS) seguida de N
+    linhas "Nome valor" ate a proxima linha que bate com QUALQUER outro
+    alias de DRE_TARGETS (normalmente "Despesas Financeiras"). Pega so' a
+    1a ocorrencia do header (o grupo "De Vendas", quando existe, sempre
+    vem ANTES de "Administrativas" no layout e tem seu proprio total —
+    nao e' confundido, porque so comecamos a coletar apos achar o header).
+    Validado: soma dos itens = valor do grupo "ADMINISTRATIVAS" já
+    capturado pelo fluxo normal, nos 4 PDFs de amostra acima.
+    """
+    all_lines = []
+    with pdfplumber.open(str(pdf_path)) as pdf:
+        for page in pdf.pages:
+            txt = page.extract_text(x_tolerance=2, y_tolerance=3) or ""
+            all_lines.extend(txt.splitlines())
+
+    # FIX_20260925b (achado testando "Enermais Construtora - DRE - SPED
+    # 2025.pdf"): o alias "CARTAO CORPORATIVO" de OUTRAS DESPESAS
+    # OPERACIONAIS existe p/ cobrir os periodos onde Cartao Corporativo
+    # aparece como grupo PROPRIO da DRE (fora de Administrativas) -- mas
+    # nesse PDF real ele aparece como um ITEM comum dentro de
+    # Administrativas ("Cartão Corporativo (238.159,69)"), sem grupo
+    # proprio. Usar esse alias como fim-de-bloco aqui cortava a extracao
+    # no meio (perdendo Cartao Corporativo + tudo que vem depois dele ate'
+    # Despesas Financeiras -- R$ 450.934,28 nesse caso, confirmado batendo
+    # exatamente contra o total do grupo ADMINISTRATIVAS ja capturado pelo
+    # fluxo normal). Por isso "CARTAO CORPORATIVO" fica de fora dos
+    # terminadores aqui — os outros aliases de OUTRAS DESPESAS OPERACIONAIS
+    # continuam valendo.
+    admin_aliases = None
+    outros_aliases = []
+    for _grupo, nome_saida, aliases in DRE_TARGETS:
+        if nome_saida == "ADMINISTRATIVAS":
+            admin_aliases = aliases
+        else:
+            aliases_seguros = [a for a in aliases if norm(a) != "CARTAO CORPORATIVO"]
+            if aliases_seguros:
+                outros_aliases.append(aliases_seguros)
+    if not admin_aliases:
+        return []
+
+    itens = []
+    achou_header = False
+    admin_total = None
+    soma_corrente = 0.0
+    for line in all_lines:
+        line = line.strip()
+        if not line:
+            continue
+        line_n = norm(line)
+
+        if not achou_header:
+            if match_target(line_n, admin_aliases):
+                achou_header = True
+                admin_total = extract_last_value(line)
+            continue
+
+        if any(match_target(line_n, aliases) for aliases in outros_aliases):
+            break
+
+        val = extract_last_value(line)
+        if val is None:
+            continue
+        desc = clean_desc(line)
+        if not desc:
+            continue
+        itens.append((desc, val))
+        soma_corrente += val
+
+        # FIX_20260925b (achado no mesmo PDF acima): alem dos terminadores
+        # nomeados, existe pelo menos 1 caso real de sub-grupo ANINHADO sem
+        # nome conhecido dentro de Administrativas ("Com Veiculos", com 2
+        # filhos "Combustiveis e Lubrificantes"/"Manutencao e Reparos de
+        # Veiculos" que somam o mesmo valor) que na verdade NAO pertence ao
+        # total de Administrativas (confirmado: excluindo os 3 o total bate
+        # exato). Como o valor do header ("ADMINISTRATIVAS X") e' conhecido
+        # de antemao, a soma acumulada dos itens e' comparada a cada linha
+        # contra esse total -- assim que bater (tolerancia de 1 centavo),
+        # para ali, mesmo sem reconhecer o nome do proximo grupo. Robusto a
+        # sub-grupos aninhados desconhecidos sem exigir lista fixa de nomes.
+        if admin_total is not None and abs(soma_corrente - admin_total) < 0.01:
+            break
+
+    return itens
+
+
+# ─────────────────────────────────────────────
 #  ESCRITA TSV
 # ─────────────────────────────────────────────
 
