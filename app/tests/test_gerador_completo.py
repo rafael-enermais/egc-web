@@ -161,3 +161,17 @@ if __name__ == "__main__":
             print(f"ERRO ({type(e).__name__}) em {t.__name__}: {e}")
     print(f"\n{len(testes) - falhas}/{len(testes)} testes passaram")
     sys.exit(1 if falhas else 0)
+
+
+def test_gerar_pdf_completo_sem_pagina_resultado_pula_csll_irpj():
+    """25/09/2026 -- lucro presumido nao tem csll_irpj real (ver
+    gerar_pdf_completo). incluir_pagina_resultado=False deve gerar 8
+    paginas sem acessar dados['csll_irpj'] em momento nenhum."""
+    dados_sem_csll = dict(BASE)
+    del dados_sem_csll["csll_irpj"]  # garante que a pagina pulada NUNCA e' lida
+    with tempfile.TemporaryDirectory() as tmp:
+        caminho = os.path.join(tmp, "sem_pagina4.pdf")
+        g.gerar_pdf_completo(dados_sem_csll, caminho, incluir_pagina_resultado=False)
+        assert os.path.exists(caminho)
+        assert os.path.getsize(caminho) > 1000
+    print("OK: gerar_pdf_completo com incluir_pagina_resultado=False nao acessa csll_irpj")
