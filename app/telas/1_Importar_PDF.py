@@ -48,7 +48,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from auth import usuario_atual  # noqa: E402
 from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS, empresa_por_cnpj  # noqa: E402
 import db  # noqa: E402
-from parser_egc import processar_pdf  # noqa: E402
+from parser_egc import processar_pdf, extrair_despesas_admin_itens  # noqa: E402
 from validacoes import checar_fechamento_bp, formatar_br  # noqa: E402
 from importacoes_ui import chave_ordenacao_previa, agrupar_historico_importacoes  # noqa: E402
 
@@ -101,11 +101,23 @@ if arquivos and st.button("1. Processar PDFs (pré-visualizar)", type="primary")
             caminho = Path(tmp) / arq.name
             caminho.write_bytes(arq.getbuffer())
             bp_rows, dre_rows, log, meta = processar_pdf(caminho)
+            # FIX_20260925b: itens (sub-contas) de Administrativas, so'
+            # quando o arquivo tem DRE -- alimenta despesas_admin_itens do
+            # relatorio comentado (Fase 2). Extracao aditiva e independente
+            # do parser normal (ver parser_egc.extrair_despesas_admin_itens);
+            # falha nela nunca deve travar a importacao do BP/DRE em si.
+            admin_itens = []
+            if dre_rows:
+                try:
+                    admin_itens = extrair_despesas_admin_itens(caminho)
+                except Exception:
+                    admin_itens = []
             novos.append(
                 {
                     "arquivo": arq.name,
                     "bp_rows": bp_rows,
                     "dre_rows": dre_rows,
+                    "admin_itens": admin_itens,
                     "log": log,
                     "meta": meta,
                 }
@@ -315,6 +327,16 @@ if resultados:
                             db.registrar_importacao(
                                 conn, cod_g, periodo_date, [r["arquivo"]], nivel, tipo, msg, usuario
                             )
+                            if tipo == "DRE" and r.get("admin_itens"):
+                                # FIX_20260925b: falha aqui nunca deve
+                                # derrubar a gravacao do DRE em si -- e' so'
+                                # o ranking auxiliar do relatorio comentado.
+                                try:
+                                    db.salvar_despesas_admin_itens(
+                                        conn, cod_g, periodo_date, r["admin_itens"], r["arquivo"]
+                                    )
+                                except Exception:
+                                    pass
                         except Exception as exc:
                             # log completo (task #16): falha na gravacao NAO pode travar
                             # os outros arquivos/tipos do lote -- registra e segue.
