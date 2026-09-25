@@ -420,6 +420,78 @@ def test_listar_contexto_fiscal_filtra_por_tema():
     print("OK: listar_contexto_fiscal — filtro por tema")
 
 
+def test_salvar_despesas_admin_itens_delete_e_insere_na_ordem():
+    cur = FakeCursor()
+    conn = FakeConn(cur)
+    itens = [("Serviços Profissionais", -1602399.52), ("Salários e Ordenados", -544822.11)]
+    n = db.salvar_despesas_admin_itens(conn, "CONST", datetime.date(2026, 6, 30), itens, "arquivo.pdf")
+    assert n == 2
+    sql_delete, params_delete = cur.executed[0]
+    assert "DELETE FROM egc.despesas_admin_itens" in sql_delete
+    assert params_delete == ("CONST", datetime.date(2026, 6, 30))
+    sql_insert, registros = cur.executed[1]
+    assert "INSERT INTO egc.despesas_admin_itens" in sql_insert
+    assert registros == [
+        ("CONST", datetime.date(2026, 6, 30), 0, "Serviços Profissionais", -1602399.52, "arquivo.pdf"),
+        ("CONST", datetime.date(2026, 6, 30), 1, "Salários e Ordenados", -544822.11, "arquivo.pdf"),
+    ]
+    print("OK: salvar_despesas_admin_itens — delete+insert na ordem")
+
+
+def test_salvar_despesas_admin_itens_lista_vazia_so_deleta():
+    cur = FakeCursor()
+    conn = FakeConn(cur)
+    n = db.salvar_despesas_admin_itens(conn, "CONST", datetime.date(2026, 6, 30), [])
+    assert n == 0
+    assert len(cur.executed) == 1  # so o DELETE, nenhum INSERT
+    print("OK: salvar_despesas_admin_itens — lista vazia nao insere nada")
+
+
+def test_listar_despesas_admin_itens_retorna_na_ordem_gravada():
+    cur = FakeCursor(fetchall_result=[("Serviços Profissionais", 1602399.52), ("Salários e Ordenados", 544822.11)])
+    conn = FakeConn(cur)
+    itens = db.listar_despesas_admin_itens(conn, "CONST", datetime.date(2026, 6, 30))
+    assert itens == [("Serviços Profissionais", 1602399.52), ("Salários e Ordenados", 544822.11)]
+    sql, params = cur.executed[0]
+    assert "SELECT conta, valor FROM egc.despesas_admin_itens" in sql
+    assert "ORDER BY ordem" in sql
+    assert params == ("CONST", datetime.date(2026, 6, 30))
+    print("OK: listar_despesas_admin_itens — ordem preservada")
+
+
+class _FakeCursorTabelaInexistente(FakeCursor):
+    """Simula a tabela do bloco 12 ainda nao existir no banco (migracao
+    pendente) -- salvar/listar devem degradar (0/[]), nunca quebrar."""
+
+    def execute(self, sql, params=None):
+        raise db.psycopg2.errors.UndefinedTable("relation \"egc.despesas_admin_itens\" does not exist")
+
+
+class _FakeConnComRollback(FakeConn):
+    def __init__(self, cursor):
+        super().__init__(cursor)
+        self.rollback_chamado = False
+
+    def rollback(self):
+        self.rollback_chamado = True
+
+
+def test_salvar_despesas_admin_itens_tabela_ainda_nao_existe_nao_quebra():
+    conn = _FakeConnComRollback(_FakeCursorTabelaInexistente())
+    n = db.salvar_despesas_admin_itens(conn, "CONST", datetime.date(2026, 6, 30), [("X", -1.0)])
+    assert n == 0
+    assert conn.rollback_chamado
+    print("OK: salvar_despesas_admin_itens — tabela ausente nao quebra a importacao")
+
+
+def test_listar_despesas_admin_itens_tabela_ainda_nao_existe_retorna_vazio():
+    conn = _FakeConnComRollback(_FakeCursorTabelaInexistente())
+    itens = db.listar_despesas_admin_itens(conn, "CONST", datetime.date(2026, 6, 30))
+    assert itens == []
+    assert conn.rollback_chamado
+    print("OK: listar_despesas_admin_itens — tabela ausente retorna vazio")
+
+
 if __name__ == "__main__":
     testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
     falhas = 0

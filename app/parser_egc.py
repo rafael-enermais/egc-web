@@ -1092,6 +1092,25 @@ def processar_pdf(pdf_path: Path):
 #  EXTRAÇÃO DE ITENS (sub-contas) — usado pelo relatorio comentado
 # ─────────────────────────────────────────────
 
+def _clean_item_desc(raw: str) -> str:
+    """
+    Igual a clean_desc(), mas sem o bug de comer letra maiuscula "R" (ou
+    "$") no fim do nome -- achado testando esta funcao: clean_desc()
+    remove '(', ')', 'R', '$', espaco, virgula e ponto do FIM da string
+    ate' nao sobrar nenhum desses caracteres, o que e' inofensivo pros
+    usos existentes de clean_desc() (só' comparado via norm() contra
+    aliases, nunca mostrado cru pro usuario) mas quebraria a exibicao
+    aqui: "DSR" (Descanso Semanal Remunerado, real na Enermais
+    Construtora 2T2026) virava "DS". Como aqui o texto E' mostrado no
+    ranking do relatorio, usa uma versao mais conservadora (so' tira
+    parenteses/espaco sobrando, nunca letra).
+    """
+    s = BR_NUM.sub("", raw).strip()
+    s = re.sub(r"[\(\)\s]+$", "", s).strip()
+    s = re.sub(r"^[\s\(\)\+\-=\/]+", "", s).strip()
+    return s
+
+
 def extrair_despesas_admin_itens(pdf_path: Path) -> list:
     """
     FIX_20260925b (pedido do Rafael — Fase 2 do gerador de relatorio
@@ -1174,7 +1193,7 @@ def extrair_despesas_admin_itens(pdf_path: Path) -> list:
         val = extract_last_value(line)
         if val is None:
             continue
-        desc = clean_desc(line)
+        desc = _clean_item_desc(line)
         if not desc:
             continue
         itens.append((desc, val))

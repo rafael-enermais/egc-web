@@ -490,3 +490,44 @@ CREATE POLICY egc_app_full_access ON egc.nf_import_historico FOR ALL TO egc_app 
 
 -- Fim do bloco 11. Rodar so' este bloco no SQL Editor do Supabase
 -- (projeto radar-comercial) -- nao precisa rodar o arquivo inteiro de novo.
+
+-- =====================================================================
+-- BLOCO 12 — Itens (sub-contas) de Despesas Administrativas
+--
+--   Alimenta o campo despesas_admin_itens do gerador de relatorio
+--   comentado (ranking "Servicos Profissionais 38,9%..." na pagina de
+--   despesas) -- ver parser_egc.extrair_despesas_admin_itens (FIX_20260925b).
+--
+--   Tabela DERIVADA e ISOLADA de egc.lancamentos de proposito: nao tem
+--   status ATIVO/INATIVO, nao entra no fluxo de Correcao Manual nem
+--   Arquivar/Recuperar, e nao e' lida por nenhum indicador (indicadores.py/
+--   visao_grupo.py continuam so' com os totais de grupo de sempre). E' so
+--   um cache write/replace por (empresa, periodo), usado exclusivamente
+--   pelo gerador de relatorio -- reimportar o mesmo periodo troca os itens
+--   antigos pelos novos (sem historico, sem trilha de auditoria: se
+--   precisar corrigir, reimporta o PDF).
+-- =====================================================================
+
+CREATE TABLE IF NOT EXISTS egc.despesas_admin_itens (
+  id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  empresa_codigo text NOT NULL REFERENCES egc.empresas(codigo),
+  periodo        date NOT NULL,
+  ordem          integer NOT NULL,
+  conta          text NOT NULL,
+  valor          numeric(18,2) NOT NULL,
+  arquivo_pdf    text,
+  criado_em      timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_despesas_admin_itens_busca
+  ON egc.despesas_admin_itens (empresa_codigo, periodo);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON egc.despesas_admin_itens TO egc_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA egc TO egc_app;
+
+ALTER TABLE egc.despesas_admin_itens ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS egc_app_full_access ON egc.despesas_admin_itens;
+CREATE POLICY egc_app_full_access ON egc.despesas_admin_itens FOR ALL TO egc_app USING (true) WITH CHECK (true);
+
+-- Fim do bloco 12. Rodar so' este bloco no SQL Editor do Supabase
+-- (projeto radar-comercial) -- nao precisa rodar o arquivo inteiro de novo.
