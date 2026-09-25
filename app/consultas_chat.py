@@ -30,6 +30,7 @@ import pandas as pd
 
 import db
 import indicadores
+import nf_sienge
 import visao_grupo
 from conexao import EMPRESAS_FIXAS
 
@@ -176,6 +177,51 @@ def consultar_completude(conn, empresas_codigos: list[str]) -> dict:
             linha["Período"] = p.strftime("%Y-%m")
 
     return {"empresas_incluidas": empresas_codigos, "completude_por_periodo": linhas}
+
+
+def consultar_notas_fiscais_kpi(conn, empresa_codigo: Optional[str] = None) -> dict:
+    """
+    KPI da conferência de Notas Fiscais x Sienge (feature nova, 25/09/2026):
+    quantas notas na última rodada de cada empresa (ou só de uma, se
+    empresa_codigo vier), quantas foram encontradas no Sienge, quantas
+    ficaram pendentes, e a evolução (histórico de rodadas). Fonte:
+    egc.nf_import_historico via nf_sienge.listar_historico_importacoes --
+    zero query nova, so' reaproveita o que a tela "Notas Fiscais" ja usa.
+    """
+    historico = nf_sienge.listar_historico_importacoes(conn, empresa_codigo)
+    if not historico:
+        return {
+            "erro": "Nenhuma conferência de notas fiscais rodada ainda"
+            + (f" pra {empresa_codigo}" if empresa_codigo else " pra nenhuma empresa"),
+        }
+    linhas = []
+    for h in historico:
+        linhas.append({
+            "empresa_codigo": h["empresa_codigo"],
+            "periodo_referencia": h["periodo_referencia"],
+            "total_notas": h["total_notas"],
+            "total_lancadas": h["total_lancadas"],
+            "total_pendencias": h["total_pendencias"],
+            "taxa_conciliacao": round(h["total_lancadas"] / h["total_notas"], 4) if h["total_notas"] else None,
+            "criado_em": h["criado_em"].strftime("%Y-%m-%d %H:%M") if hasattr(h["criado_em"], "strftime") else str(h["criado_em"]),
+        })
+    return {"rodadas": linhas, "total_rodadas": len(linhas)}
+
+
+def consultar_notas_pendentes(conn, empresa_codigo: Optional[str] = None, limite: int = 20) -> dict:
+    """
+    Lista as pendências de Notas Fiscais AINDA EM ABERTO (não resolvidas
+    nem descartadas) -- pra perguntas tipo "quais notas estão faltando no
+    Sienge da Energia" ou "por que essa nota não foi encontrada".
+    """
+    df = nf_sienge.listar_pendencias_abertas(conn, empresa_codigo, limite)
+    if df.empty:
+        return {"pendencias": [], "quantidade": 0}
+    df = df.copy()
+    df["valor"] = df["valor"].astype(float)
+    for col in ("data_emissao", "atualizado_em"):
+        df[col] = df[col].apply(lambda v: v.strftime("%Y-%m-%d") if hasattr(v, "strftime") else v)
+    return {"pendencias": df.to_dict(orient="records"), "quantidade": len(df)}
 
 
 def consultar_visao_grupo(
