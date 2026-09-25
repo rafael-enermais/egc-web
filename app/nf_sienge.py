@@ -37,6 +37,7 @@ from typing import Optional
 import pandas as pd
 import requests
 from requests.auth import HTTPBasicAuth
+from psycopg2.extras import execute_values
 
 TIPOS_NOTA_FISCAL = ("NFE ", "NF  ")
 TOLERANCIA_VALOR = 0.01  # 1 centavo
@@ -48,8 +49,17 @@ LIMITE_PAGINA = 200      # teto documentado da API REST do Sienge
 # ─────────────────────────────────────────────
 
 def _sessao_sienge(base_url: str, usuario: str, senha: str):
-    auth = HTTPBasicAuth(usuario, senha)
-    return base_url.rstrip("/"), auth
+    """
+    requests.Session() reaproveita a conexao TCP/TLS entre as paginas
+    (antes era 1 handshake novo por pagina, com requests.get solto) --
+    parte do fix de lentidao pedido pelo Rafael em 25/09/2026 (10min pra
+    sincronizar). A outra parte e' o upsert em lote (ver as duas funcoes
+    de sync abaixo), que era o gargalo real: 1 INSERT por linha, 1
+    round-trip pro Postgres por nota/credor, em vez de 1 por pagina de 200.
+    """
+    sessao = requests.Session()
+    sessao.auth = HTTPBasicAuth(usuario, senha)
+    return base_url.rstrip("/"), sessao
 
 
 def sincronizar_bills(conn, base_url: str, usuario: str, senha: str,
@@ -58,8 +68,12 @@ def sincronizar_bills(conn, base_url: str, usuario: str, senha: str,
     Puxa TODOS os títulos (não só NFE/NF -- ver nota no topo do módulo
     sobre o fallback) de /v1/bills no intervalo de datas e faz upsert em
     egc.nf_bills_sync. Retorna quantos títulos foram sincronizados.
+
+    Upsert em LOTE (execute_values, 1 round-trip por página de até 200
+    títulos) -- antes era 1 INSERT por título (o gargalo real dos ~10min
+    reportados pelo Rafael em 25/09/2026, não a chamada à API em si).
     """
-    base, auth = _sessao_sienge(base_url, usuario, senha)
+    base, sessao = _sessao_sienge(base_url, usuario, senha)
     total = 0
     offset = 0
     with conn.cursor() as cur:
@@ -70,38 +84,43 @@ def sincronizar_bills(conn, base_url: str, usuario: str, senha: str,
                 "limit": LIMITE_PAGINA,
                 "offset": offset,
             }
-            r = requests.get(f"{base}/v1/bills", auth=auth, params=params, timeout=60)
+            r = sessao.get(f"{base}/v1/bills", params=params, timeout=60)
             r.raise_for_status()
             data = r.json()
             registros = data.get("results", data) if isinstance(data, dict) else data
             if not registros:
                 break
-            for b in registros:
-                cur.execute(
-                    """
-                    INSERT INTO egc.nf_bills_sync
-                        (bill_id, debtor_id, creditor_id, document_identification_id,
-                         document_number, issue_date, total_invoice_amount,
-                         access_key_number, status, sincronizado_em)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
-                    ON CONFLICT (bill_id) DO UPDATE SET
-                        debtor_id = EXCLUDED.debtor_id,
-                        creditor_id = EXCLUDED.creditor_id,
-                        document_identification_id = EXCLUDED.document_identification_id,
-                        document_number = EXCLUDED.document_number,
-                        issue_date = EXCLUDED.issue_date,
-                        total_invoice_amount = EXCLUDED.total_invoice_amount,
-                        access_key_number = EXCLUDED.access_key_number,
-                        status = EXCLUDED.status,
-                        sincronizado_em = now()
-                    """,
-                    (
-                        b.get("id"), b.get("debtorId"), b.get("creditorId"),
-                        b.get("documentIdentificationId"), b.get("documentNumber"),
-                        b.get("issueDate"), b.get("totalInvoiceAmount"),
-                        b.get("accessKeyNumber"), b.get("status"),
-                    ),
+            linhas = [
+                (
+                    b.get("id"), b.get("debtorId"), b.get("creditorId"),
+                    b.get("documentIdentificationId"), b.get("documentNumber"),
+                    b.get("issueDate"), b.get("totalInvoiceAmount"),
+                    b.get("accessKeyNumber"), b.get("status"),
                 )
+                for b in registros
+            ]
+            execute_values(
+                cur,
+                """
+                INSERT INTO egc.nf_bills_sync
+                    (bill_id, debtor_id, creditor_id, document_identification_id,
+                     document_number, issue_date, total_invoice_amount,
+                     access_key_number, status, sincronizado_em)
+                VALUES %s
+                ON CONFLICT (bill_id) DO UPDATE SET
+                    debtor_id = EXCLUDED.debtor_id,
+                    creditor_id = EXCLUDED.creditor_id,
+                    document_identification_id = EXCLUDED.document_identification_id,
+                    document_number = EXCLUDED.document_number,
+                    issue_date = EXCLUDED.issue_date,
+                    total_invoice_amount = EXCLUDED.total_invoice_amount,
+                    access_key_number = EXCLUDED.access_key_number,
+                    status = EXCLUDED.status,
+                    sincronizado_em = now()
+                """,
+                linhas,
+                template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, now())",
+            )
             total += len(registros)
             if len(registros) < LIMITE_PAGINA:
                 break
@@ -110,30 +129,36 @@ def sincronizar_bills(conn, base_url: str, usuario: str, senha: str,
 
 
 def sincronizar_creditores(conn, base_url: str, usuario: str, senha: str, max_paginas: int = 50) -> int:
-    """Puxa /v1/creditors (paginado) e faz upsert em egc.nf_creditors_sync."""
-    base, auth = _sessao_sienge(base_url, usuario, senha)
+    """Puxa /v1/creditors (paginado) e faz upsert em egc.nf_creditors_sync
+    em lote (mesma otimização de sincronizar_bills acima -- ver a nota lá)."""
+    base, sessao = _sessao_sienge(base_url, usuario, senha)
     total = 0
     offset = 0
     with conn.cursor() as cur:
         while offset < LIMITE_PAGINA * max_paginas:
             params = {"limit": LIMITE_PAGINA, "offset": offset}
-            r = requests.get(f"{base}/v1/creditors", auth=auth, params=params, timeout=60)
+            r = sessao.get(f"{base}/v1/creditors", params=params, timeout=60)
             r.raise_for_status()
             data = r.json()
             registros = data.get("results", data) if isinstance(data, dict) else data
             if not registros:
                 break
-            for c in registros:
-                cur.execute(
-                    """
-                    INSERT INTO egc.nf_creditors_sync (creditor_id, nome, nome_fantasia, cnpj, cpf, sincronizado_em)
-                    VALUES (%s, %s, %s, %s, %s, now())
-                    ON CONFLICT (creditor_id) DO UPDATE SET
-                        nome = EXCLUDED.nome, nome_fantasia = EXCLUDED.nome_fantasia,
-                        cnpj = EXCLUDED.cnpj, cpf = EXCLUDED.cpf, sincronizado_em = now()
-                    """,
-                    (c.get("id"), c.get("name"), c.get("tradeName"), c.get("cnpj"), c.get("cpf")),
-                )
+            linhas = [
+                (c.get("id"), c.get("name"), c.get("tradeName"), c.get("cnpj"), c.get("cpf"))
+                for c in registros
+            ]
+            execute_values(
+                cur,
+                """
+                INSERT INTO egc.nf_creditors_sync (creditor_id, nome, nome_fantasia, cnpj, cpf, sincronizado_em)
+                VALUES %s
+                ON CONFLICT (creditor_id) DO UPDATE SET
+                    nome = EXCLUDED.nome, nome_fantasia = EXCLUDED.nome_fantasia,
+                    cnpj = EXCLUDED.cnpj, cpf = EXCLUDED.cpf, sincronizado_em = now()
+                """,
+                linhas,
+                template="(%s, %s, %s, %s, %s, now())",
+            )
             total += len(registros)
             if len(registros) < LIMITE_PAGINA:
                 break
@@ -176,6 +201,29 @@ def gravar_manifesto(conn, empresa_codigo: str, periodo_referencia: str,
                 ),
             )
     return import_id
+
+
+def ultima_sincronizacao(conn):
+    """
+    Timestamp da sincronização mais recente entre nf_bills_sync e
+    nf_creditors_sync (o mais antigo dos dois "ganha", já que uma
+    conferência precisa dos dois atualizados). None se nunca sincronizou
+    -- usado pela tela pra avisar a contadora antes de rodar a
+    conferência com dado do Sienge desatualizado ou inexistente (pedido
+    do Rafael 25/09/2026: não travar o botão de conferência, só avisar,
+    já que agora o sync roda sozinho todo dia via GitHub Actions).
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT LEAST(
+                (SELECT MAX(sincronizado_em) FROM egc.nf_bills_sync),
+                (SELECT MAX(sincronizado_em) FROM egc.nf_creditors_sync)
+            )
+            """
+        )
+        row = cur.fetchone()
+    return row[0] if row else None
 
 
 # ─────────────────────────────────────────────

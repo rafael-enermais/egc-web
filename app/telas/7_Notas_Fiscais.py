@@ -69,6 +69,22 @@ cod_empresa, nome_empresa, _cnpj_empresa = EMPRESAS_FIXAS[idx]
 
 # ─────────────────────────── 1. Atualizar do Sienge ───────────────────────────
 st.subheader("1. Atualizar dados do Sienge")
+
+try:
+    _ultima_sync = nf_sienge.ultima_sincronizacao(conn)
+except Exception:
+    _ultima_sync = None
+
+if _ultima_sync:
+    st.caption(f"🔄 Última sincronização automática: {_ultima_sync.strftime('%d/%m/%Y %H:%M')} "
+               "(roda sozinha todo dia às 04h -- use o botão abaixo só se precisar de dado mais fresco agora)")
+else:
+    st.warning(
+        "Ainda não há nenhuma sincronização registrada com o Sienge. "
+        "Clique em \"Atualizar do Sienge\" abaixo antes de rodar a primeira conferência "
+        "-- sem isso, todas as notas vão aparecer como não encontradas."
+    )
+
 col_ini, col_fim, col_btn = st.columns([1, 1, 1])
 hoje = _dt.date.today()
 data_inicio = col_ini.date_input("De", value=hoje.replace(day=1) - _dt.timedelta(days=1), key="nf_data_ini")

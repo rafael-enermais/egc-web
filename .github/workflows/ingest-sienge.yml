@@ -1,0 +1,34 @@
+# Ingestão automática Sienge -> Supabase (schema egc), mesmo padrão já
+# validado no repositório tia-go. Roda o MESMO script que o botão
+# "Atualizar do Sienge" chama por baixo dos panos (app/nf_sienge.py) --
+# só troca quem aciona, tirando a espera de ~10min de cima da contadora.
+
+name: Ingestao diaria Sienge -> Supabase (EGC)
+
+on:
+  schedule:
+    - cron: '0 7 * * *'   # 07:00 UTC = 04:00 horario de Brasilia
+  workflow_dispatch: {}    # deixa aparecer o botao "Run workflow" pra rodar na mao
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar o repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Rodar a ingestao
+        env:
+          SIENGE_BASE_URL: ${{ secrets.SIENGE_BASE_URL }}
+          SIENGE_USER: ${{ secrets.SIENGE_USER }}
+          SIENGE_PASSWORD: ${{ secrets.SIENGE_PASSWORD }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python ingest_sienge_egc.py
