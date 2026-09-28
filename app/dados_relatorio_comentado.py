@@ -291,19 +291,36 @@ def _montar_anexo(bp_periodo: list, lado: str) -> list:
     return linhas
 
 
-def _montar_despesas_admin_itens(itens_admin: list, despesas_administrativas: float) -> list:
+def _montar_despesas_admin_itens(itens_admin: list, despesas_administrativas: float, top_n: int = 6) -> list:
     """[(nome, valor_positivo, pct_0_a_100), ...] ordenado desc pelo
     valor -- formato que gerador_relatorio_comentado espera pro grafico
     de ranking (pagina Despesas). Vem de db.listar_despesas_admin_itens
     (Fase 2/bloco 12) -- lista vazia se a migracao ainda nao rodou no
     banco ou o periodo nao tiver essa extracao (period antigo, antes do
-    parser existir) -- pagina ja tem teste cobrindo lista vazia."""
+    parser existir) -- pagina ja tem teste cobrindo lista vazia.
+
+    FIX_20260929c (Rafael, pag.4 "estourando os gráficos pra baixo,
+    temos que limitar"): grafico_ranking_horizontal desenha 1 barra por
+    item SEM TETO -- empresa com dezenas de contas administrativas (ex.:
+    Energia, 43 contas) empurrava o resto da pagina (callout, cards,
+    total, texto de leitura) pra baixo da margem inferior. Corta em
+    `top_n` itens individuais + 1 linha agregada "Demais contas (N)"
+    com a SOMA exata do resto -- nada desaparece do total, só deixa de
+    ser detalhado item a item. Mesmo padrão já usado no protótipo
+    anterior (referência real tinha "Demais contas (43)" nessa página).
+    Só agrega quando sobra mais de 1 item de cauda -- com exatamente
+    top_n+1 contas não vale a pena resumir 1 item só."""
+    itens = [(nome, abs(float(valor))) for nome, valor in itens_admin]
+    itens.sort(key=lambda t: t[1], reverse=True)
+
+    if len(itens) > top_n + 1:
+        topo, resto = itens[:top_n], itens[top_n:]
+        itens = topo + [(f"Demais contas ({len(resto)})", sum(v for _, v in resto))]
+
     out = []
-    for nome, valor in itens_admin:
-        valor_abs = abs(float(valor))
+    for nome, valor_abs in itens:
         pct = (valor_abs / despesas_administrativas * 100) if despesas_administrativas else 0.0
         out.append((nome, valor_abs, pct))
-    out.sort(key=lambda t: t[1], reverse=True)
     return out
 
 
