@@ -205,6 +205,47 @@ def test_anexo_aninha_subconta_sob_conta_pai_quando_par_confirmado():
     print("OK: _montar_anexo aninha subconta sob a conta pai quando o par esta em _HIERARQUIA_BP")
 
 
+def test_anexo_aninha_3_pares_novos_do_passivo_fix_20260928b():
+    # Mesmos 3 pares novos do lado PASSIVO CIRCULANTE, com os valores
+    # REAIS da Enermais Energia (SPED 31/12/2025) usados na verificacao
+    # aritmetica que justificou o FIX_20260928b em _HIERARQUIA_BP:
+    #   Obrigacoes Tributarias = Impostos e Contrib. a Recolher + Tributos Retidos a Recolher
+    #   Obrigacoes Trabalhistas = Obrigacoes com o Pessoal + Obrigacoes Previdenciarias
+    #   Outras Obrigacoes = Adiantamentos de Clientes + Contas a Pagar
+    bp = [
+        _lanc("ATIVO CIRCULANTE", "TOTAL CIRCULANTE ATIVO", 0.0),
+        _lanc("ATIVO NAO CIRCULANTE", "TOTAL NAO CIRCULANTE ATIVO", 0.0),
+        _lanc("TOTAL", "TOTAL DO ATIVO", 0.0),
+        _lanc("PASSIVO CIRCULANTE", "TOTAL CIRCULANTE PASSIVO", 11_714_088.79),
+        _lanc("PASSIVO CIRCULANTE", "OBRIGACOES TRIBUTARIAS", 1_346_005.46),
+        _lanc("PASSIVO CIRCULANTE", "IMPOSTOS E CONTRIBUICOES A RECOLHER", 1_291_057.67),
+        _lanc("PASSIVO CIRCULANTE", "TRIBUTOS RETIDOS A RECOLHER", 54_947.79),
+        _lanc("PASSIVO CIRCULANTE", "OBRIGACOES TRABALHISTAS", 1_799_133.16),
+        _lanc("PASSIVO CIRCULANTE", "OBRIGACOES COM O PESSOAL", 551_614.37),
+        _lanc("PASSIVO CIRCULANTE", "OBRIGACOES PREVIDENCIARIAS", 1_247_518.79),
+        _lanc("PASSIVO CIRCULANTE", "OUTRAS OBRIGACOES", 8_568_950.17),
+        _lanc("PASSIVO CIRCULANTE", "ADIANTAMENTOS DE CLIENTES", 6_724_607.29),
+        _lanc("PASSIVO CIRCULANTE", "CONTAS A PAGAR", 1_844_342.88),
+        _lanc("PASSIVO NAO CIRCULANTE", "TOTAL NAO CIRCULANTE PASSIVO", 0.0),
+        _lanc("PATRIMONIO LIQUIDO", "TOTAL PATRIMONIO LIQUIDO", 0.0),
+        _lanc("TOTAL", "TOTAL DO PASSIVO", 11_714_088.79),
+    ]
+    linhas = drc._montar_anexo(bp, "PASSIVO")
+    contas = {l[1]: l for l in linhas if l[0] in ("conta", "subconta")}
+    assert contas["Obrigações Tributárias"][0] == "conta"
+    assert contas["Impostos e Contribuições a Recolher"] == ("subconta", "Impostos e Contribuições a Recolher", 1_291_057.67)
+    assert contas["Tributos Retidos a Recolher"] == ("subconta", "Tributos Retidos a Recolher", 54_947.79)
+    assert contas["Obrigações Trabalhistas"][0] == "conta"
+    assert contas["Obrigações com o Pessoal"] == ("subconta", "Obrigações com o Pessoal", 551_614.37)
+    assert contas["Obrigações Previdenciárias"] == ("subconta", "Obrigações Previdenciárias", 1_247_518.79)
+    assert contas["Outras Obrigações"][0] == "conta"
+    assert contas["Adiantamentos de Clientes"] == ("subconta", "Adiantamentos de Clientes", 6_724_607.29)
+    assert contas["Contas a Pagar"] == ("subconta", "Contas a Pagar", 1_844_342.88)
+    tipos = [l[0] for l in linhas if l[0] in ("conta", "subconta")]
+    assert tipos.count("conta") == 3, "os 3 pais devem aparecer 1x cada como 'conta', filhos nunca soltos"
+    print("OK: _montar_anexo aninha os 3 pares novos (Obrig. Tributarias/Trabalhistas/Outras Obrigacoes) com dado real da Energia")
+
+
 def test_sem_periodo_anterior_cai_no_fallback_neutro():
     dados, _ = _montar(periodos_ativos=[PERIODO])
     assert "sem período anterior" in dados["complemento_receita"]
@@ -252,6 +293,7 @@ if __name__ == "__main__":
     test_sem_csll_irpj_pula_pagina_resultado_e_nao_inventa_campo()
     test_anexo_ativo_tem_grupo_conta_subtotal_total_na_ordem()
     test_anexo_aninha_subconta_sob_conta_pai_quando_par_confirmado()
+    test_anexo_aninha_3_pares_novos_do_passivo_fix_20260928b()
     test_sem_periodo_anterior_cai_no_fallback_neutro()
     test_com_periodo_anterior_gera_texto_comparativo()
     test_pipeline_completo_nao_quebra_gerando_pdf_de_verdade()
