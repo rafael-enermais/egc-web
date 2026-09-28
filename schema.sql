@@ -625,3 +625,36 @@ CREATE POLICY egc_app_full_access ON egc.nf_bills_orfaos FOR ALL TO egc_app USIN
 
 -- Fim do bloco 14. Rodar so' este bloco no SQL Editor do Supabase
 -- (projeto radar-comercial) -- nao precisa rodar o arquivo inteiro de novo.
+
+-- =====================================================================
+-- BLOCO 15 — Trava real contra duplicata em egc.lancamentos
+--
+--   Pendencia identificada em 24-28/09/2026 (revisao pos-reset dos testes
+--   do Rafael): hoje so' existe um aviso em codigo (warnings.warn em
+--   db._mapa) contra 2 linhas ATIVO da mesma
+--   empresa+tipo+periodo+grupo+conta -- nada no BANCO impede isso de
+--   fato. Na pratica db.inativar_periodo_existente ja' cobre o caso comum
+--   (reimport do mesmo periodo, ou 2 arquivos do mesmo periodo no mesmo
+--   lote -- o ultimo processado vence, o outro vira INATIVO antes do
+--   proximo insert) -- essa trava e' rede de seguranca pra um bug futuro
+--   ou insert manual que pule essa chamada, nao uma correcao de um erro
+--   que esta' acontecendo hoje.
+--
+--   UNIQUE PARCIAL (so' quando status='ATIVO') -- INATIVO pode (e deve)
+--   ter varias linhas historicas da mesma conta (arquivamento por
+--   periodo, trilha de auditoria) sem violar nada.
+--
+--   Pre-requisito antes de rodar: nao pode existir HOJE 2+ linhas ATIVO
+--   da mesma empresa+tipo+periodo+grupo+conta (senao o CREATE UNIQUE
+--   INDEX falha com "could not create unique index" -- rode a consulta 2
+--   de conferencia_lancamentos_20260929.txt pra conferir antes; se a
+--   reconferencia do Rafael 29/09/2026 nao mostrar duplicata ATIVO
+--   nenhuma, pode rodar direto).
+-- =====================================================================
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_lancamentos_ativo
+  ON egc.lancamentos (empresa_codigo, tipo, periodo, grupo, conta)
+  WHERE status = 'ATIVO';
+
+-- Fim do bloco 15. Rodar so' este bloco no SQL Editor do Supabase
+-- (projeto radar-comercial) -- nao precisa rodar o arquivo inteiro de novo.

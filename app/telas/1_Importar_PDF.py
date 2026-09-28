@@ -443,6 +443,12 @@ else:
         detalhes = " · ".join(f"{t}: {msg}" for t, msg in ev["tipos"] if msg)
         if detalhes:
             col_a.caption(detalhes)
+        # FIX_20260929: nome do(s) arquivo(s) de origem no historico --
+        # pedido do Rafael depois do caso do PDF "Consolidado" misturado
+        # por engano num lote (dado ja existia em egc.importacoes.arquivos,
+        # so' nao aparecia aqui -- ver docstring de agrupar_historico_importacoes).
+        if ev.get("arquivos"):
+            col_a.caption("📄 " + ", ".join(ev["arquivos"]))
         if col_b.button("↩️ Desfazer", key=f"hist_desfazer_{cod_ev}_{periodo_ev}"):
             conn = get_conn()
             total = db.arquivar_periodo(conn, cod_ev, periodo_ev)

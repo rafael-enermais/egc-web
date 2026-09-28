@@ -661,16 +661,36 @@ def listar_orfaos_sienge(conn, import_id: str) -> pd.DataFrame:
 def listar_pendencias_abertas(conn, empresa_codigo: Optional[str] = None, limite: int = 50) -> pd.DataFrame:
     """Pendências ainda em aberto (PENDENTE ou ENVIADO_SUPRIMENTOS -- não
     RESOLVIDO/DESCARTADO), da rodada de conferência mais recente de cada
-    empresa. Usado pelo chat (consultas_chat.consultar_notas_pendentes)
-    e pela tela pra montar o .xlsx de pendências."""
+    empresa+período. Usado pelo chat (consultas_chat.consultar_notas_pendentes)
+    e pela tela pra montar o .xlsx de pendências.
+
+    FIX_20260929 (achado revisando o pedido do Rafael sobre clicar 2x em
+    "Rodar conferência"): cada rodada cria um import_id NOVO -- nada
+    substitui/desativa o lote anterior do mesmo empresa+período (ao
+    contrário do fluxo BP/DRE, que tem inativar_periodo_existente). O
+    docstring desta função já dizia "rodada mais recente de cada
+    empresa", mas o SQL antigo não filtrava por import_id nenhum --
+    somava pendências de TODOS os imports já rodados. Resultado real: se
+    a mesma competência for conferida 2x (de propósito ou por engano),
+    a mesma nota pendente aparecia 2x pro Erik.AI. `DISTINCT ON` abaixo
+    restringe a SÓ o import_id mais recente de cada (empresa, período) --
+    uma competência antiga genuinamente diferente (ex.: 07/2026 depois
+    de já ter rodado 08/2026) continua aparecendo normalmente, só não
+    conta 2x a MESMA competência re-rodada."""
     with conn.cursor() as cur:
         cur.execute(
             """
+            WITH ultimo_import AS (
+                SELECT DISTINCT ON (empresa_codigo, periodo_referencia) import_id
+                FROM egc.nf_manifesto_import
+                ORDER BY empresa_codigo, periodo_referencia, criado_em DESC
+            )
             SELECT m.empresa_codigo, m.periodo_referencia, m.numero_nota, m.data_emissao,
                    m.valor, m.fornecedor_nome, m.fornecedor_cnpj, c.status, c.observacao,
                    c.pendencia_status, c.atualizado_em
             FROM egc.nf_conciliacao c
             JOIN egc.nf_manifesto_import m ON m.id = c.manifesto_id
+            JOIN ultimo_import ui ON ui.import_id = m.import_id
             WHERE c.status <> 'LANCADA'
               AND (c.pendencia_status IS NULL OR c.pendencia_status IN ('PENDENTE','ENVIADO_SUPRIMENTOS'))
               AND (%s IS NULL OR m.empresa_codigo = %s)
