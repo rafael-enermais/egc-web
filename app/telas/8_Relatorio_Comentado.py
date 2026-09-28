@@ -97,12 +97,19 @@ def _seletor_contato(tipo: str, cargo_padrao: str, col) -> tuple[str, str]:
     migração do bloco 13 ainda não rodou, listar_contatos_relatorio
     devolve [] e a tela cai pro comportamento antigo (só o campo "novo
     contato"), sem quebrar.
+
+    FIX_20260929b (Rafael: "ficou separado, não seria mais fácil manter 1
+    lista só pra ambos... a lista única poderia trocar facilmente os
+    lados"): `salvos` agora vem da lista INTEIRA de contatos (sem filtro
+    por tipo) -- os 2 seletores (ADMINISTRADOR e CONTADOR) compartilham o
+    mesmo dropdown de opções, então um contato salvo de um lado aparece
+    pronto pro outro também, sem recadastrar.
     NOVO_SENTINELA: opção fixa pra "não é nenhum salvo, vou digitar" --
     string improvável de colidir com nome real, nunca gravada no banco.
     """
     NOVO_SENTINELA = "➕ Cadastrar novo…"
     try:
-        salvos = db.listar_contatos_relatorio(conn, tipo)
+        salvos = db.listar_contatos_relatorio(conn)
     except Exception:
         salvos = []
 
@@ -136,8 +143,12 @@ def _seletor_contato(tipo: str, cargo_padrao: str, col) -> tuple[str, str]:
             key=f"relatorio_edit_email_{tipo}_{contato['id']}",
         )
         if st.button("💾 Salvar edição", key=f"relatorio_salvar_edit_{tipo}_{contato['id']}"):
+            # tipo=contato["tipo"] (não o `tipo` do seletor atual): como a
+            # lista agora é compartilhada (FIX_20260929b), editar um
+            # contato ADMINISTRADOR a partir do seletor CONTADOR não pode
+            # silenciosamente trocar o tipo gravado dele.
             db.salvar_contato_relatorio(
-                conn, tipo=tipo, nome=novo_nome.strip(), cargo=novo_cargo.strip(),
+                conn, tipo=contato["tipo"], nome=novo_nome.strip(), cargo=novo_cargo.strip(),
                 email=novo_email.strip() or None, contato_id=contato["id"], usuario=usuario,
             )
             st.success("Contato atualizado.")
