@@ -24,7 +24,13 @@ BASE = dict(
     despesas_financeiras=1_139_497.69, despesas_tributarias=80_502.31,
     despesas_admin_itens=[("Serviços Profissionais", 11_401_300.0, 38.9), ("Salários e Ordenados", 4_060_000.0, 13.8)],
     csll_irpj=231_625.27, resultado_liquido=-1_337_674.90, margem_liquida=-0.04,
-    resultado_financeiro=1_139_497.69, deprec_amortiz=691_527.25, ebitda=493_350.04, margem_ebitda=0.015,
+    # FIX_20260928: ebitda/margem_ebitda recalculados pela formula nova
+    # (soma de volta csll_irpj tambem, alinhado com indicadores.py --
+    # antes so' somava resultado_financeiro+deprec_amortiz de volta ao
+    # resultado liquido, que ja vem DEPOIS do csll_irpj). Resultado
+    # liquido (-1.337.674,90) + csll_irpj (231.625,27) + resultado
+    # financeiro (1.139.497,69) + deprec_amortiz (691.527,25) = 724.975,31.
+    resultado_financeiro=1_139_497.69, deprec_amortiz=691_527.25, ebitda=724_975.31, margem_ebitda=0.02174,
     total_ativo=43_359_080.94, ativo_circulante=18_239_216.72, ativo_nao_circulante=25_119_864.22,
     passivo_circulante=18_338_124.77, passivo_nao_circulante=18_249_041.92, patrimonio_liquido=6_771_914.25,
     imobilizado=19_815_256.50, liquidez_corrente=0.99, alavancagem=5.40, endividamento_geral=0.844,
@@ -38,7 +44,7 @@ BASE = dict(
 
 
 def test_gerar_pdf_completo_nao_quebra_lucro_e_prejuizo():
-    for resultado, margem, ebitda, margem_ebitda in [(-1_337_674.90, -0.04, 493_350.04, 0.015),
+    for resultado, margem, ebitda, margem_ebitda in [(-1_337_674.90, -0.04, 724_975.31, 0.02174),
                                                        (2_000_000.0, 0.06, 3_000_000.0, 0.09)]:
         dados = dict(BASE, resultado_liquido=resultado, margem_liquida=margem, ebitda=ebitda, margem_ebitda=margem_ebitda)
         with tempfile.TemporaryDirectory() as tmp:
@@ -175,3 +181,34 @@ def test_gerar_pdf_completo_sem_pagina_resultado_pula_csll_irpj():
         assert os.path.exists(caminho)
         assert os.path.getsize(caminho) > 1000
     print("OK: gerar_pdf_completo com incluir_pagina_resultado=False nao acessa csll_irpj")
+
+
+def test_ebitda_soma_csll_irpj_de_volta_quando_existe():
+    """FIX_20260928: EBITDA deve seguir a formula padrao contabil (antes
+    de impostos), igual a indicadores.py -- soma resultado_financeiro,
+    deprec_amortiz E csll_irpj de volta ao resultado liquido. Antes desta
+    rodada so' somava os 2 primeiros (ficava diferente do Dashboard)."""
+    texto = "\n".join(g._leitura_ebitda(BASE))
+    # BASE tem csll_irpj=231_625.27 -- a leitura deve mencionar a provisao
+    assert "CSLL" in texto or "csll" in texto.lower()
+    with tempfile.TemporaryDirectory() as tmp:
+        caminho = os.path.join(tmp, "ebitda_com_csll.pdf")
+        g.gerar_pdf_completo(BASE, caminho)
+        assert os.path.exists(caminho) and os.path.getsize(caminho) > 5000
+    print("OK: leitura do EBITDA soma CSLL/IRPJ de volta quando o campo existe")
+
+
+def test_ebitda_sem_csll_irpj_nao_quebra_e_nao_menciona_provisao():
+    """Lucro presumido (pagina 4 pulada, csll_irpj ausente): EBITDA
+    continua funcionando normalmente, sem addback de CSLL/IRPJ (soma 0,
+    que e' o valor certo -- nao ha provisao separada nesse regime) e sem
+    mencionar CSLL na leitura (nada pra reportar)."""
+    dados_sem_csll = dict(BASE)
+    del dados_sem_csll["csll_irpj"]
+    texto = "\n".join(g._leitura_ebitda(dados_sem_csll))
+    assert "CSLL" not in texto
+    with tempfile.TemporaryDirectory() as tmp:
+        caminho = os.path.join(tmp, "ebitda_sem_csll.pdf")
+        g.gerar_pdf_completo(dados_sem_csll, caminho, incluir_pagina_resultado=False)
+        assert os.path.exists(caminho) and os.path.getsize(caminho) > 5000
+    print("OK: EBITDA sem csll_irpj nao quebra e nao menciona provisao inexistente")
