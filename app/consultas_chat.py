@@ -213,8 +213,16 @@ def consultar_notas_pendentes(conn, empresa_codigo: Optional[str] = None, limite
     Lista as pendências de Notas Fiscais AINDA EM ABERTO (não resolvidas
     nem descartadas) -- pra perguntas tipo "quais notas estão faltando no
     Sienge da Energia" ou "por que essa nota não foi encontrada".
+
+    FIX_20260928f: inclui tambem a direcao reversa (titulo do Sienge sem
+    nota no manifesto, egc.nf_bills_orfaos/listar_orfaos_abertos) -- sem
+    isso o chat ficaria cego pro alerta que o Rafael pediu explicitamente
+    ("nao e' pra acontecer, mas... importante nao passar batido").
     """
     df = nf_sienge.listar_pendencias_abertas(conn, empresa_codigo, limite)
+    df_orfaos = nf_sienge.listar_orfaos_abertos(conn, empresa_codigo, limite)
+    if not df_orfaos.empty:
+        df = pd.concat([df, df_orfaos], ignore_index=True) if not df.empty else df_orfaos
     if df.empty:
         return {"pendencias": [], "quantidade": 0}
     df = df.copy()
