@@ -19,7 +19,10 @@ calcula nada nao calculado antes.
 """
 from __future__ import annotations
 
+import datetime as _dt
 from typing import Optional
+
+import pandas as pd
 
 from validacoes import formatar_br
 
@@ -65,3 +68,30 @@ def numero_br(v: Optional[float], sufixo: str = "", vazio: str = "—", forcar_s
     if _e_vazio(v):
         return vazio
     return f"{_sinal(v, forcar_sinal)}{formatar_br(abs(v))}{sufixo}"
+
+
+def remover_timezone_para_excel(df: pd.DataFrame) -> pd.DataFrame:
+    """Devolve uma copia de df com toda coluna datetime tz-aware
+    convertida pra tz-naive (so' tira o timezone, nao desloca a hora --
+    valores ja vem do banco convertidos pro horario certo).
+
+    FIX_20260928 (Rafael, "Rodar conferência" em Notas Fiscais quebrando
+    com ValueError ao clicar em "Baixar planilha de pendências"): coluna
+    tipo `timestamptz` no Postgres (ex. egc.nf_conciliacao.atualizado_em)
+    volta do psycopg2 como datetime.datetime com tzinfo -- openpyxl NAO
+    aceita datetime com timezone num .xlsx e levanta
+    "ValueError: Excel does not support datetimes with timezones."
+    Cobre os 2 jeitos que a coluna pode chegar num DataFrame montado a
+    partir de cur.fetchall(): dtype datetime64[ns, tz] (quando o pandas
+    consegue inferir) OU dtype "object" guardando datetime.datetime cru
+    (quando nao consegue) -- nao assume um dos 2, testa os dois.
+    """
+    saida = df.copy()
+    for col in saida.columns:
+        if pd.api.types.is_datetime64_any_dtype(saida[col]) and saida[col].dt.tz is not None:
+            saida[col] = saida[col].dt.tz_localize(None)
+        elif saida[col].dtype == "object":
+            saida[col] = saida[col].apply(
+                lambda v: v.replace(tzinfo=None) if isinstance(v, _dt.datetime) and v.tzinfo is not None else v
+            )
+    return saida
