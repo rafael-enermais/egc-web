@@ -107,6 +107,50 @@ def test_grafico_evolucao_com_metrica_toda_negativa_nao_quebra():
     print("OK: grafico_evolucao com métrica toda negativa (e um zero) não lança exceção")
 
 
+# FIX_20260929e/f/g: regressão dos 2 bugs de layout achados na
+# VERIFICAÇÃO VISUAL de 29/09/2026, gerando o 1º PDF comparativo real
+# (escala Enermais) -- nenhum dos testes acima pegou, porque usam rótulo
+# curto e números pequenos de propósito (ver docstring do módulo). Os 2
+# bugs: (1) etiqueta FLUXO/SALDO invadindo a 1ª coluna de valor com o
+# rótulo mais longo de hoje ("Receita Operacional Líquida") em 3-4
+# períodos; (2) fonte do valor larga demais pra coluna com número de 8
+# dígitos em 4 períodos, colunas vizinhas coladas. Testa a GEOMETRIA
+# (`_layout_tabela_evolucao`, função pura sem canvas) direto, sem
+# precisar renderizar PDF nem inspecionar pixel.
+def test_layout_tabela_evolucao_sem_sobreposicao_rotulo_etiqueta_e_colunas():
+    B._registrar_fontes()
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    valores_8_digitos = [26_400_000.0, 28_900_000.0, 31_200_000.0, 33_353_150.0]
+    for n_col in (2, 3, 4):
+        valores = valores_8_digitos[-n_col:]
+        linhas = [
+            {"label": "Receita Operacional Líquida", "tag": "fluxo", "valores": valores},
+            {"label": "EBITDA", "tag": "fluxo", "valores": valores},
+            {"label": "Total do Ativo", "tag": "saldo", "valores": valores},
+        ]
+        geo = B._layout_tabela_evolucao(B.CONTEUDO_W, n_col, linhas)
+        left_edge_col0 = geo["x_col"](0) - geo["valor_col_w"]
+
+        for linha, linha_geo in zip(linhas, geo["linhas"]):
+            tag_end = linha_geo["tag_x0"] + geo["TAG_W"]
+            assert tag_end <= left_edge_col0 + 0.01, (
+                f"n_col={n_col}: etiqueta de '{linha['label']}' termina em {tag_end:.1f}pt, "
+                f"depois da borda esquerda da 1ª coluna de valor ({left_edge_col0:.1f}pt) -- "
+                f"ia sobrepor o valor (bug do FIX_20260929e/g)"
+            )
+        for linha in linhas:
+            for v in linha["valores"]:
+                texto_v = B.moeda_br(v, forcar_sinal=(v < 0))
+                w = stringWidth(texto_v, B.FONT["regular"], geo["valor_font_size"])
+                assert w <= geo["valor_col_w"] + 0.5, (
+                    f"n_col={n_col}: '{texto_v}' tem {w:.1f}pt no tamanho escolhido "
+                    f"({geo['valor_font_size']}pt) -- mais largo que a coluna "
+                    f"({geo['valor_col_w']:.1f}pt), ia colar na coluna vizinha (bug do FIX_20260929f)"
+                )
+    print("OK: _layout_tabela_evolucao não deixa etiqueta invadir a 1ª coluna nem valor mais largo que a coluna, em 2/3/4 períodos")
+
+
 if __name__ == "__main__":
     testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
     falhas = 0
