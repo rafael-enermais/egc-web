@@ -82,13 +82,75 @@ _GRUPOS_PASSIVO = [
 
 _PALAVRAS_MINUSCULAS = {"a", "as", "o", "os", "de", "da", "do", "das", "dos", "e", "em"}
 
+# FIX_20260928 (Rafael, comparando com o modelo de referencia que a
+# contadora ja aprovou): o banco guarda conta sem acento (parser_egc.py
+# nao acentua), e o Title Case puro ("Depositos Bancarios a Vista") ficava
+# claramente diferente do modelo. Dicionario com a grafia correta de toda
+# conta que aparece em parser_egc.BP_TARGETS -- fonte unica, nunca inventa
+# nome novo (so' repoe o acento do MESMO nome). Uma conta que aparecer no
+# banco mas nao estiver aqui (nunca deveria acontecer, ja que so' vem do
+# proprio BP_TARGETS) cai no fallback _label_conta (Title Case sem acento)
+# em vez de quebrar.
+_LABEL_ACENTUADO = {
+    "DISPONIVEL": "Disponível",
+    "DEPOSITOS BANCARIOS A VISTA": "Depósitos Bancários à Vista",
+    "APLICACOES DE LIQUIDEZ IMEDIATA": "Aplicações de Liquidez Imediata",
+    "CLIENTES": "Clientes",
+    "DUPLICATAS A RECEBER": "Duplicatas a Receber",
+    "OUTROS CREDITOS": "Outros Créditos",
+    "MUTUO ENTRE EMPRESAS": "Mútuo entre Empresas",
+    "TITULOS A RECEBER": "Títulos a Receber",
+    "TRIBUTOS A RECUPERAR": "Tributos a Recuperar",
+    "ADIANTAMENTOS A TERCEIROS": "Adiantamentos a Terceiros",
+    "DESPESAS PAGAS ANTECIPADAMENTE": "Despesas Pagas Antecipadamente",
+    "INVESTIMENTOS": "Investimentos",
+    "IMOBILIZADO": "Imobilizado",
+    "IMOVEIS": "Imóveis",
+    "APLICACOES FINANCEIRAS": "Aplicações Financeiras",
+    "BENS EM OPERACAO": "Bens em Operação",
+    "DEPRECIACAO ACUMULADA": "Depreciação Acumulada",
+    "INSTITUICOES FINANCEIRAS": "Instituições Financeiras",
+    "EMPRESTIMOS": "Empréstimos",
+    "FINANCIAMENTOS": "Financiamentos",
+    "FORNECEDORES": "Fornecedores",
+    "OBRIGACOES TRIBUTARIAS": "Obrigações Tributárias",
+    "IMPOSTOS E CONTRIBUICOES A RECOLHER": "Impostos e Contribuições a Recolher",
+    "TRIBUTOS RETIDOS A RECOLHER": "Tributos Retidos a Recolher",
+    "OBRIGACOES TRABALHISTAS": "Obrigações Trabalhistas",
+    "OBRIGACOES COM O PESSOAL": "Obrigações com o Pessoal",
+    "OBRIGACOES PREVIDENCIARIAS": "Obrigações Previdenciárias",
+    "CONTAS A PAGAR": "Contas a Pagar",
+    "OUTRAS OBRIGACOES": "Outras Obrigações",
+    "ADIANTAMENTOS DE CLIENTES": "Adiantamentos de Clientes",
+    "OBRIGACOES A LONGO PRAZO": "Obrigações a Longo Prazo",
+    "RECEITAS DIFERIDAS": "Receitas Diferidas",
+    "CAPITAL SOCIAL": "Capital Social",
+    "CAPITAL SUBSCRITO": "Capital Subscrito",
+    "CAPITAL A INTEGRALIZAR": "Capital a Integralizar",
+    "LUCROS/PREJUIZOS ACUMULADOS": "Lucros/Prejuízos Acumulados",
+}
+
+# Pares pai/filho verificados ARITMETICAMENTE contra dado real importado
+# (28/09/2026, comparando um relatorio gerado com o modelo de referencia):
+# o valor do pai bate exatamente com a soma dos filhos sempre que os 2
+# existem no mesmo periodo (ex.: Disponivel = Depositos Bancarios a Vista
+# + Aplicacoes de Liquidez Imediata). So' os pares confirmados entram
+# aqui -- contas sem par pai/filho confirmado ficam como linha solta
+# ("conta" simples), nunca um agrupamento inventado. Ampliar esta lista
+# exige conferir a soma de novo, nao adivinhar pelo nome.
+_HIERARQUIA_BP = {
+    "DISPONIVEL": ["DEPOSITOS BANCARIOS A VISTA", "APLICACOES DE LIQUIDEZ IMEDIATA"],
+    "CLIENTES": ["DUPLICATAS A RECEBER"],
+    "INSTITUICOES FINANCEIRAS": ["EMPRESTIMOS", "FINANCIAMENTOS"],
+}
+
 
 def _label_conta(nome_bd: str) -> str:
-    """'DEPOSITOS BANCARIOS A VISTA' -> 'Depositos Bancarios a Vista'.
-    So' Title Case + preposicoes em minuscula -- formatador simples de
-    v1, sem acentuacao (o banco guarda sem acento). Ajuste fino de
-    acentos/nomes bonitos fica pra quando a contadora pedir (evolucao
-    incremental, nao adivinhar agora)."""
+    """Grafia correta (com acento) se a conta estiver em _LABEL_ACENTUADO;
+    senao cai no Title Case simples (fallback, nunca quebra por uma conta
+    nao mapeada)."""
+    if nome_bd in _LABEL_ACENTUADO:
+        return _LABEL_ACENTUADO[nome_bd]
     partes = nome_bd.split(" ")
     saida = []
     for i, p in enumerate(partes):
@@ -113,22 +175,49 @@ def _mapa(lancamentos: list) -> dict:
 def _montar_anexo(bp_periodo: list, lado: str) -> list:
     """Monta anexo_ativo ou anexo_passivo no formato tupla-arvore que
     gerador_relatorio_comentado espera: ('grupo', label) |
-    ('conta'|'subtotal'|'total', label, valor)."""
+    ('conta'|'subconta'|'subtotal'|'total', label, valor).
+
+    FIX_20260928 (Rafael, comparando linha a linha com o modelo de
+    referencia que a contadora ja aprovou): antes emitia 1 header
+    "grupo" umbrella (\"ATIVO\"/\"PASSIVO + PL\") no topo e contas
+    achatadas por baixo. O modelo usa 1 header \"grupo\" PRA CADA
+    subgrupo (ex.: \"Ativo Circulante\" e soh' depois \"Ativo Nao
+    Circulante\", como 2 blocos separados na mesma coluna) e aninha
+    pai/filho pras contas em _HIERARQUIA_BP (ex.: Disponivel com
+    Depositos Bancarios a Vista/Aplicacoes de Liquidez Imediata
+    indentados por baixo, tipo 'subconta'). Continua sem inventar
+    nada: subgrupo sem lancamento no periodo soh' nao aparece, conta
+    sem par confirmado em _HIERARQUIA_BP fica solta ('conta' simples)."""
     if lado == "ATIVO":
-        grupos, grand_nome, grand_label, header = _GRUPOS_ATIVO, "TOTAL DO ATIVO", "TOTAL DO ATIVO", "ATIVO"
+        grupos, grand_nome, grand_label = _GRUPOS_ATIVO, "TOTAL DO ATIVO", "TOTAL DO ATIVO"
     else:
-        grupos, grand_nome, grand_label, header = (
-            _GRUPOS_PASSIVO, "TOTAL DO PASSIVO", "TOTAL PASSIVO + PL", "PASSIVO + PATRIMÔNIO LÍQUIDO",
+        grupos, grand_nome, grand_label = (
+            _GRUPOS_PASSIVO, "TOTAL DO PASSIVO", "TOTAL PASSIVO + PL",
         )
 
-    linhas = [("grupo", header)]
+    linhas = []
     for grupo_bd, grupo_label, totalizador_nome in grupos:
         rows = [r for r in bp_periodo if r["grupo"] == grupo_bd]
         if not rows:
             continue
         itens = sorted((r for r in rows if r["conta"] != totalizador_nome), key=lambda r: r["conta"])
+        mapa_itens = {r["conta"]: r for r in itens}
+        filhos_usados = set()
+        for filhos in _HIERARQUIA_BP.values():
+            for f in filhos:
+                if f in mapa_itens:
+                    filhos_usados.add(f)
+
+        linhas.append(("grupo", grupo_label))
         for r in itens:
-            linhas.append(("conta", _label_conta(r["conta"]), float(r["valor"])))
+            nome = r["conta"]
+            if nome in filhos_usados:
+                continue  # ja' sai aninhada embaixo do pai, nao solta de novo
+            linhas.append(("conta", _label_conta(nome), float(r["valor"])))
+            for filho_nome in _HIERARQUIA_BP.get(nome, []):
+                filho_row = mapa_itens.get(filho_nome)
+                if filho_row is not None:
+                    linhas.append(("subconta", _label_conta(filho_nome), float(filho_row["valor"])))
         total_row = next((r for r in rows if r["conta"] == totalizador_nome), None)
         if total_row is not None:
             linhas.append(("subtotal", f"Total {grupo_label}", float(total_row["valor"])))

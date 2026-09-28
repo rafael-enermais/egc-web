@@ -333,7 +333,13 @@ def _kpi_pequeno(c, x0, x1, y0, y1, label, valor, complemento, cor_borda):
     paragrafo(c, x0 + pad, y0 + 16, label.upper(), x1 - x0 - 2 * pad,
               font="bold", size=7.6, color=NAVY, leading=9.5)
     _valor_com_unidade(c, x0 + pad, y0 + 42, valor, font_num="heavy", size_num=16, cor_num=NAVY)
-    txt(c, x0 + pad, y0 + 58, complemento, font="regular", size=8, color=GREY_TEXT)
+    # FIX_20260928 (achado revisando PDF real, Rafael): txt() (1 linha, sem
+    # quebra) deixava o complemento vazar pro card vizinho sempre que o
+    # texto real (ex. "Despesas operacionais: -15,4% em relação ao período
+    # anterior.") era mais comprido que o "x" da fixture de teste -- paragrafo()
+    # quebra em ate 2 linhas dentro da largura do proprio card.
+    paragrafo(c, x0 + pad, y0 + 58, complemento, x1 - x0 - 2 * pad,
+              font="regular", size=8, color=GREY_TEXT, leading=10)
 
 
 def _leitura_executiva(dados) -> list[str]:
@@ -698,9 +704,14 @@ def pagina_capa(c, dados, pagina: int, total_paginas: int):
     o painel navy tem sim (1) linhas diagonais finas e (2) um icone
     translucido (marca C+raio, versao clara) no canto inferior direito.
     Extraido do proprio PDF-modelo (pdfimages + smask, mesma tecnica do
-    torre_watermark) -- app/assets_relatorio/capa_marca_pale.png."""
-    faixa_gradiente(c, 0, 0, PAGE_W, 5, NAVY, ORANGE)
+    torre_watermark) -- app/assets_relatorio/capa_marca_pale.png.
 
+    FIX_20260928 (Rafael, revisando PDF real): a faixa de gradiente do
+    topo era desenhada ANTES do painel navy, entao o painel (que cobre ate
+    y=0) pintava por cima dela no trecho onde os dois se sobrepoem -- a
+    linha ficava cortada, sumindo sob o painel. Motivo agora desenhada
+    DEPOIS do painel/linhas/icone (ultima coisa desta secao antes do
+    bloco de conteudo), pra ficar por cima em toda a largura da pagina."""
     # painel diagonal a direita (~78% -> 100% da largura, inclinado)
     c.saveState()
     c.setFillColor(HexColor(NAVY))
@@ -739,6 +750,10 @@ def pagina_capa(c, dados, pagina: int, total_paginas: int):
     if os.path.exists(marca_path):
         image(c, marca_path, 435, 630, 552, 812, mask="auto", preserve_ratio=True)
 
+    # faixa de gradiente do topo -- desenhada por ULTIMO (ver FIX_20260928
+    # na docstring desta funcao) pra ficar por cima do painel navy.
+    faixa_gradiente(c, 0, 0, PAGE_W, 5, NAVY, ORANGE)
+
     # bloco de conteudo (logo/titulo/pilula) subiu ~120pt -- no modelo real
     # fica na metade superior da pagina, nao no meio vertical.
     logo_path = _logo_dados(dados)
@@ -756,6 +771,12 @@ def pagina_capa(c, dados, pagina: int, total_paginas: int):
 
     rect(c, MARGEM, 428, MARGEM + 250, 458, fill=ORANGE, radius=15)
     txt(c, MARGEM + 20, 447, f"PERÍODO · {dados['periodo_label'].upper()}", font="bold", size=10, color="#FFFFFF")
+    # FIX_20260928 (Rafael, revisando PDF real): periodo_extenso ja era
+    # usado nas paginas Destaques/Fechamento mas nunca aparecia na capa --
+    # campo existia no dict e era digitado na tela, mas essa pagina
+    # especifica nunca o lia. So' desenha se vier preenchido (campo opcional).
+    if dados.get("periodo_extenso"):
+        txt(c, MARGEM, 476, dados["periodo_extenso"], font="regular", size=10, color=GREY_TEXT)
 
 
 # ------------------------------------------------------------------ pagina 3
