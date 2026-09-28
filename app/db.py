@@ -262,7 +262,7 @@ def listar_importacoes_recentes(conn, limite: int = 30) -> list[dict]:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT empresa_codigo, periodo, criado_em, usuario, tipo, nivel, mensagem
+            SELECT empresa_codigo, periodo, criado_em, usuario, tipo, nivel, mensagem, arquivos
             FROM egc.importacoes
             WHERE empresa_codigo IS NOT NULL AND periodo IS NOT NULL
             ORDER BY criado_em DESC

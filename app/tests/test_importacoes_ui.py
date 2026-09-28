@@ -68,7 +68,7 @@ def test_ordenacao_arquivo_sem_meta_vai_pro_fim():
 
 # ─────────────────── agrupar_historico_importacoes (item 5) ─────────────
 
-def _linha(empresa_codigo, periodo, criado_em, tipo, mensagem, usuario="rafael"):
+def _linha(empresa_codigo, periodo, criado_em, tipo, mensagem, usuario="rafael", arquivos=None):
     return {
         "empresa_codigo": empresa_codigo,
         "periodo": periodo,
@@ -76,6 +76,7 @@ def _linha(empresa_codigo, periodo, criado_em, tipo, mensagem, usuario="rafael")
         "usuario": usuario,
         "tipo": tipo,
         "mensagem": mensagem,
+        "arquivos": arquivos,
     }
 
 
@@ -133,6 +134,40 @@ def test_limite_de_eventos_respeitado_mesmo_com_muitas_linhas():
 def test_evento_vazio_sem_linhas_brutas():
     assert importacoes_ui.agrupar_historico_importacoes([]) == []
     print("OK: agrupar_historico_importacoes — lista vazia devolve lista vazia")
+
+
+# FIX_20260929: pedido do Rafael depois do caso do PDF "Consolidado"
+# misturado por engano num lote -- "esse nome tb deve entrar no log do
+# fluxo, ate' no historico de upload". egc.importacoes.arquivos (text[])
+# ja' guardava isso desde sempre; so' faltava agregar/expor aqui.
+def test_agrega_arquivos_sem_repetir():
+    t0 = datetime.datetime(2026, 9, 29, 10, 0, 0)
+    brutos = [
+        _linha("ENERGIA", datetime.date(2026, 6, 30), t0 + datetime.timedelta(seconds=3), "DRE",
+               "13 conta(s) gravada(s)", arquivos=["Energia - DRE - 2º Trimestre 2026.pdf"]),
+        _linha("ENERGIA", datetime.date(2026, 6, 30), t0, "BP",
+               "35 conta(s) gravada(s)", arquivos=["Energia - Balanço Patrimonial - 2º Trimestre 2026.pdf"]),
+    ]
+    eventos = importacoes_ui.agrupar_historico_importacoes(brutos)
+    assert len(eventos) == 1
+    assert eventos[0]["arquivos"] == [
+        "Energia - DRE - 2º Trimestre 2026.pdf",
+        "Energia - Balanço Patrimonial - 2º Trimestre 2026.pdf",
+    ], f"esperava os 2 nomes de arquivo agregados sem repetir, veio {eventos[0]['arquivos']}"
+    print("OK: agrupar_historico_importacoes — agrega nome de arquivo (arquivos) sem repetir")
+
+
+def test_arquivos_ausente_na_linha_nao_quebra():
+    # linha "crua" antiga (de antes deste fix) ou dict sintetico de outro
+    # teste sem a chave "arquivos" -- nao pode quebrar, so' fica sem nome.
+    brutos = [
+        {"empresa_codigo": "SOL", "periodo": datetime.date(2026, 6, 30),
+         "criado_em": datetime.datetime(2026, 9, 29, 9, 0, 0), "usuario": "rafael",
+         "tipo": "BP", "mensagem": "10 conta(s) gravada(s)"},
+    ]
+    eventos = importacoes_ui.agrupar_historico_importacoes(brutos)
+    assert eventos[0]["arquivos"] == []
+    print("OK: agrupar_historico_importacoes — linha sem chave 'arquivos' nao quebra (vira lista vazia)")
 
 
 if __name__ == "__main__":

@@ -70,9 +70,18 @@ def agrupar_historico_importacoes(
     Retorna ate' `limite` eventos (1 por empresa+periodo, os mais
     recentes), cada um: {"empresa_codigo", "periodo", "criado_em"
     (do mais recente do grupo), "usuario", "tipos": [(tipo, mensagem),
-    ...]} -- combinando BP/DRE do mesmo clique de "Gravar" (linhas dentro
-    de `janela_segundos` uma da outra), sem juntar com uma reimportacao
-    antiga do mesmo periodo que caia fora da janela.
+    ...], "arquivos": [nome, ...]} -- combinando BP/DRE do mesmo clique de
+    "Gravar" (linhas dentro de `janela_segundos` uma da outra), sem juntar
+    com uma reimportacao antiga do mesmo periodo que caia fora da janela.
+
+    FIX_20260929: "arquivos" agrega (sem repetir) o nome de todo PDF que
+    alimentou o evento -- pedido do Rafael depois de achar o PDF errado
+    (Consolidado) misturado num lote de reimport: "esse nome tb deve
+    entrar no log do fluxo, ate' no historico de upload". O dado ja'
+    existia em egc.importacoes.arquivos (text[], gravado por
+    db.registrar_importacao desde sempre) -- so' nao aparecia nesta tela.
+    row["arquivos"] pode vir None (linha antiga de antes deste fix, ou
+    teste com dict sintetico sem essa chave) -- tratado como lista vazia.
     """
     eventos_por_chave: dict = {}
     ordem_chaves: list = []
@@ -92,6 +101,7 @@ def agrupar_historico_importacoes(
                 "criado_em": row["criado_em"],
                 "usuario": row["usuario"],
                 "tipos": [],
+                "arquivos": [],
             }
             eventos_por_chave[chave] = evento
             ordem_chaves.append(chave)
@@ -101,5 +111,9 @@ def agrupar_historico_importacoes(
         tipo = row.get("tipo")
         if tipo and all(t != tipo for t, _msg in evento["tipos"]):
             evento["tipos"].append((tipo, row.get("mensagem") or ""))
+
+        for nome_arq in (row.get("arquivos") or []):
+            if nome_arq not in evento["arquivos"]:
+                evento["arquivos"].append(nome_arq)
 
     return [eventos_por_chave[c] for c in ordem_chaves]
