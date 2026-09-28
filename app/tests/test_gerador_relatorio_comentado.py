@@ -102,6 +102,41 @@ def test_wrap_text_quebra_paragrafo_longo_em_varias_linhas():
     print(f"OK: _wrap_text quebra parágrafo longo em {len(linhas)} linhas")
 
 
+# FIX_20260929d: rótulo comprido do KPI pequeno (pág.2) quebrava em 2
+# linhas e a 2ª linha colava no valor abaixo, diferente dos outros cards
+# da mesma fileira (rótulo curto, 1 linha, com folga). Em vez de mudar
+# layout/alinhamento entre os 4 cards, encolhe só a fonte do rótulo.
+def test_tamanho_fonte_1_linha_encolhe_ate_caber():
+    texto = "DESPESAS OPERACIONAIS"
+    max_width = 96.0  # largura real aproximada do card pequeno (col_w - 2*pad)
+    assert g.stringWidth(texto, g.FONT["bold"], 7.6) > max_width, (
+        "pré-condição do teste: no tamanho padrão (7.6) o rótulo tem que EXTRAPOLAR "
+        "essa largura, senão o teste não está testando o encolhimento de verdade"
+    )
+    tamanho = g._tamanho_fonte_1_linha(texto, g.FONT["bold"], 7.6, max_width)
+    assert tamanho < 7.6, "tem que ter encolhido a partir do tamanho inicial"
+    assert g.stringWidth(texto, g.FONT["bold"], tamanho) <= max_width, (
+        "no tamanho devolvido, o texto tem que caber de verdade em 1 linha"
+    )
+    print(f"OK: _tamanho_fonte_1_linha encolhe 'DESPESAS OPERACIONAIS' de 7.6 pra {tamanho} e cabe em 1 linha")
+
+
+def test_tamanho_fonte_1_linha_nao_encolhe_rotulo_curto_que_ja_cabe():
+    texto = "LUCRO BRUTO"
+    tamanho = g._tamanho_fonte_1_linha(texto, g.FONT["bold"], 7.6, max_width=96.0)
+    assert tamanho == 7.6, "rótulo que já cabe no tamanho padrão não deveria encolher"
+    print("OK: _tamanho_fonte_1_linha mantém o tamanho padrão quando o rótulo já cabe")
+
+
+def test_tamanho_fonte_1_linha_nunca_passa_do_minimo():
+    tamanho = g._tamanho_fonte_1_linha(
+        "UM RÓTULO ABSURDAMENTE COMPRIDO QUE NUNCA VAI CABER", g.FONT["bold"],
+        7.6, max_width=20.0, minimo=6.0,
+    )
+    assert tamanho == 6.0, "mesmo sem couber de jeito nenhum, não pode encolher abaixo do mínimo legível"
+    print("OK: _tamanho_fonte_1_linha respeita o piso mínimo mesmo quando o texto nunca cabe")
+
+
 if __name__ == "__main__":
     testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
     falhas = 0

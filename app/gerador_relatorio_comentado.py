@@ -191,6 +191,29 @@ def _wrap_text(text, font_name, size, max_width):
     return lines
 
 
+def _tamanho_fonte_1_linha(text, font_name, size_inicial, max_width, minimo=6.0, passo=0.3):
+    """Devolve o MAIOR tamanho <= size_inicial (multiplo de `passo` a
+    partir dele) que cabe `text` numa unica linha dentro de `max_width` --
+    nunca abaixo de `minimo` (se nem no minimo couber, devolve `minimo`
+    mesmo assim, deixando estourar um pouco em vez de virar ilegivel).
+
+    FIX_20260929d (Rafael, pág.2 "Despesas Operacionais" invadindo o
+    bloco): rotulo do KPI pequeno usava paragrafo() (quebra em ate' 2
+    linhas) com y da 2a linha fixo perto do valor abaixo -- rotulos
+    curtos (Lucro Bruto, Total do Ativo) ficam em 1 linha com folga, mas
+    "Despesas Operacionais" (mais comprido) quebrava em 2 e a 2a linha
+    colava no valor logo abaixo, ficando visualmente diferente dos
+    outros 3 cards da mesma fileira. Em vez de mudar o texto (nao pedido)
+    ou o layout dos cards (mudaria alinhamento entre eles, que o Rafael
+    pediu pra manter), encolhe só a FONTE do rótulo o suficiente pra
+    caber em 1 linha só, igual aos demais -- preserva grade/alinhamento
+    entre os 4 cards da fileira."""
+    size = size_inicial
+    while size > minimo and stringWidth(text, font_name, size) > max_width:
+        size = round(size - passo, 2)
+    return max(size, minimo)
+
+
 def paragrafo(c, x, y_top, text, max_width, font="regular", size=10.5,
               color=GREY_TEXT, leading=15.5):
     """Desenha um paragrafo com quebra automatica de linha. Devolve o Y
@@ -330,8 +353,15 @@ def _kpi_pequeno(c, x0, x1, y0, y1, label, valor, complemento, cor_borda):
     rect(c, x0, y0, x0 + 3, y1, fill=cor_borda)
     rect(c, x0 + 3, y0, x1, y1, fill=GREY_BG)
     pad = 12
-    paragrafo(c, x0 + pad, y0 + 16, label.upper(), x1 - x0 - 2 * pad,
-              font="bold", size=7.6, color=NAVY, leading=9.5)
+    # FIX_20260929d: rotulo sempre em 1 linha so' (fonte encolhe se
+    # precisar) -- ver docstring de _tamanho_fonte_1_linha. Antes usava
+    # paragrafo() (quebra em ate 2 linhas), e um rotulo comprido tipo
+    # "Despesas Operacionais" quebrava e a 2a linha colava no valor,
+    # ficando diferente dos outros cards da mesma fileira (que sao curtos
+    # e cabem numa linha com folga).
+    label_txt = label.upper()
+    label_size = _tamanho_fonte_1_linha(label_txt, FONT["bold"], 7.6, x1 - x0 - 2 * pad)
+    txt(c, x0 + pad, y0 + 16, label_txt, font="bold", size=label_size, color=NAVY)
     _valor_com_unidade(c, x0 + pad, y0 + 42, valor, font_num="heavy", size_num=16, cor_num=NAVY)
     # FIX_20260928 (achado revisando PDF real, Rafael): txt() (1 linha, sem
     # quebra) deixava o complemento vazar pro card vizinho sempre que o
