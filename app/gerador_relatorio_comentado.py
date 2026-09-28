@@ -571,10 +571,35 @@ def grafico_barra_empilhada(c, x0, x1, y_top, altura, segmentos):
     (pagina 7 -- Balanco Patrimonial: Ativo / Passivo+PL).
 
     `segmentos`: lista de dicts {label, valor, pct (0-100), cor}.
-    Devolve o y_top logo apos a legenda."""
+    Devolve o y_top logo apos a legenda.
+
+    FIX_20260928 (Rafael, PDF real da Engenharia -- Patrimônio Líquido
+    negativo): a largura de cada segmento usava `pct` (percentual sobre
+    o TOTAL do ativo/passivo) direto -- funciona só quando todo segmento
+    é >=0 e a soma dá 100%. Com PL negativo (empresa com passivo a
+    descoberto), o Circulante sozinho pode passar de 100% (ex.: 2629,9%)
+    e o PL fica bem negativo (-2529,9%) pra ainda somar 100% -- a largura
+    de Circulante virava ~26x a barra inteira (saía da página pra
+    direita, invisível) e a largura do PL virava NEGATIVA, desenhada de
+    "fora da página" de volta até a borda direita -- na prática um
+    pedaço de retângulo aparecia sozinho colado na borda, sem guardar
+    proporção nenhuma com o valor real (foi isso que vazou pra dentro da
+    margem direita no PDF real).
+
+    Fix: a LARGURA de cada segmento passa a ser proporcional ao seu
+    valor ABSOLUTO sobre a soma dos valores absolutos de todos os
+    segmentos (nunca sobre o pct do total) -- garante 0 <= largura <=
+    barra inteira sempre, sem exceção. Quando todo segmento já é >= 0
+    (caso normal, sem PL negativo) soma(|valor|) == soma(valor) == total,
+    então o resultado é EXATAMENTE igual a antes -- não muda nenhum
+    gráfico que já estava correto. `pct` continua sendo usado só pra
+    exibir o percentual na legenda (esse número, mesmo extremo, é real
+    e não deve ser escondido -- só a LARGURA do desenho precisa ser
+    sempre bem comportada)."""
+    soma_abs = sum(abs(seg["valor"]) for seg in segmentos)
     xa = x0
     for seg in segmentos:
-        largura = (x1 - x0) * (seg["pct"] / 100.0)
+        largura = (x1 - x0) * (abs(seg["valor"]) / soma_abs) if soma_abs else 0.0
         rect(c, xa, y_top, xa + largura, y_top + altura, fill=seg["cor"])
         xa += largura
 
@@ -769,14 +794,29 @@ def pagina_capa(c, dados, pagina: int, total_paginas: int):
     txt(c, MARGEM, 380, dados["empresa_nome"], font="regular", size=12, color=GREY_TEXT)
     txt(c, MARGEM, 398, _linha_identificacao_empresa(dados), font="regular", size=12, color=GREY_TEXT)
 
-    rect(c, MARGEM, 428, MARGEM + 250, 458, fill=ORANGE, radius=15)
-    txt(c, MARGEM + 20, 447, f"PERÍODO · {dados['periodo_label'].upper()}", font="bold", size=10, color="#FFFFFF")
     # FIX_20260928 (Rafael, revisando PDF real): periodo_extenso ja era
     # usado nas paginas Destaques/Fechamento mas nunca aparecia na capa --
     # campo existia no dict e era digitado na tela, mas essa pagina
-    # especifica nunca o lia. So' desenha se vier preenchido (campo opcional).
+    # especifica nunca o lia. 1a tentativa colocou o texto solto ABAIXO
+    # da pilula laranja -- Rafael revisou de novo e achou que ficou "fora
+    # do quadrado laranja" (queria dentro da propria pilula, junto do
+    # periodo). Corrigido: entra na MESMA pilula ("PERÍODO · 06/2026 ·
+    # 1º SEMESTRE"), e a largura da pilula agora e' calculada pelo texto
+    # (antes era fixa em 250pt, larga demais pro texto curto sozinho e
+    # estreita demais quando o extenso e' longo) -- nunca passa da
+    # largura util da pagina (CONTEUDO_W), pra nao vazar pela margem
+    # direita como o grafico da barra empilhada (outro fix desta rodada).
+    rotulo_periodo = f"PERÍODO · {dados['periodo_label'].upper()}"
     if dados.get("periodo_extenso"):
-        txt(c, MARGEM, 476, dados["periodo_extenso"], font="regular", size=10, color=GREY_TEXT)
+        rotulo_periodo += f" · {dados['periodo_extenso'].upper()}"
+    tamanho_periodo = 10.0
+    largura_texto = stringWidth(rotulo_periodo, FONT["bold"], tamanho_periodo)
+    if 40 + largura_texto > CONTEUDO_W:  # periodo_extenso incomum, bem longo -- encolhe a fonte em vez de vazar
+        tamanho_periodo = max(7.0, tamanho_periodo * (CONTEUDO_W - 40) / largura_texto)
+        largura_texto = stringWidth(rotulo_periodo, FONT["bold"], tamanho_periodo)
+    largura_pilula = min(CONTEUDO_W, 40 + largura_texto)
+    rect(c, MARGEM, 428, MARGEM + largura_pilula, 458, fill=ORANGE, radius=15)
+    txt(c, MARGEM + 20, 447, rotulo_periodo, font="bold", size=tamanho_periodo, color="#FFFFFF")
 
 
 # ------------------------------------------------------------------ pagina 3
