@@ -975,8 +975,10 @@ def pagina_resultado(c, dados, pagina: int, total_paginas: int):
 # ------------------------------------------------------------------ pagina 6
 def _leitura_ebitda(dados) -> list[str]:
     d = dados
+    csll_irpj = d.get("csll_irpj", 0) or 0
+    extra_csll = f", da provisão de CSLL/IRPJ ({moeda_br(csll_irpj)})" if csll_irpj else ""
     p1 = (
-        f"Excluindo despesas financeiras líquidas ({moeda_br(d['resultado_financeiro'])}) e depreciação/"
+        f"Excluindo despesas financeiras líquidas ({moeda_br(d['resultado_financeiro'])}){extra_csll} e depreciação/"
         f"amortização ({moeda_br(d['deprec_amortiz'])}) do resultado líquido de "
         f"{moeda_br(d['resultado_liquido'], forcar_sinal=True)}, o EBITDA do período é de "
         f"{moeda_br(d['ebitda'], forcar_sinal=True)} (margem de {pct_br(d['margem_ebitda'], forcar_sinal=True)})."
@@ -997,9 +999,31 @@ def pagina_ebitda(c, dados, pagina: int, total_paginas: int):
     txt(c, MARGEM, 120, "Do resultado líquido ao EBITDA — valores em R$ milhões",
         font="regular", size=10, color=GREY_TEXT)
 
+    # FIX_20260928 (pedido do Rafael, Fase 2 -- alinhar com a formula
+    # padrao contabil ja usada em indicadores.py, "Earnings BEFORE
+    # Interest, TAXES, D&A"): antes desta rodada, o EBITDA daqui partia
+    # direto do Resultado Liquido (JA depois de CSLL/IRPJ), ficando
+    # diferente do EBITDA do Dashboard (indicadores.py, que parte do Lucro
+    # Operacional Liquido, ANTES de CSLL/IRPJ) sempre que o periodo tem
+    # provisao separada (lucro real). So' nao dava pra notar isso antes
+    # porque a captura de CSLL/IRPJ no parser e' desta semana. Fix: soma de
+    # volta o CSLL/IRPJ tambem, junto de despesas financeiras e D&A --
+    # mesmo resultado matematico de partir do Lucro Operacional Liquido,
+    # so' que mostrando o addback explicito (mesmo padrao visual das
+    # outras 3 barras). d.get(..., 0) pq em lucro presumido essa chave nem
+    # existe (pagina_resultado e' pulada) -- soma 0, que e' o valor certo
+    # (nao ha provisao separada pra somar de volta nesse regime).
+    csll_irpj = d.get("csll_irpj", 0) or 0
     itens = [
         dict(tipo="abs", valor=d["resultado_liquido"] / 1e6, cor=RED_ACCENT, label="Resultado Líquido\ndo Período",
              rotulo_valor=f"{moeda_br(d['resultado_liquido'] / 1e6, forcar_sinal=True)} MM", cor_rotulo=RED_ACCENT, conectar=False),
+    ]
+    if csll_irpj:
+        itens.append(
+            dict(tipo="delta", valor=csll_irpj / 1e6, cor="#7a7fb0", label="(+) CSLL e IRPJ\nProvisionados",
+                 rotulo_valor=f"+{moeda_br(csll_irpj / 1e6)} MM")
+        )
+    itens += [
         dict(tipo="delta", valor=d["resultado_financeiro"] / 1e6, cor="#5b5f8c", label="(+) Resultado\nFinanceiro Líquido",
              rotulo_valor=f"+{moeda_br(d['resultado_financeiro'] / 1e6)} MM"),
         dict(tipo="delta", valor=d["deprec_amortiz"] / 1e6, cor="#9297bb", label="(+) Depreciação e\nAmortização",
@@ -1010,8 +1034,10 @@ def pagina_ebitda(c, dados, pagina: int, total_paginas: int):
     grafico_waterfall(c, MARGEM, MARGEM + CONTEUDO_W, 150, 420, itens)
 
     y = 460
+    extra_calc = f"+{moeda_br(csll_irpj)} (CSLL e IRPJ provisionados) " if csll_irpj else ""
     calc = (
         f"{moeda_br(d['resultado_liquido'], forcar_sinal=True)} (resultado líquido) "
+        f"{extra_calc}"
         f"+{moeda_br(d['resultado_financeiro'])} (despesas financeiras líquidas de receitas financeiras) "
         f"+{moeda_br(d['deprec_amortiz'])} (depreciação e amortização do período) = "
         f"{moeda_br(d['ebitda'], forcar_sinal=True)} de EBITDA."
