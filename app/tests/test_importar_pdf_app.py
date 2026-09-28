@@ -74,6 +74,49 @@ def test_importar_pdf_carrega_sem_excecao_e_combina_bp_dre_no_historico():
         print("OK: Importar PDF — carrega sem excecao e combina BP+DRE numa linha so' no historico (item 5)")
 
 
+FAKE_RESULT_SEM_CNPJ = [
+    {
+        "arquivo": "arquivo_sem_cnpj.pdf",
+        "bp_rows": [("ATIVO CIRCULANTE", "DISPONIVEL", 100.0, "PDF")],
+        "dre_rows": [],
+        "admin_itens": [],
+        "log": [],
+        "meta": [("Empresa Desconhecida", None, "30/06/2026", "arquivo_sem_cnpj.pdf", "BP", "SPED", None, None)],
+    }
+]
+
+
+def test_importar_pdf_sem_cnpj_nao_defaulta_pra_energia():
+    # FIX_20260928g: achado revisando egc.lancamentos -- uma linha com
+    # arquivo_pdf de OUTRA empresa (Construtora) ficou gravada com
+    # empresa_codigo=ENERGIA. Mecanismo mais provavel: CNPJ nao
+    # identificado no PDF -> selectbox manual defaultava pra
+    # EMPRESAS_FIXAS[0] (Energia) sem exigir escolha. Este teste garante
+    # que o default agora e' "-- selecione --" (nao aparece pronto pra
+    # gravar ate' o usuario escolher de verdade).
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_importacoes_recentes", return_value=[]):
+        at = AppTest.from_file(PAGE)
+        at.session_state["import_resultados"] = [dict(FAKE_RESULT_SEM_CNPJ[0])]
+        at.run(timeout=30)
+        assert not at.exception, f"excecao com CNPJ nao identificado: {at.exception}"
+
+        sel = at.selectbox(key="empresa_manual_0")
+        assert sel.value == -1, "default deveria ser '-- selecione --' (-1), nao a 1a empresa da lista"
+        assert "Nenhum arquivo pronto pra gravar ainda." in " ".join(i.value for i in at.info), (
+            "sem escolher a empresa, nao deveria aparecer nenhum grupo pronto pra gravar"
+        )
+
+        # escolhe Energia (index 0) de verdade -> agora sim libera o grupo
+        sel.set_value(0).run(timeout=30)
+        assert not at.exception, f"excecao apos escolher empresa manualmente: {at.exception}"
+        assert any("Gravar Enermais Energia Ltda" in b.label for b in at.button), (
+            "apos escolha explicita, deveria aparecer o botao de gravar pra Energia"
+        )
+        print("OK: Importar PDF — CNPJ nao identificado nao defaulta mais silenciosamente pra Energia")
+
+
 def test_importar_pdf_historico_vazio_sem_excecao():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \

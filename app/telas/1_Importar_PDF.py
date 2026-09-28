@@ -210,13 +210,29 @@ if resultados:
                         st.rerun()
                 else:
                     st.warning("CNPJ não identificado neste PDF — selecione a empresa manualmente:")
+                    # FIX_20260928g: opção -1 = "-- selecione --" como default
+                    # (index=0 do widget) -- antes o selectbox pulava direto
+                    # pra EMPRESAS_FIXAS[0] (Enermais Energia), sem exigir
+                    # escolha nenhuma. Achado revisando o histórico de
+                    # egc.lancamentos: uma linha com arquivo_pdf "Construtora -
+                    # DRE - 2º Trimestre 2026.pdf" ficou gravada com
+                    # empresa_codigo=ENERGIA (21/09/2026) -- mecanismo mais
+                    # provável é exatamente este: CNPJ não identificado nesse
+                    # PDF, e o default silencioso pra Energia (1ª da lista)
+                    # passou sem ninguém notar/trocar antes de clicar "Gravar".
+                    opcoes_idx = [-1] + list(range(len(EMPRESAS_FIXAS)))
                     nomes = [nome for _cod, nome, _cnpj in EMPRESAS_FIXAS]
                     idx = st.selectbox(
-                        "Empresa (manual)", range(len(EMPRESAS_FIXAS)),
-                        format_func=lambda j: nomes[j], key=f"empresa_manual_{i}",
+                        "Empresa (manual)", opcoes_idx,
+                        format_func=lambda j: "-- selecione --" if j == -1 else nomes[j],
+                        key=f"empresa_manual_{i}",
                     )
-                    cod_m, nome_m, _cnpj_m = EMPRESAS_FIXAS[idx]
-                    r["_cod"], r["_nome"] = cod_m, nome_m
+                    if idx == -1:
+                        r["_bloqueado"] = True
+                        st.error("⚠️ Escolha a empresa antes de gravar este arquivo.")
+                    else:
+                        cod_m, nome_m, _cnpj_m = EMPRESAS_FIXAS[idx]
+                        r["_cod"], r["_nome"] = cod_m, nome_m
 
                 # arquivo com empresa resolvida mas sem NENHUMA conta BP/DRE
                 # extraida (ex.: Balancete -- tipo nao suportado hoje, ou PDF
