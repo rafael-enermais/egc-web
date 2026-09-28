@@ -138,10 +138,48 @@ _LABEL_ACENTUADO = {
 # aqui -- contas sem par pai/filho confirmado ficam como linha solta
 # ("conta" simples), nunca um agrupamento inventado. Ampliar esta lista
 # exige conferir a soma de novo, nao adivinhar pelo nome.
+#
+# FIX_20260928b (Rafael autorizou ampliar o parser pra paridade total com
+# o modelo -- "a regra absoluta e' fazer o sistema correto"): 4 pares
+# novos, cada um conferido byte a byte contra o PDF SPED REAL da
+# Enermais Energia, 31/12/2025 (nao contra a planilha ilustrativa/mockup
+# de referencia, que tem contas que NUNCA aparecem em nenhum dado real):
+#   - OUTROS CREDITOS (5.163,00 no caso da Enermais Solucoes) =
+#     ADIANTAMENTOS A TERCEIROS + TRIBUTOS A RECUPERAR nesse caso; no
+#     caso da Energia soma tambem MUTUO ENTRE EMPRESAS e TITULOS A
+#     RECEBER quando presentes -- os 4 filhos possiveis sao mutuamente
+#     exclusivos por empresa/periodo, nunca todos ao mesmo tempo, mas
+#     a soma dos que existem sempre bate com o pai.
+#   - OBRIGACOES TRIBUTARIAS (1.346.005,46 na Energia) = IMPOSTOS E
+#     CONTRIBUICOES A RECOLHER (1.291.057,67) + TRIBUTOS RETIDOS A
+#     RECOLHER (54.947,79).
+#   - OBRIGACOES TRABALHISTAS (1.799.133,16 na Energia, chamada no PDF
+#     de "Obrigacoes Trabalhistas e Prividenciarias" -- typo do proprio
+#     SPED, ja coberto pelo alias em parser_egc.BP_TARGETS) =
+#     OBRIGACOES COM O PESSOAL (551.614,37) + OBRIGACOES PREVIDENCIARIAS
+#     (1.247.518,79).
+#   - OUTRAS OBRIGACOES (8.568.950,17 na Energia) = ADIANTAMENTOS DE
+#     CLIENTES (6.724.607,29) + CONTAS A PAGAR (1.844.342,88).
+#
+# Testado e DELIBERADAMENTE NAO incluido: "Adiantamentos a Funcionarios"
+# e "Mutuos a Pagar" (filhos de Outras Obrigacoes no modelo ilustrativo)
+# -- busca exaustiva em todos os PDFs SPED reais das 6 empresas e em
+# todo enermais_bp.tsv historico do cofre nao encontrou nenhuma ocorrencia
+# de nenhum dos 2 em dado real. Nao viram par (nem existem em
+# parser_egc.BP_TARGETS como alvo de captura) ate' aparecerem de fato em
+# algum periodo real -- inventar a linha pra bater com o mockup seria
+# quebrar a REGRA DE OURO (nunca inventar numero).
 _HIERARQUIA_BP = {
     "DISPONIVEL": ["DEPOSITOS BANCARIOS A VISTA", "APLICACOES DE LIQUIDEZ IMEDIATA"],
     "CLIENTES": ["DUPLICATAS A RECEBER"],
     "INSTITUICOES FINANCEIRAS": ["EMPRESTIMOS", "FINANCIAMENTOS"],
+    "OUTROS CREDITOS": [
+        "MUTUO ENTRE EMPRESAS", "TITULOS A RECEBER",
+        "TRIBUTOS A RECUPERAR", "ADIANTAMENTOS A TERCEIROS",
+    ],
+    "OBRIGACOES TRIBUTARIAS": ["IMPOSTOS E CONTRIBUICOES A RECOLHER", "TRIBUTOS RETIDOS A RECOLHER"],
+    "OBRIGACOES TRABALHISTAS": ["OBRIGACOES COM O PESSOAL", "OBRIGACOES PREVIDENCIARIAS"],
+    "OUTRAS OBRIGACOES": ["ADIANTAMENTOS DE CLIENTES", "CONTAS A PAGAR"],
 }
 
 
