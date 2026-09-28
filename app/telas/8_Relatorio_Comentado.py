@@ -6,12 +6,17 @@ gerador_relatorio_comentado.gerar_pdf_completo() com dado REAL do
 Supabase, fechando o objetivo original do projeto ("sistema capaz de
 gerar relatorios, guardar historicos... facilitar o preenchimento").
 
-Escopo desta 1ª versão: 1 empresa + 1 período por geração (o módulo de
-mapeamento já suporta isso; multi-empresa/multi-período do gerador em si
-já existe — ver test_gerador_completo.py::test_anexo_multi_coluna... —
-mas plugar isso na tela fica pra próxima leva, não decidir sozinho o
-desenho de comparação ano-a-ano/grupo sem o Rafael ver a v1 rodando
-primeiro).
+Escopo original desta 1ª versão: 1 empresa + 1 período por geração.
+
+FIX_20260929h (Rafael, 29/09: "por mim podemos implantar o
+multi-periodos ja tb"): tela agora tem 2 modos -- "Período único"
+(fluxo de sempre, Modelo A) e "Comparativo" (Modelo B, 2 a 4 períodos
+da MESMA empresa, gerador_relatorio_comparativo.py +
+drc.montar_dados_relatorio_comparativo). Multi-EMPRESA consolidado
+(mais de 1 CNPJ no mesmo relatório) o motor de desenho também suporta
+via `empresas_codigos`/logo de grupo, mas fica pra quando houver pedido
+concreto -- não decidir sozinho esse desenho sem o Rafael ver o
+comparativo de 1 empresa rodando primeiro.
 
 Inputs editáveis na tela (decisão do Rafael, 24/09 e 28/09): período
 (label/extenso) e administrador/contador/e-mail/site — nenhum vem de
@@ -29,6 +34,7 @@ from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS  # noqa: E402
 import db  # noqa: E402
 import dados_relatorio_comentado as drc  # noqa: E402
 import gerador_relatorio_comentado as g  # noqa: E402
+import gerador_relatorio_comparativo as gc  # noqa: E402
 import formatacao  # noqa: E402
 
 NOME_POR_COD = {cod: nome for cod, nome, _cnpj in EMPRESAS_FIXAS}
@@ -60,29 +66,76 @@ if not periodos_ativos:
     st.info(f"{nome_empresa} ainda não tem nenhum período importado (ou todos estão arquivados).")
     st.stop()
 
-periodo_sel = st.selectbox(
-    "Período (data de posição do BP)", periodos_ativos,
-    format_func=lambda p: p.strftime("%d/%m/%Y"), key="relatorio_periodo_sel",
+st.divider()
+# FIX_20260929h (Rafael: "por mim podemos implantar o multi-periodos ja
+# tb"): liga o Modelo B (gerador_relatorio_comparativo.py + a nova
+# montar_dados_relatorio_comparativo, prontos desde 26-29/09 mas sem UI)
+# na tela. Modo "Período único" é o fluxo de sempre, inalterado.
+modo = st.radio(
+    "Tipo de relatório", ["Período único", "Comparativo (evolução entre períodos)"],
+    key="relatorio_modo", horizontal=True,
 )
+
+periodo_sel = None
+periodo_label = ""
+periodo_extenso = ""
+periodos_multi: list = []
+periodos_labels_multi: list = []
+periodo_range_label = ""
+
+if modo == "Período único":
+    periodo_sel = st.selectbox(
+        "Período (data de posição do BP)", periodos_ativos,
+        format_func=lambda p: p.strftime("%d/%m/%Y"), key="relatorio_periodo_sel",
+    )
+
+    st.subheader("Período — como aparece no relatório")
+    st.caption(
+        "Sem coluna confiável de granularidade no banco pra inferir isso sozinho — confirme o texto "
+        "que vai aparecer na capa e no cabeçalho do relatório."
+    )
+    col1, col2 = st.columns(2)
+    with col1:
+        periodo_label = st.text_input(
+            "Rótulo do período (capa/cabeçalho)", value=periodo_sel.strftime("%m/%Y"),
+            key="relatorio_periodo_label", help='Ex.: "1º Semestre 2026", "Junho/2026", "Exercício 2025".',
+        )
+    with col2:
+        periodo_extenso = st.text_input(
+            "Período por extenso (texto de apoio)", value="", key="relatorio_periodo_extenso",
+            help='Ex.: "janeiro a junho de 2026". Pode deixar em branco.',
+        )
+else:
+    st.subheader("Períodos a comparar")
+    st.caption(
+        "Escolha de 2 a 4 períodos da mesma empresa (ordem cronológica é ajustada "
+        "automaticamente, não importa a ordem do clique) e confirme o rótulo de cada coluna — "
+        "mesmo princípio do período único: o sistema não infere o texto sozinho."
+    )
+    periodos_sel_raw = st.multiselect(
+        "Períodos (data de posição do BP)", periodos_ativos,
+        format_func=lambda p: p.strftime("%d/%m/%Y"), key="relatorio_periodos_multi",
+    )
+    periodos_multi = sorted(periodos_sel_raw)
+
+    if periodos_multi and not (2 <= len(periodos_multi) <= 4):
+        st.warning("Escolha de 2 a 4 períodos pra gerar o comparativo (motor de desenho aceita esse intervalo).")
+
+    if 2 <= len(periodos_multi) <= 4:
+        cols_label = st.columns(len(periodos_multi))
+        for i, (col, periodo) in enumerate(zip(cols_label, periodos_multi)):
+            rotulo = col.text_input(
+                periodo.strftime("%d/%m/%Y"), value=periodo.strftime("%m/%Y"),
+                key=f"relatorio_periodo_multi_label_{i}",
+            )
+            periodos_labels_multi.append(rotulo)
+        periodo_range_label = st.text_input(
+            "Rótulo do intervalo (capa)",
+            value=f"{periodos_labels_multi[0]} A {periodos_labels_multi[-1]}",
+            key="relatorio_periodo_range_label",
+        )
 
 st.divider()
-st.subheader("Período — como aparece no relatório")
-st.caption(
-    "Sem coluna confiável de granularidade no banco pra inferir isso sozinho — confirme o texto "
-    "que vai aparecer na capa e no cabeçalho do relatório."
-)
-col1, col2 = st.columns(2)
-with col1:
-    periodo_label = st.text_input(
-        "Rótulo do período (capa/cabeçalho)", value=periodo_sel.strftime("%m/%Y"),
-        key="relatorio_periodo_label", help='Ex.: "1º Semestre 2026", "Junho/2026", "Exercício 2025".',
-    )
-with col2:
-    periodo_extenso = st.text_input(
-        "Período por extenso (texto de apoio)", value="", key="relatorio_periodo_extenso",
-        help='Ex.: "janeiro a junho de 2026". Pode deixar em branco.',
-    )
-
 st.subheader("Administrador, contador e contato")
 
 
@@ -164,40 +217,65 @@ site_empresa = col4.text_input("Site da empresa", value="", key="relatorio_site"
 
 st.divider()
 
-if st.button("Gerar relatório", type="primary", key="relatorio_gerar_btn"):
+pode_gerar = modo == "Período único" or (2 <= len(periodos_multi) <= 4)
+
+if st.button("Gerar relatório", type="primary", key="relatorio_gerar_btn", disabled=not pode_gerar):
     admin = dict(
         nome_administrador=nome_administrador, cargo_administrador=cargo_administrador or "Administrador",
         nome_contador=nome_contador, cargo_contador=cargo_contador or "Contador",
         email_empresa=email_empresa, site_empresa=site_empresa,
     )
     try:
-        with st.spinner("Buscando dados e montando o relatório..."):
-            dados, incluir_pagina_resultado = drc.montar_dados_relatorio(
-                conn, empresa_codigo=cod_empresa, periodo=periodo_sel,
-                periodo_label=periodo_label.strip() or periodo_sel.strftime("%m/%Y"),
-                periodo_extenso=periodo_extenso.strip(), admin=admin,
+        if modo == "Período único":
+            with st.spinner("Buscando dados e montando o relatório..."):
+                dados, incluir_pagina_resultado = drc.montar_dados_relatorio(
+                    conn, empresa_codigo=cod_empresa, periodo=periodo_sel,
+                    periodo_label=periodo_label.strip() or periodo_sel.strftime("%m/%Y"),
+                    periodo_extenso=periodo_extenso.strip(), admin=admin,
+                )
+                nome_arquivo = f"Demonstrativo_{cod_empresa}_{periodo_sel.strftime('%Y%m%d')}.pdf"
+                caminho = f"/tmp/{nome_arquivo}"
+                g.gerar_pdf_completo(dados, caminho, incluir_pagina_resultado=incluir_pagina_resultado)
+            with open(caminho, "rb") as f:
+                pdf_bytes = f.read()
+            st.success(
+                f"Relatório gerado ({len(pdf_bytes) // 1024} KB, "
+                f"{'9' if incluir_pagina_resultado else '8'} páginas)."
             )
-            nome_arquivo = f"Demonstrativo_{cod_empresa}_{periodo_sel.strftime('%Y%m%d')}.pdf"
-            caminho = f"/tmp/{nome_arquivo}"
-            g.gerar_pdf_completo(dados, caminho, incluir_pagina_resultado=incluir_pagina_resultado)
-        with open(caminho, "rb") as f:
-            pdf_bytes = f.read()
-        st.success(
-            f"Relatório gerado ({len(pdf_bytes) // 1024} KB, "
-            f"{'9' if incluir_pagina_resultado else '8'} páginas)."
-        )
-        if not incluir_pagina_resultado:
-            st.caption(
-                "Página 'Formação do Resultado' não incluída — este período não tem CSLL/IRPJ "
-                "provisionado como linha própria (regime de lucro presumido)."
+            if not incluir_pagina_resultado:
+                st.caption(
+                    "Página 'Formação do Resultado' não incluída — este período não tem CSLL/IRPJ "
+                    "provisionado como linha própria (regime de lucro presumido)."
+                )
+            periodos_para_log = [periodo_sel]
+        else:
+            range_label = periodo_range_label.strip() or f"{periodos_labels_multi[0]} A {periodos_labels_multi[-1]}"
+            with st.spinner("Buscando dados e montando o relatório comparativo..."):
+                dados = drc.montar_dados_relatorio_comparativo(
+                    conn, empresa_codigo=cod_empresa, periodos=periodos_multi,
+                    periodos_labels=[lbl.strip() or p.strftime("%m/%Y") for lbl, p in zip(periodos_labels_multi, periodos_multi)],
+                    periodo_range_label=range_label, admin=admin,
+                )
+                nome_arquivo = (
+                    f"Evolucao_{cod_empresa}_{periodos_multi[0].strftime('%Y%m')}"
+                    f"_{periodos_multi[-1].strftime('%Y%m')}.pdf"
+                )
+                caminho = f"/tmp/{nome_arquivo}"
+                gc.gerar_pdf_comparativo(dados, caminho)
+            with open(caminho, "rb") as f:
+                pdf_bytes = f.read()
+            st.success(
+                f"Relatório comparativo gerado ({len(pdf_bytes) // 1024} KB, 5 páginas, "
+                f"{len(periodos_multi)} períodos)."
             )
+            periodos_para_log = periodos_multi
         st.download_button(
             "⬇️ Baixar PDF", data=pdf_bytes, file_name=nome_arquivo, mime="application/pdf",
             key="relatorio_download_btn",
         )
         try:
             db.registrar_relatorio_gerado(
-                conn, empresas_codigos=[cod_empresa], periodos=[periodo_sel],
+                conn, empresas_codigos=[cod_empresa], periodos=periodos_para_log,
                 arquivo=nome_arquivo, usuario=usuario,
             )
         except Exception:

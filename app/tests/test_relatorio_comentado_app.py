@@ -126,6 +126,80 @@ def test_lista_de_contatos_e_compartilhada_entre_administrador_e_contador():
         print("OK: Relatório Comentado — contato salvo aparece nos 2 seletores (lista única, não mais separada)")
 
 
+DADOS_FIXTURE_COMPARATIVO = dict(
+    empresa_codigo="ENERGIA", empresa_nome="Enermais Energia Ltda", cnpj="47.040.664/0001-48",
+    cabecalho_relatorio="Evolução Financeira · 2025 A 1S2026", data_geracao="28/09/2026",
+    periodos_labels=["2025", "1S2026"], periodo_range_label="2025 A 1S2026",
+    kpis_fluxo=[
+        {"label": "Receita Operacional Líquida", "tag": "fluxo",
+         "valores": [31_200_000.0, 33_353_150.0], "acumulado": 64_553_150.0},
+    ],
+    kpis_saldo=[
+        {"label": "Total do Ativo", "tag": "saldo", "valores": [41_700_000.0, 43_359_080.94]},
+    ],
+    grafico_evolucao_metricas=[
+        {"label": "Receita Operacional Líquida", "valores": [31_200_000.0, 33_353_150.0]},
+    ],
+    anexo_colunas=["2025", "1S2026"], anexo_escopo_label="Enermais Energia Ltda",
+    anexo_ativo=[("grupo", "ATIVO"), ("conta", "Disponível", 100.0, 120.0), ("total", "TOTAL DO ATIVO", 100.0, 120.0)],
+    anexo_passivo=[
+        ("grupo", "PASSIVO"), ("conta", "Fornecedores", 100.0, 120.0),
+        ("total", "TOTAL PASSIVO + PL", 100.0, 120.0),
+    ],
+    nome_administrador="", cargo_administrador="Administrador",
+    nome_contador="", cargo_contador="Contador",
+    email_empresa="", site_empresa="",
+)
+
+PERIODOS_COMPARATIVO = [datetime.date(2025, 12, 31), datetime.date(2026, 6, 30)]
+
+
+def test_gerar_relatorio_comparativo_chama_pipeline_e_nao_quebra():
+    # FIX_20260929h (Rafael: "por mim podemos implantar o multi-periodos ja
+    # tb") -- modo "Comparativo" da tela: troca o radio, seleciona 2
+    # períodos no multiselect e clica Gerar. Mocka só a busca no banco
+    # (montar_dados_relatorio_comparativo), o motor de desenho real
+    # (gerador_relatorio_comparativo.gerar_pdf_comparativo) roda de
+    # verdade -- mesmo padrão do teste do modo período único.
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos", return_value=PERIODOS_COMPARATIVO), \
+         patch.object(drc, "montar_dados_relatorio_comparativo", return_value=DADOS_FIXTURE_COMPARATIVO) as m_montar, \
+         patch.object(db, "registrar_relatorio_gerado") as m_log:
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        at.radio(key="relatorio_modo").set_value("Comparativo (evolução entre períodos)").run(timeout=30)
+        at.multiselect(key="relatorio_periodos_multi").set_value(PERIODOS_COMPARATIVO).run(timeout=30)
+        botao = next(b for b in at.button if b.label == "Gerar relatório")
+        assert not botao.disabled, "botão Gerar não pode ficar desabilitado com 2 períodos escolhidos"
+        botao.click().run(timeout=30)
+        assert not at.exception, f"excecao gerando comparativo: {at.exception}"
+        assert m_montar.called
+        assert m_montar.call_args.kwargs["periodos"] == PERIODOS_COMPARATIVO
+        assert len(m_montar.call_args.kwargs["periodos_labels"]) == 2
+        assert m_log.called
+        assert m_log.call_args.kwargs["periodos"] == PERIODOS_COMPARATIVO
+        assert any("comparativo gerado" in s.value for s in at.success)
+        print("OK: Relatório Comentado — modo comparativo chama o pipeline e gera PDF real sem exceção")
+
+
+def test_botao_gerar_desabilitado_com_menos_de_2_periodos_no_comparativo():
+    # Trava de UI (mesmo teto do motor de desenho, 2-4 períodos): com só 1
+    # período escolhido no modo comparativo, o botão "Gerar relatório" tem
+    # que ficar desabilitado -- não dá pra montar_dados_relatorio_comparativo
+    # com 1 período só (levanta ValueError, ver test_dados_relatorio_comparativo.py).
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos", return_value=PERIODOS_COMPARATIVO):
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        at.radio(key="relatorio_modo").set_value("Comparativo (evolução entre períodos)").run(timeout=30)
+        at.multiselect(key="relatorio_periodos_multi").set_value([PERIODOS_COMPARATIVO[0]]).run(timeout=30)
+        botao = next(b for b in at.button if b.label == "Gerar relatório")
+        assert botao.disabled, "botão Gerar deveria ficar desabilitado com só 1 período no modo comparativo"
+        print("OK: Relatório Comentado — botão Gerar desabilitado no comparativo com menos de 2 períodos")
+
+
 def test_gerar_relatorio_chama_pipeline_e_nao_quebra():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
@@ -144,7 +218,15 @@ def test_gerar_relatorio_chama_pipeline_e_nao_quebra():
 
 
 if __name__ == "__main__":
+    # FIX_20260929h: bloco antigo não chamava
+    # test_lista_de_contatos_e_compartilhada_entre_administrador_e_contador
+    # (a função existia mas nunca rodava via `python3 test_....py`, só se
+    # descoberta por um runner tipo pytest) -- corrigido junto com a adição
+    # dos 2 testes novos do modo comparativo.
     test_sem_periodo_mostra_info_sem_excecao()
     test_carrega_formulario_com_periodo_disponivel()
     test_seletor_de_contato_salvo_preenche_nome_e_cargo()
+    test_lista_de_contatos_e_compartilhada_entre_administrador_e_contador()
     test_gerar_relatorio_chama_pipeline_e_nao_quebra()
+    test_gerar_relatorio_comparativo_chama_pipeline_e_nao_quebra()
+    test_botao_gerar_desabilitado_com_menos_de_2_periodos_no_comparativo()
