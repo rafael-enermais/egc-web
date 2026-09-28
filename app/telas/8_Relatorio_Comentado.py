@@ -29,6 +29,7 @@ from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS  # noqa: E402
 import db  # noqa: E402
 import dados_relatorio_comentado as drc  # noqa: E402
 import gerador_relatorio_comentado as g  # noqa: E402
+import formatacao  # noqa: E402
 
 NOME_POR_COD = {cod: nome for cod, nome, _cnpj in EMPRESAS_FIXAS}
 
@@ -206,5 +207,5 @@ with st.expander("📜 Últimas gerações"):
         for h in historico:
             empresas_txt = ", ".join(NOME_POR_COD.get(c, c) for c in (h["empresas"] or []))
             periodos_txt = ", ".join(p.strftime("%m/%Y") for p in (h["periodos"] or []))
-            quando = h["gerado_em"].strftime("%d/%m/%Y %H:%M") if h["gerado_em"] else "—"
+            quando = formatacao.hora_br(h["gerado_em"])
             st.caption(f"**{h['arquivo']}** — {empresas_txt} · {periodos_txt} · {quando} · {h['usuario'] or '—'}")

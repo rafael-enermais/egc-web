@@ -76,7 +76,7 @@ except Exception:
     _ultima_sync = None
 
 if _ultima_sync:
-    st.caption(f"🔄 Última sincronização automática: {_ultima_sync.strftime('%d/%m/%Y %H:%M')} "
+    st.caption(f"🔄 Última sincronização automática: {formatacao.hora_br(_ultima_sync)} "
                "(roda sozinha todo dia às 04h -- use o botão abaixo só se precisar de dado mais fresco agora)")
 else:
     st.error(
