@@ -167,11 +167,42 @@ def test_sem_csll_irpj_pula_pagina_resultado_e_nao_inventa_campo():
 
 
 def test_anexo_ativo_tem_grupo_conta_subtotal_total_na_ordem():
+    # FIX_20260928: agora 1 "grupo" por subgrupo (Ativo Circulante / Ativo
+    # Nao Circulante), nao 1 header umbrella no topo -- ver docstring de
+    # _montar_anexo.
     dados, _ = _montar()
     tipos = [linha[0] for linha in dados["anexo_ativo"]]
-    assert tipos == ["grupo", "conta", "subtotal", "conta", "subtotal", "total"]
+    assert tipos == ["grupo", "conta", "subtotal", "grupo", "conta", "subtotal", "total"]
+    assert dados["anexo_ativo"][0] == ("grupo", "Ativo Circulante")
     assert dados["anexo_ativo"][-1] == ("total", "TOTAL DO ATIVO", 43_359_080.94)
-    print("OK: anexo_ativo monta a arvore grupo/conta/subtotal/total na ordem esperada pelo gerador")
+    print("OK: anexo_ativo monta a arvore grupo/conta/subtotal/total (1 grupo por subgrupo) na ordem esperada pelo gerador")
+
+
+def test_anexo_aninha_subconta_sob_conta_pai_quando_par_confirmado():
+    # Disponivel = Depositos Bancarios a Vista + Aplicacoes de Liquidez
+    # Imediata -- par confirmado em _HIERARQUIA_BP -- deve aparecer
+    # ('conta', 'Disponível', total) seguido de 2 ('subconta', ..., ...),
+    # sem os filhos soltos em outro lugar da lista.
+    bp = [
+        _lanc("ATIVO CIRCULANTE", "TOTAL CIRCULANTE ATIVO", 1_395_762.01),
+        _lanc("ATIVO CIRCULANTE", "DISPONIVEL", 1_395_762.01),
+        _lanc("ATIVO CIRCULANTE", "DEPOSITOS BANCARIOS A VISTA", 568_358.36),
+        _lanc("ATIVO CIRCULANTE", "APLICACOES DE LIQUIDEZ IMEDIATA", 827_403.65),
+        _lanc("ATIVO NAO CIRCULANTE", "TOTAL NAO CIRCULANTE ATIVO", 0.0),
+        _lanc("TOTAL", "TOTAL DO ATIVO", 1_395_762.01),
+        _lanc("PASSIVO CIRCULANTE", "TOTAL CIRCULANTE PASSIVO", 0.0),
+        _lanc("PASSIVO NAO CIRCULANTE", "TOTAL NAO CIRCULANTE PASSIVO", 0.0),
+        _lanc("PATRIMONIO LIQUIDO", "TOTAL PATRIMONIO LIQUIDO", 1_395_762.01),
+        _lanc("TOTAL", "TOTAL DO PASSIVO", 1_395_762.01),
+    ]
+    linhas = drc._montar_anexo(bp, "ATIVO")
+    assert linhas[0] == ("grupo", "Ativo Circulante")
+    assert linhas[1] == ("conta", "Disponível", 1_395_762.01)
+    assert linhas[2] == ("subconta", "Depósitos Bancários à Vista", 568_358.36)
+    assert linhas[3] == ("subconta", "Aplicações de Liquidez Imediata", 827_403.65)
+    tipos = [l[0] for l in linhas]
+    assert tipos.count("conta") == 1, "os 2 filhos nao devem sobrar soltos como 'conta' de novo"
+    print("OK: _montar_anexo aninha subconta sob a conta pai quando o par esta em _HIERARQUIA_BP")
 
 
 def test_sem_periodo_anterior_cai_no_fallback_neutro():
@@ -220,6 +251,7 @@ if __name__ == "__main__":
     test_despesas_admin_itens_ordenado_e_percentual_correto()
     test_sem_csll_irpj_pula_pagina_resultado_e_nao_inventa_campo()
     test_anexo_ativo_tem_grupo_conta_subtotal_total_na_ordem()
+    test_anexo_aninha_subconta_sob_conta_pai_quando_par_confirmado()
     test_sem_periodo_anterior_cai_no_fallback_neutro()
     test_com_periodo_anterior_gera_texto_comparativo()
     test_pipeline_completo_nao_quebra_gerando_pdf_de_verdade()
