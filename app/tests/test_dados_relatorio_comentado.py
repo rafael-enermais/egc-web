@@ -145,6 +145,35 @@ def test_despesas_admin_itens_ordenado_e_percentual_correto():
     print("OK: despesas_admin_itens vem em magnitude positiva, ordenado desc, percentual sobre despesas_administrativas")
 
 
+def test_despesas_admin_itens_agrega_cauda_longa_em_demais_contas():
+    # FIX_20260929c: pag.4 estourava com dezenas de contas (empresa real,
+    # Energia, tem 43). Acima de top_n(6)+1, so' os 6 maiores ficam
+    # individuais e o resto vira 1 linha agregada "Demais contas (N)".
+    itens_admin = [(f"Conta {i}", -(100.0 - i)) for i in range(10)]  # 10 contas, 100,99,...,91
+    itens = drc._montar_despesas_admin_itens(itens_admin, despesas_administrativas=955.0)
+    assert len(itens) == 7, f"esperava 6 individuais + 1 agregada, veio {len(itens)} linhas"
+    nomes = [i[0] for i in itens[:6]]
+    assert nomes == ["Conta 0", "Conta 1", "Conta 2", "Conta 3", "Conta 4", "Conta 5"], (
+        "os 6 maiores devem ficar individuais, em ordem decrescente"
+    )
+    assert itens[6][0] == "Demais contas (4)"
+    assert itens[6][1] == 94.0 + 93.0 + 92.0 + 91.0 == 370.0  # contas 6,7,8,9 (100-i)
+    assert round(sum(i[1] for i in itens), 2) == round(sum(abs(v) for _, v in itens_admin), 2), (
+        "soma dos itens (individuais + agregado) tem que bater com o total original -- nada pode sumir"
+    )
+    print("OK: despesas_admin_itens — cauda longa (>top_n+1 contas) agrega em 'Demais contas (N)' sem perder valor")
+
+
+def test_despesas_admin_itens_nao_agrega_quando_cabe_no_limite():
+    # exatamente top_n(6)+1 = 7 contas -- nao compensa resumir so' 1 item,
+    # mostra as 7 individualmente.
+    itens_admin = [(f"Conta {i}", -(100.0 - i)) for i in range(7)]
+    itens = drc._montar_despesas_admin_itens(itens_admin, despesas_administrativas=679.0)
+    assert len(itens) == 7
+    assert all(not i[0].startswith("Demais contas") for i in itens)
+    print("OK: despesas_admin_itens — com <= top_n+1 contas, não agrega (mostra todas)")
+
+
 def test_sem_csll_irpj_pula_pagina_resultado_e_nao_inventa_campo():
     dre_sem_csll = [r for r in DRE_PERIODO if r["conta"] not in ("PROVISAO CSLL", "PROVISAO IRPJ")]
     dados, incluir_resultado = _montar(dre_hist=dre_sem_csll)
