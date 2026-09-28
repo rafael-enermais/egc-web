@@ -49,6 +49,8 @@ diferentes).
 """
 from __future__ import annotations
 
+import warnings
+from collections import Counter
 from datetime import date
 from typing import Optional
 
@@ -206,7 +208,31 @@ def _mapa(lancamentos: list) -> dict:
     quem colide de nome no BP sao itens de linha tipo INSTITUICOES
     FINANCEIRAS Circulante x Nao Circulante, que este mapa achatado NAO
     deve ser usado pra buscar -- ver _montar_anexo, que filtra por
-    grupo)."""
+    grupo).
+
+    FIX_20260928d (Rafael, reparse de Energia 06/2026 dando EBITDA
+    diferente entre gerações do mesmo relatório -- suspeita dele: "dado
+    antigo (parser anterior) x novo"): egc.lancamentos NÃO TEM unique
+    constraint em (empresa_codigo, tipo, periodo, grupo, conta, status) --
+    nada no schema IMPEDE 2 linhas ATIVAS pra mesma conta/período (ex.:
+    se `inativar_periodo_existente` não casar o período exato de uma
+    reimportação anterior). Se isso acontecer, este dict comprehension
+    escolhe silenciosamente a ÚLTIMA linha da lista (ordem do ORDER BY
+    grupo,conta do banco, que não é garantida estável em empate) -- o
+    relatório sairia com um valor ou outro sem erro nenhum, dependendo só
+    da ordem física das linhas. Em vez de deixar isso silencioso, avisa
+    (não quebra o relatório -- dado ruim não pode travar produção, mas
+    precisa aparecer) sempre que houver conta duplicada nas linhas ATIVAS
+    recebidas."""
+    contagem = Counter(l["conta"] for l in lancamentos)
+    duplicadas = [conta for conta, n in contagem.items() if n > 1]
+    if duplicadas:
+        warnings.warn(
+            f"_mapa: conta(s) duplicada(s) entre os lançamentos ATIVOS recebidos: {duplicadas} -- "
+            "provável linha antiga não inativada numa reimportação (ver FIX_20260928d); "
+            "o valor usado é o da última linha na ordem retornada pelo banco, não determinístico.",
+            stacklevel=2,
+        )
     return {l["conta"]: float(l["valor"]) for l in lancamentos}
 
 

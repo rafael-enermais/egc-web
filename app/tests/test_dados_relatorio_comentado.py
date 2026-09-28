@@ -12,6 +12,7 @@ de sinal (ver docstring de sinal em dados_relatorio_comentado.py).
 """
 import sys
 import datetime
+import warnings
 from pathlib import Path
 from unittest.mock import patch
 
@@ -205,6 +206,36 @@ def test_anexo_aninha_subconta_sob_conta_pai_quando_par_confirmado():
     print("OK: _montar_anexo aninha subconta sob a conta pai quando o par esta em _HIERARQUIA_BP")
 
 
+def test_mapa_avisa_sobre_conta_duplicada_nas_linhas_ativas():
+    # FIX_20260928d (Rafael, EBITDA diferente entre 2 gerações do mesmo
+    # relatório de Energia 06/2026): egc.lancamentos não tem unique
+    # constraint que impeça 2 linhas ATIVAS pra mesma conta/período --
+    # se isso acontecer, _mapa deve pelo menos AVISAR (não pode ficar
+    # silencioso), mesmo continuando a devolver um valor (não quebra o
+    # relatório por causa de dado ruim já gravado).
+    lancamentos = [
+        _lanc("DESPESAS", "DEPRECIACOES", 0.0),
+        _lanc("DESPESAS", "DEPRECIACOES", -352_902.22),
+    ]
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        mapa = drc._mapa(lancamentos)
+    assert any("DEPRECIACOES" in str(x.message) and "duplicada" in str(x.message) for x in w), (
+        "conta duplicada entre linhas ATIVAS deveria gerar aviso, não passar em silêncio"
+    )
+    assert mapa["DEPRECIACOES"] == -352_902.22  # comportamento preservado: usa a última da lista
+    print("OK: _mapa avisa sobre conta duplicada nas linhas ATIVAS em vez de escolher valor em silêncio")
+
+
+def test_mapa_sem_duplicata_nao_avisa():
+    lancamentos = [_lanc("DESPESAS", "DEPRECIACOES", -352_902.22), _lanc("DESPESAS", "AMORTIZACOES", 0.0)]
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        drc._mapa(lancamentos)
+    assert not any("duplicada" in str(x.message) for x in w)
+    print("OK: _mapa nao avisa quando nao ha duplicata (caso normal, sem falso positivo)")
+
+
 def test_anexo_aninha_3_pares_novos_do_passivo_fix_20260928b():
     # Mesmos 3 pares novos do lado PASSIVO CIRCULANTE, com os valores
     # REAIS da Enermais Energia (SPED 31/12/2025) usados na verificacao
@@ -293,6 +324,8 @@ if __name__ == "__main__":
     test_sem_csll_irpj_pula_pagina_resultado_e_nao_inventa_campo()
     test_anexo_ativo_tem_grupo_conta_subtotal_total_na_ordem()
     test_anexo_aninha_subconta_sob_conta_pai_quando_par_confirmado()
+    test_mapa_avisa_sobre_conta_duplicada_nas_linhas_ativas()
+    test_mapa_sem_duplicata_nao_avisa()
     test_anexo_aninha_3_pares_novos_do_passivo_fix_20260928b()
     test_sem_periodo_anterior_cai_no_fallback_neutro()
     test_com_periodo_anterior_gera_texto_comparativo()

@@ -1128,8 +1128,27 @@ def pagina_ebitda(c, dados, pagina: int, total_paginas: int):
 
 
 # ------------------------------------------------------------------ pagina 7
-def _leitura_balanco(dados) -> list[str]:
+def _leitura_balanco(dados, pagina: int, total_paginas: int) -> list[str]:
+    """FIX_20260928e (Rafael, "a página 7 do relatório (DRE)... alterou
+    bastante" -- achado revisando o texto desta página, não um problema
+    de cor/layout): esta função citava "página 5" (Resultado) e "página 8"
+    (Anexo) FIXOS, só corretos no layout de 9 páginas (com
+    pagina_resultado incluída). Sempre que incluir_pagina_resultado=False
+    (lucro presumido, OU -- caso real encontrado testando Energia
+    06/2026 -- um período de lucro real cuja captura de CSLL/IRPJ ficou
+    incompleta nesta rodada) o relatório vira 8 páginas: Balanço passa a
+    ser a página 6 (não 7), não existe página de Resultado nenhuma pra
+    citar, e o Anexo passa a ser página 7 (não 8) -- o texto citava
+    números errados sem avisar, ficando com "escrita" claramente estranha
+    pra quem conhece o relatório. Anexo está sempre 1 página depois do
+    Balanço nos 2 layouts (`pagina + 1`); a citação ao Resultado só entra
+    quando essa página de fato existe no total_paginas desta geração."""
     d = dados
+    pagina_anexo_num = pagina + 1
+    # PAGINAS (lista fixa no modulo) so' tem 1 pagina opcional antes do
+    # Balanco (pagina_resultado) -- por isso o proprio numero da pagina do
+    # Balanco ja diz se ela existiu nesta geracao: 7 com Resultado, 6 sem.
+    tem_pagina_resultado = pagina == 7
     p1 = (
         f"O Patrimônio Líquido de {moeda_br(d['patrimonio_liquido'])} representa "
         f"{pct_br(d['patrimonio_liquido'] / d['total_ativo'])} do total do passivo. O endividamento geral "
@@ -1137,12 +1156,13 @@ def _leitura_balanco(dados) -> list[str]:
         f"{numero_br(d['alavancagem'], sufixo='x')} de capital de terceiros para cada R$ 1,00 de capital "
         f"próprio. A liquidez corrente (ativo circulante/passivo circulante) é de {numero_br(d['liquidez_corrente'])}."
     )
+    resultado_ref = f", página {pagina - 2}" if tem_pagina_resultado else ""
     p2 = (
         f"O ativo não circulante representa {pct_br(d['ativo_nao_circulante'] / d['total_ativo'])} do total do "
         f"ativo ({moeda_br(d['ativo_nao_circulante'])}), dos quais {moeda_br(d['imobilizado'])} em imobilizado. "
-        f"O resultado do período ({moeda_br(d['resultado_liquido'], forcar_sinal=True)}, página 5) está refletido "
+        f"O resultado do período ({moeda_br(d['resultado_liquido'], forcar_sinal=True)}{resultado_ref}) está refletido "
         f"na conta de Lucros ou Prejuízos Acumulados do Patrimônio Líquido. O detalhamento completo de contas "
-        f"está no Anexo (página 8)."
+        f"está no Anexo (página {pagina_anexo_num})."
     )
     return [p1, p2]
 
@@ -1195,7 +1215,7 @@ def pagina_balanco(c, dados, pagina: int, total_paginas: int):
     c.setStrokeColor(HexColor(ORANGE)); c.setLineWidth(2)
     c.line(MARGEM, Y(y + 6), MARGEM + 34, Y(y + 6))
     y += 28
-    for par in _leitura_balanco(d):
+    for par in _leitura_balanco(d, pagina, total_paginas):
         y = paragrafo(c, MARGEM, y, par, CONTEUDO_W, size=10.5, leading=15) + 10
 
     _footer(c, pagina, total_paginas)

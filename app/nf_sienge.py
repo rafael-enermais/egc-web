@@ -262,7 +262,16 @@ def _classificar_nota(row, bills: pd.DataFrame) -> dict:
     universo = bills[bills["document_identification_id"].isin(TIPOS_NOTA_FISCAL)] if not bills.empty else bills
 
     def _bate_valor(v):
-        return v is not None and valor is not None and abs(float(v) - float(valor)) <= TOLERANCIA_VALOR
+        # FIX_20260928c (Rafael pediu pra conferir pendencias_nf_ENERGIA_07_2026.xlsx
+        # contra o manifesto ja conferido a mao pela contadora): nota nº 10486
+        # (Gramaeira Pereira, Sienge R$ 6.000,01 x manifesto R$ 6.000,00 -- 1
+        # centavo, dentro da TOLERANCIA_VALOR) saia como VALOR_DIVERGENTE em vez
+        # de LANCADA. Causa: abs(6000.01 - 6000.0) em float da 0.010000000000218,
+        # que e' MAIOR que 0.01 por erro de representacao binaria -- nunca bate
+        # o "<=" mesmo a diferenca sendo exatamente 1 centavo. round() pros
+        # centavos antes de comparar elimina o erro de ponto flutuante sem
+        # afrouxar a tolerancia real (ainda rejeita 2+ centavos de diferenca).
+        return v is not None and valor is not None and round(abs(float(v) - float(valor)), 2) <= TOLERANCIA_VALOR
 
     # 1º passe: chave de acesso idêntica (confiança máxima), só no universo restrito.
     if chave and not universo.empty:
@@ -413,10 +422,13 @@ def listar_historico_importacoes(conn, empresa_codigo: Optional[str] = None) -> 
 
 
 def listar_conciliacao(conn, import_id: str) -> pd.DataFrame:
+    """FIX_20260928c (Rafael, tabela principal de Notas Fiscais): m.cfop
+    entra logo depois de numero_nota -- a contadora referencia bastante
+    coisa por CFOP, não só por número da nota."""
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT m.numero_nota, m.data_emissao, m.valor, m.fornecedor_nome, m.fornecedor_cnpj,
+            SELECT m.numero_nota, m.cfop, m.data_emissao, m.valor, m.fornecedor_nome, m.fornecedor_cnpj,
                    c.status, c.confianca, c.sienge_bill_id, c.sienge_valor, c.observacao,
                    c.pendencia_status, c.atualizado_em
             FROM egc.nf_conciliacao c
