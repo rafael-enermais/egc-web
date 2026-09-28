@@ -21,19 +21,29 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import dados_relatorio_comentado as drc  # noqa: E402
 
-EMPRESAS = [{"codigo": "ENERGIA", "nome": "Enermais Energia Ltda", "cnpj": "47.040.664/0001-48"}]
+EMPRESAS = [
+    {"codigo": "ENERGIA", "nome": "Enermais Energia Ltda", "cnpj": "47.040.664/0001-48"},
+    {"codigo": "SMG", "nome": "SMG Soluções", "cnpj": "18.387.666/0001-00"},
+]
 
 P2025 = datetime.date(2025, 12, 31)
 P2026 = datetime.date(2026, 6, 30)
 
-DADOS_2025 = dict(
-    receita_liquida=31_200_000.0, ebitda=1_000_000.0, resultado_liquido=-640_000.0,
-    total_ativo=41_700_000.0, patrimonio_liquido=8_000_000.0,
-)
-DADOS_2026 = dict(
-    receita_liquida=33_353_150.0, ebitda=724_975.31, resultado_liquido=-1_337_674.90,
-    total_ativo=43_359_080.94, patrimonio_liquido=6_771_914.25,
-)
+DADOS_ENERGIA = {
+    P2025: dict(receita_liquida=31_200_000.0, ebitda=1_000_000.0, resultado_liquido=-640_000.0,
+                total_ativo=41_700_000.0, patrimonio_liquido=8_000_000.0),
+    P2026: dict(receita_liquida=33_353_150.0, ebitda=724_975.31, resultado_liquido=-1_337_674.90,
+                total_ativo=43_359_080.94, patrimonio_liquido=6_771_914.25),
+}
+# valores da SMG deliberadamente pequenos e redondos -- fica fácil conferir
+# de cabeça que o "consolidado" é ENERGIA + SMG, não só ENERGIA sozinha.
+DADOS_SMG = {
+    P2025: dict(receita_liquida=5_000_000.0, ebitda=200_000.0, resultado_liquido=50_000.0,
+                total_ativo=3_000_000.0, patrimonio_liquido=1_000_000.0),
+    P2026: dict(receita_liquida=6_000_000.0, ebitda=300_000.0, resultado_liquido=80_000.0,
+                total_ativo=3_500_000.0, patrimonio_liquido=1_200_000.0),
+}
+DADOS_POR_EMPRESA = {"ENERGIA": DADOS_ENERGIA, "SMG": DADOS_SMG}
 
 BP_2025 = [
     {"grupo": "ATIVO CIRCULANTE", "conta": "TOTAL CIRCULANTE ATIVO", "valor": 100.0},
@@ -47,27 +57,49 @@ BP_2026 = [
     {"grupo": "TOTAL", "conta": "TOTAL DO ATIVO", "valor": 150.0},
 ]
 
+# BP "achatado" (1 linha por empresa+grupo+conta), formato de
+# db.listar_lancamentos_grupo -- usado só nos testes de grupo/consolidado.
+BP_GRUPO_2025 = [
+    {"empresa_codigo": "ENERGIA", "grupo": "ATIVO CIRCULANTE", "conta": "DISPONIVEL", "valor": 40.0},
+    {"empresa_codigo": "ENERGIA", "grupo": "TOTAL", "conta": "TOTAL DO ATIVO", "valor": 100.0},
+    {"empresa_codigo": "SMG", "grupo": "ATIVO CIRCULANTE", "conta": "DISPONIVEL", "valor": 10.0},
+    {"empresa_codigo": "SMG", "grupo": "TOTAL", "conta": "TOTAL DO ATIVO", "valor": 25.0},
+]
+BP_GRUPO_2026 = [
+    {"empresa_codigo": "ENERGIA", "grupo": "ATIVO CIRCULANTE", "conta": "DISPONIVEL", "valor": 60.0},
+    {"empresa_codigo": "ENERGIA", "grupo": "TOTAL", "conta": "TOTAL DO ATIVO", "valor": 150.0},
+    {"empresa_codigo": "SMG", "grupo": "ATIVO CIRCULANTE", "conta": "DISPONIVEL", "valor": 15.0},
+    {"empresa_codigo": "SMG", "grupo": "TOTAL", "conta": "TOTAL DO ATIVO", "valor": 30.0},
+]
+
 
 def _montar_dados_relatorio_fake(conn, empresa_codigo, periodo, periodo_label, **kwargs):
-    base = DADOS_2025 if periodo == P2025 else DADOS_2026
-    return dict(base), True
+    return dict(DADOS_POR_EMPRESA[empresa_codigo][periodo]), True
 
 
-def _patches():
+def _patches(periodos_ativos_por_empresa=None):
+    periodos_ativos_por_empresa = periodos_ativos_por_empresa or {
+        "ENERGIA": [P2025, P2026], "SMG": [P2025, P2026],
+    }
     return [
         patch("dados_relatorio_comentado.db.listar_empresas", return_value=EMPRESAS),
         patch("dados_relatorio_comentado.montar_dados_relatorio", side_effect=_montar_dados_relatorio_fake),
         patch("dados_relatorio_comentado.db.listar_lancamentos", side_effect=lambda conn, cod, per, tipo, status="ATIVO":
               (BP_2025 if per == P2025 else BP_2026) if tipo == "BP" else []),
+        patch("dados_relatorio_comentado.db.listar_lancamentos_grupo",
+              side_effect=lambda conn, per, tipo, cods, status="ATIVO":
+              (BP_GRUPO_2025 if per == P2025 else BP_GRUPO_2026) if tipo == "BP" else []),
+        patch("dados_relatorio_comentado.db.listar_periodos",
+              side_effect=lambda conn, cod, status="ATIVO": periodos_ativos_por_empresa.get(cod, [])),
     ]
 
 
-def _chamar(**kwargs):
-    patches = _patches()
+def _chamar(empresas_codigos=("ENERGIA",), periodos_ativos_por_empresa=None, **kwargs):
+    patches = _patches(periodos_ativos_por_empresa)
     ctxs = [p.start() for p in patches]
     try:
         return drc.montar_dados_relatorio_comparativo(
-            conn=object(), empresa_codigo="ENERGIA",
+            conn=object(), empresas_codigos=list(empresas_codigos),
             periodos=[P2025, P2026], periodos_labels=["2025", "1S2026"],
             periodo_range_label="2025 A 1S2026", **kwargs,
         )
@@ -123,7 +155,7 @@ def test_admin_ausente_vira_string_vazia_sem_quebrar():
 def test_rejeita_periodos_e_labels_de_tamanho_diferente():
     try:
         drc.montar_dados_relatorio_comparativo(
-            conn=object(), empresa_codigo="ENERGIA",
+            conn=object(), empresas_codigos=["ENERGIA"],
             periodos=[P2025, P2026], periodos_labels=["só um rótulo"],
             periodo_range_label="x",
         )
@@ -137,7 +169,7 @@ def test_rejeita_menos_de_2_ou_mais_de_4_periodos():
     for periodos in ([P2025], [P2025, P2026, P2025, P2026, P2025]):
         try:
             drc.montar_dados_relatorio_comparativo(
-                conn=object(), empresa_codigo="ENERGIA",
+                conn=object(), empresas_codigos=["ENERGIA"],
                 periodos=periodos, periodos_labels=["x"] * len(periodos),
                 periodo_range_label="x",
             )
@@ -145,6 +177,79 @@ def test_rejeita_menos_de_2_ou_mais_de_4_periodos():
         except ValueError:
             pass
     print("OK: montar_dados_relatorio_comparativo — aceita só de 2 a 4 períodos")
+
+
+def test_rejeita_lista_de_empresas_vazia():
+    try:
+        drc.montar_dados_relatorio_comparativo(
+            conn=object(), empresas_codigos=[],
+            periodos=[P2025, P2026], periodos_labels=["2025", "1S2026"],
+            periodo_range_label="x",
+        )
+        assert False, "deveria ter levantado ValueError"
+    except ValueError:
+        pass
+    print("OK: montar_dados_relatorio_comparativo — rejeita empresas_codigos vazio")
+
+
+# ───────────────────── consolidado (2+ empresas) ─────────────────────
+
+def test_consolidado_soma_kpis_das_empresas_selecionadas():
+    # pedido do Rafael 29/09: "com energia e outro (exemplo)... no
+    # montante" -- ENERGIA + SMG tem que aparecer SOMADO, não só ENERGIA.
+    dados = _chamar(empresas_codigos=["ENERGIA", "SMG"])
+    fluxo = {k["label"]: k for k in dados["kpis_fluxo"]}
+    saldo = {k["label"]: k for k in dados["kpis_saldo"]}
+    assert fluxo["Receita Operacional Líquida"]["valores"] == [
+        31_200_000.0 + 5_000_000.0, 33_353_150.0 + 6_000_000.0,
+    ]
+    assert saldo["Total do Ativo"]["valores"] == [41_700_000.0 + 3_000_000.0, 43_359_080.94 + 3_500_000.0]
+    print("OK: montar_dados_relatorio_comparativo (consolidado) — KPIs somados entre as empresas selecionadas")
+
+
+def test_consolidado_nome_e_escopo_mostram_grupo_e_quais_empresas():
+    dados = _chamar(empresas_codigos=["ENERGIA", "SMG"])
+    assert dados["empresa_nome"] == "Grupo Enermais"
+    assert dados["cnpj"] == ""
+    assert dados["empresas_codigos"] == ["ENERGIA", "SMG"]
+    assert "ENERGIA" in dados["anexo_escopo_label"] and "SMG" in dados["anexo_escopo_label"]
+    assert "2 empresas" in dados["anexo_escopo_label"]
+    print("OK: montar_dados_relatorio_comparativo (consolidado) — nome 'Grupo Enermais' + escopo lista as empresas")
+
+
+def test_consolidado_anexo_usa_valor_consolidado_do_pivot():
+    dados = _chamar(empresas_codigos=["ENERGIA", "SMG"])
+    ativo_por_label = {l[1]: l for l in dados["anexo_ativo"] if l[0] != "grupo"}
+    # Disponível: ENERGIA 40+SMG 10=50 (2025); ENERGIA 60+SMG 15=75 (2026)
+    assert ativo_por_label["Disponível"] == ("conta", "Disponível", 50.0, 75.0)
+    assert ativo_por_label["TOTAL DO ATIVO"] == ("total", "TOTAL DO ATIVO", 125.0, 180.0)
+    print("OK: montar_dados_relatorio_comparativo (consolidado) — Anexo usa VALOR CONSOLIDADO (soma) do pivot, não 1 empresa só")
+
+
+def test_consolidado_1_empresa_so_bate_com_resultado_de_sempre():
+    # empresas_codigos com 1 item só continua IDÊNTICO ao comportamento
+    # de antes de existir consolidado (sem regressão pro caso mais usado).
+    dados_1 = _chamar(empresas_codigos=["ENERGIA"])
+    assert dados_1["empresa_nome"] == "Enermais Energia Ltda"
+    assert dados_1["cnpj"] == "47.040.664/0001-48"
+    fluxo = {k["label"]: k for k in dados_1["kpis_fluxo"]}
+    assert fluxo["Receita Operacional Líquida"]["valores"] == [31_200_000.0, 33_353_150.0]
+    print("OK: montar_dados_relatorio_comparativo — 1 empresa só continua idêntico ao comportamento de sempre")
+
+
+def test_consolidado_rejeita_periodo_que_1_empresa_nao_tem():
+    # SMG só tem 2025 ativo (sem 1S2026) -- somar esse período "no
+    # montante" daria um total incompleto sem avisar (SMG entraria com
+    # 0.0 silencioso). Tem que travar com erro claro, não gerar torto.
+    try:
+        _chamar(
+            empresas_codigos=["ENERGIA", "SMG"],
+            periodos_ativos_por_empresa={"ENERGIA": [P2025, P2026], "SMG": [P2025]},
+        )
+        assert False, "deveria ter levantado ValueError (SMG sem 1S2026 ativo)"
+    except ValueError as e:
+        assert "SMG" in str(e)
+    print("OK: montar_dados_relatorio_comparativo (consolidado) — rejeita período que 1 das empresas não tem ativo")
 
 
 # ───────────────────── _montar_anexo_multi_periodo ─────────────────────

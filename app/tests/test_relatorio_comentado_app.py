@@ -177,10 +177,81 @@ def test_gerar_relatorio_comparativo_chama_pipeline_e_nao_quebra():
         assert m_montar.called
         assert m_montar.call_args.kwargs["periodos"] == PERIODOS_COMPARATIVO
         assert len(m_montar.call_args.kwargs["periodos_labels"]) == 2
+        # FIX_20260929i: sem mexer no multiselect de empresas, o default e'
+        # so' a empresa escolhida no topo da tela (ENERGIA, 1a de EMPRESAS_FIXAS).
+        assert m_montar.call_args.kwargs["empresas_codigos"] == ["ENERGIA"]
         assert m_log.called
         assert m_log.call_args.kwargs["periodos"] == PERIODOS_COMPARATIVO
+        assert m_log.call_args.kwargs["empresas_codigos"] == ["ENERGIA"]
         assert any("comparativo gerado" in s.value for s in at.success)
         print("OK: Relatório Comentado — modo comparativo chama o pipeline e gera PDF real sem exceção")
+
+
+def test_comparativo_com_varias_empresas_passa_lista_pro_backend_e_nome_grupo():
+    # FIX_20260929i (Rafael: "com energia e outro (exemplo) ou com todos os
+    # CNPJ no montante") -- escolhendo 2 empresas no multiselect novo, o
+    # backend tem que receber as 2 (não só a do topo da tela) e o nome do
+    # arquivo vira "GRUPO" em vez do código de 1 empresa só.
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos", return_value=PERIODOS_COMPARATIVO), \
+         patch.object(drc, "montar_dados_relatorio_comparativo", return_value=DADOS_FIXTURE_COMPARATIVO) as m_montar, \
+         patch.object(db, "registrar_relatorio_gerado") as m_log:
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        at.radio(key="relatorio_modo").set_value("Comparativo (evolução entre períodos)").run(timeout=30)
+        at.multiselect(key="relatorio_empresas_multi").set_value(["ENERGIA", "SMG"]).run(timeout=30)
+        at.multiselect(key="relatorio_periodos_multi").set_value(PERIODOS_COMPARATIVO).run(timeout=30)
+        botao = next(b for b in at.button if b.label == "Gerar relatório")
+        assert not botao.disabled
+        botao.click().run(timeout=30)
+        assert not at.exception, f"excecao gerando comparativo com 2 empresas: {at.exception}"
+        assert m_montar.call_args.kwargs["empresas_codigos"] == ["ENERGIA", "SMG"]
+        assert m_log.call_args.kwargs["empresas_codigos"] == ["ENERGIA", "SMG"]
+        assert any("2 empresa" in s.value for s in at.success)
+        print("OK: Relatório Comentado — seletor de empresas do comparativo manda a lista certa pro backend")
+
+
+def test_trocar_selecao_de_periodos_nao_deixa_rotulo_preso_no_slot_antigo():
+    # FIX_20260929j (bug real achado no 1o PDF comparativo do Rafael:
+    # cabecalho saiu "12/2023, 06/2026, 06/2026, 06/2026" -- rotulo do
+    # slot 0 ficou preso no periodo antigo porque a key do text_input era
+    # por indice posicional). Regressao: escolhe um par de periodos, digita
+    # um rotulo custom no 1o slot, troca a SELECAO de periodos (sem
+    # remontar a pagina) -- o rotulo mostrado no slot 0 tem que refletir o
+    # NOVO periodo (valor default recalculado), nao o texto digitado antes
+    # pro periodo velho.
+    periodo_extra = datetime.date(2026, 3, 31)
+    periodos_disponiveis = PERIODOS_COMPARATIVO + [periodo_extra]
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos", return_value=periodos_disponiveis):
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        at.radio(key="relatorio_modo").set_value("Comparativo (evolução entre períodos)").run(timeout=30)
+        at.multiselect(key="relatorio_periodos_multi").set_value(PERIODOS_COMPARATIVO).run(timeout=30)
+
+        rotulos = [ti for ti in at.text_input if ti.key and ti.key.startswith("relatorio_periodo_multi_label_")]
+        assert len(rotulos) == 2
+        rotulos[0].set_value("RÓTULO DIGITADO À MÃO").run(timeout=30)
+
+        # Troca a seleção pra um período diferente no lugar do mais antigo
+        # (simula o Rafael mudando de ideia sobre quais períodos comparar).
+        nova_selecao = [PERIODOS_COMPARATIVO[1], periodo_extra]
+        at.multiselect(key="relatorio_periodos_multi").set_value(nova_selecao).run(timeout=30)
+        assert not at.exception, f"excecao trocando seleção de períodos: {at.exception}"
+
+        rotulos_novos = sorted(
+            (ti for ti in at.text_input if ti.key and ti.key.startswith("relatorio_periodo_multi_label_")),
+            key=lambda ti: ti.label,
+        )
+        valores = {ti.label: ti.value for ti in rotulos_novos}
+        # nenhum dos 2 rotulos pode ter sobrado com o texto digitado à mão
+        # pro período que não está mais selecionado, nem repetir o mesmo
+        # texto nos 2 slots (era exatamente o sintoma do bug real).
+        assert "RÓTULO DIGITADO À MÃO" not in valores.values()
+        assert len(set(valores.values())) == 2, f"rótulos repetidos após trocar seleção: {valores}"
+        print("OK: Relatório Comentado — trocar a seleção de períodos não deixa rótulo preso no período antigo")
 
 
 def test_botao_gerar_desabilitado_com_menos_de_2_periodos_no_comparativo():
@@ -230,3 +301,5 @@ if __name__ == "__main__":
     test_gerar_relatorio_chama_pipeline_e_nao_quebra()
     test_gerar_relatorio_comparativo_chama_pipeline_e_nao_quebra()
     test_botao_gerar_desabilitado_com_menos_de_2_periodos_no_comparativo()
+    test_comparativo_com_varias_empresas_passa_lista_pro_backend_e_nome_grupo()
+    test_trocar_selecao_de_periodos_nao_deixa_rotulo_preso_no_slot_antigo()
