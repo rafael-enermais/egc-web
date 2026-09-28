@@ -122,9 +122,32 @@ _sync_liberado = _ultima_sync is not None
 if not _sync_liberado:
     st.caption("🔒 Bloqueado até a primeira sincronização com o Sienge (passo 1 acima).")
 
+arquivo = st.file_uploader("Planilha do manifesto", type=["xlsx"], key="nf_upload", disabled=not _sync_liberado)
+
+# FIX_20260928 (Rafael perguntou: "esse período de referência melhor
+# setar manual ou conseguimos puxar isso da planilha?"): a planilha NÃO
+# tem 1 período único (cada nota tem sua própria data de emissão, e um
+# mesmo arquivo pode misturar competências) -- ver docstring de
+# nf_parser.sugerir_periodo_referencia. Por isso continua editável e
+# manual (nunca é gravado sozinho sem o clique em "Rodar conferência"),
+# mas agora pré-preenche com o mês/ano que aparece na MAIORIA das notas
+# do arquivo assim que o upload acontece, pra não obrigar a contadora a
+# digitar a mesma coisa toda vez -- ela sempre pode apagar e trocar.
+_arquivo_sig = f"{arquivo.name}:{arquivo.size}" if arquivo is not None else None
+if arquivo is not None and st.session_state.get("nf_periodo_sugestao_sig") != _arquivo_sig:
+    try:
+        _df_peek = nf_parser.ler_manifesto_xlsx(io.BytesIO(arquivo.getvalue()))
+        _sugestao = nf_parser.sugerir_periodo_referencia(_df_peek)
+        if _sugestao and not st.session_state.get("nf_periodo_ref"):
+            st.session_state["nf_periodo_ref"] = _sugestao
+    except Exception:
+        pass  # planilha invalida aqui so' significa "sem sugestao" -- o erro de verdade aparece so' no "Rodar conferência"
+    st.session_state["nf_periodo_sugestao_sig"] = _arquivo_sig
+
 periodo_referencia = st.text_input("Período de referência (ex.: 08/2026)", key="nf_periodo_ref",
                                     disabled=not _sync_liberado)
-arquivo = st.file_uploader("Planilha do manifesto", type=["xlsx"], key="nf_upload", disabled=not _sync_liberado)
+if arquivo is not None and st.session_state.get("nf_periodo_sugestao_sig") == _arquivo_sig and periodo_referencia:
+    st.caption("💡 Sugerido a partir das datas de emissão do arquivo -- confira antes de rodar.")
 
 if arquivo is not None and st.button("▶️ Rodar conferência", key="nf_btn_rodar", disabled=not _sync_liberado):
     if not periodo_referencia.strip():
@@ -197,7 +220,16 @@ else:
         pendencias_df = tabela[tabela["status"] != "LANCADA"]
         if not pendencias_df.empty:
             buffer = io.BytesIO()
-            pendencias_df.to_excel(buffer, index=False, sheet_name="Pendencias")
+            # FIX_20260928 (Rafael, "Rodar conferência" quebrando com
+            # ValueError ao baixar a planilha de pendências): atualizado_em
+            # vem do banco como timestamptz (schema.sql) -> psycopg2
+            # devolve datetime timezone-aware -> openpyxl nao aceita
+            # datetime com timezone no .xlsx (ver docstring de
+            # formatacao.remover_timezone_para_excel). Nao muda o que
+            # aparece na tela (st.dataframe, linha acima, aceita tz
+            # normalmente) -- so' a exportacao precisa do tratamento.
+            export_df = formatacao.remover_timezone_para_excel(pendencias_df)
+            export_df.to_excel(buffer, index=False, sheet_name="Pendencias")
             st.download_button(
                 "⬇️ Baixar planilha de pendências (pra mandar ao Suprimentos)",
                 data=buffer.getvalue(),

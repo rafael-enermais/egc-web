@@ -76,3 +76,28 @@ def test_ler_manifesto_sem_coluna_essencial_levanta_erro():
     buf.seek(0)
     with pytest.raises(nf_parser.ManifestoInvalido):
         nf_parser.ler_manifesto_xlsx(buf)
+
+
+def test_sugerir_periodo_referencia_usa_moda_do_dtemi():
+    # 2 notas em 07/2026, 1 em 06/2026 -- sugestao deve ser a maioria (07/2026),
+    # nao a primeira nem a ultima linha.
+    df = pd.DataFrame({
+        "DtEmi": ["2026.06.30", "2026.07.05", "2026.07.31"],
+        "Chave": [None, None, None],
+    })
+    assert nf_parser.sugerir_periodo_referencia(df) == "07/2026"
+
+
+def test_sugerir_periodo_referencia_cai_pra_chave_quando_sem_dtemi():
+    # sem coluna DtEmi (planilha antiga/variante) -- usa o aamm decodificado
+    # da chave de acesso (2611 = novembro/2026) como fallback.
+    df = pd.DataFrame({"Chave": [CHAVE_REAL]})  # CHAVE_REAL tem aamm "0607" -> jul/2006? ver decodificacao
+    d = nf_parser.decodificar_chave_acesso(CHAVE_REAL)
+    esperado = f"{d['aamm'][2:4]}/20{d['aamm'][0:2]}"
+    assert nf_parser.sugerir_periodo_referencia(df) == esperado
+
+
+def test_sugerir_periodo_referencia_devolve_none_sem_dado_nenhum():
+    df = pd.DataFrame({"DtEmi": [None, ""], "Chave": [None, ""]})
+    assert nf_parser.sugerir_periodo_referencia(df) is None
+    print("OK: sugerir_periodo_referencia usa moda do DtEmi, cai pra chave decodificada, e nunca inventa sem dado nenhum")

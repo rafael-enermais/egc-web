@@ -138,5 +138,51 @@ def ler_manifesto_xlsx(caminho_ou_buffer) -> pd.DataFrame:
     df["_chave_modelo"] = decodificadas.apply(lambda d: d["modelo"] if d else None)
     df["_chave_serie"] = decodificadas.apply(lambda d: d["serie"] if d else None)
     df["_chave_numero"] = decodificadas.apply(lambda d: d["numero"] if d else None)
+    df["_chave_aamm"] = decodificadas.apply(lambda d: d["aamm"] if d else None)
 
     return df.reset_index(drop=True)
+
+
+def sugerir_periodo_referencia(df: pd.DataFrame) -> Optional[str]:
+    """Sugestao de "MM/AAAA" pra pre-preencher o campo "Período de
+    referência" da tela -- NUNCA decide sozinho, so' pre-preenche; a
+    contadora sempre confirma/troca antes de "Rodar conferência".
+
+    FIX_20260928 (Rafael perguntou: "esse período de referência melhor
+    setar manual ou conseguimos puxar isso da planilha?"): a planilha da
+    Receita NÃO tem 1 campo único de período -- cada LINHA (nota) tem sua
+    própria data de emissão (DtEmi), e na prática um mesmo arquivo pode
+    misturar competências (nota emitida em julho, capturada só em agosto
+    numa remessa "atrasada"). Por isso não dá pra simplesmente "puxar da
+    planilha" como um fato -- mas dá pra SUGERIR o mês/ano que aparece na
+    MAIORIA das notas (moda, não a primeira/última linha, que pode ser
+    só 1 nota fora do padrão) e deixar o campo editável do mesmo jeito.
+    Sem fazer isso, a contadora digita a mesma coisa toda vez à mão.
+
+    Fonte primária: DtEmi (coluna opcional, pode vir vazia). Fallback:
+    aamm decodificado da Chave de acesso (formato oficial SEFAZ, sempre
+    confiável quando a chave existe -- ver decodificar_chave_acesso).
+    Devolve None se não der pra determinar nada em nenhuma das 2 fontes
+    (nunca inventa um período do nada)."""
+    if "DtEmi" in df.columns:
+        # dayfirst so' desambigua formato "DD/MM/AAAA" -- "AAAA.MM.DD" (como
+        # a Receita as vezes exporta) ja' e' inambiguo, mas o pandas avisa
+        # mesmo assim; suprime warning aqui porque o resultado esta certo
+        # nos 2 formatos (confirmado em test_nf_parser.py).
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            datas = pd.to_datetime(df["DtEmi"], errors="coerce", dayfirst=True)
+        datas = datas.dropna()
+        if not datas.empty:
+            competencias = datas.dt.strftime("%m/%Y")
+            return competencias.mode().iloc[0]
+
+    if "Chave" in df.columns:
+        aamms = df["Chave"].apply(decodificar_chave_acesso).apply(lambda d: d["aamm"] if d else None).dropna()
+        aamms = aamms[aamms.str.len() == 4]
+        if not aamms.empty:
+            mais_comum = aamms.mode().iloc[0]  # "AAMM" (2 digitos de ano + 2 de mes)
+            return f"{mais_comum[2:4]}/20{mais_comum[0:2]}"
+
+    return None
