@@ -70,6 +70,34 @@ def numero_br(v: Optional[float], sufixo: str = "", vazio: str = "—", forcar_s
     return f"{_sinal(v, forcar_sinal)}{formatar_br(abs(v))}{sufixo}"
 
 
+_TZ_BR = _dt.timezone(_dt.timedelta(hours=-3))  # America/Sao_Paulo, sem horario de verao desde 2019
+
+
+def hora_br(v, vazio: str = "—", formato: str = "%d/%m/%Y %H:%M") -> str:
+    """Formata um datetime pro horario de Brasilia antes de exibir.
+
+    FIX_20260928 (achado pelo Rafael: "última sincronização" na tela
+    Notas Fiscais aparecia ~3h a frente do relogio dele -- "deve estar
+    pegando GMT diferente"). Causa real: conexao.py NAO seta timezone de
+    sessao (sem SET TIME ZONE), entao o Supabase/Postgres devolve todo
+    timestamptz em UTC -- psycopg2 entrega um datetime tz-aware em UTC,
+    e o .strftime() direto (sem converter) simplesmente imprime esses
+    numeros UTC como se fossem hora local. Mesmo padrao em 3 lugares
+    (Notas Fiscais "última sincronização", Relatório Comentado "última
+    geração", Importar PDF "Importações recentes") -- corrigido nos 3
+    ao mesmo tempo, com essa funcao unica em vez de 3 fixes separados.
+
+    So' converte quando o datetime chega tz-aware (timestamptz de
+    verdade) -- um datetime naive (sem tzinfo) e' exibido como veio, sem
+    deslocar, pra nao inventar fuso em algo que nunca teve um.
+    """
+    if v is None:
+        return vazio
+    if getattr(v, "tzinfo", None) is not None:
+        v = v.astimezone(_TZ_BR)
+    return v.strftime(formato)
+
+
 def remover_timezone_para_excel(df: pd.DataFrame) -> pd.DataFrame:
     """Devolve uma copia de df com toda coluna datetime tz-aware
     convertida pra tz-naive (so' tira o timezone, nao desloca a hora --

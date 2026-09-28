@@ -51,6 +51,7 @@ import db  # noqa: E402
 from parser_egc import processar_pdf, extrair_despesas_admin_itens  # noqa: E402
 from validacoes import checar_fechamento_bp, formatar_br  # noqa: E402
 from importacoes_ui import chave_ordenacao_previa, agrupar_historico_importacoes  # noqa: E402
+import formatacao  # noqa: E402
 
 NOME_POR_COD = {cod: nome for cod, nome, _cnpj in EMPRESAS_FIXAS}
 
@@ -163,6 +164,30 @@ if resultados:
     algum_erro = False
     for i, r in enumerate(resultados):
         with st.expander(f"📄 {r['arquivo']}", expanded=True):
+            # FIX_20260929 (Rafael testando o reset: subiu por engano um
+            # PDF antigo -- "Consolidado Grupo Enermais" -- misturado no
+            # lote; o arquivo tem CNPJ valido e contas extraidas, entao
+            # nao caia em nenhum dos 2 casos de erro automatico abaixo
+            # (CNPJ nao bate / sem dados) -- nao tinha como tirar da
+            # lista sem reiniciar a pagina inteira. Remover/desmarcar
+            # agora fica disponivel em QUALQUER arquivo, com erro
+            # detectado ou nao -- a contadora decide, o sistema nao
+            # precisa "adivinhar" que aquele arquivo especifico e' ruim.
+            col_incl, col_rem = st.columns([3, 1])
+            incluir = col_incl.checkbox(
+                "Incluir nesta gravação", value=True, key=f"incluir_{i}",
+                help="Desmarque pra deixar este arquivo de fora do grupo de gravação "
+                     "abaixo, sem perder o processamento (fica pendente na lista).",
+            )
+            r["_incluir"] = incluir
+            if col_rem.button("🗑️ Remover da lista", key=f"remover_manual_{i}"):
+                st.session_state["import_resultados"] = [
+                    x for x in st.session_state["import_resultados"] if x is not r
+                ]
+                if not st.session_state["import_resultados"]:
+                    del st.session_state["import_resultados"]
+                st.rerun()
+
             for nivel, arq, tipo, msg in r["log"]:
                 if nivel == "ERRO":
                     algum_erro = True
@@ -199,15 +224,9 @@ if resultados:
                     r["_bloqueado"] = True
                     st.error(
                         f"⚠️ CNPJ {cnpj} não corresponde a nenhuma das 6 empresas cadastradas. "
-                        "Este arquivo NÃO será gravado (confira se é o PDF certo)."
+                        "Este arquivo NÃO será gravado (confira se é o PDF certo) -- use "
+                        "\"Remover da lista\" no topo do card pra tirá-lo."
                     )
-                    if st.button("🗑️ Remover da lista", key=f"remover_{i}"):
-                        st.session_state["import_resultados"] = [
-                            x for x in st.session_state["import_resultados"] if x is not r
-                        ]
-                        if not st.session_state["import_resultados"]:
-                            del st.session_state["import_resultados"]
-                        st.rerun()
                 else:
                     st.warning("CNPJ não identificado neste PDF — selecione a empresa manualmente:")
                     # FIX_20260928g: opção -1 = "-- selecione --" como default
@@ -245,15 +264,9 @@ if resultados:
                     st.warning(
                         "⚠️ Nenhuma conta de BP ou DRE foi extraída deste arquivo (tipo de "
                         "documento não suportado, ex.: Balancete, ou PDF sem essas páginas). "
-                        "Não há nada pra gravar — este arquivo não aparece na seção de gravação."
+                        "Não há nada pra gravar — este arquivo não aparece na seção de gravação "
+                        "(use \"Remover da lista\" no topo do card pra tirá-lo)."
                     )
-                    if st.button("🗑️ Remover da lista", key=f"remover_semdados_{i}"):
-                        st.session_state["import_resultados"] = [
-                            x for x in st.session_state["import_resultados"] if x is not r
-                        ]
-                        if not st.session_state["import_resultados"]:
-                            del st.session_state["import_resultados"]
-                        st.rerun()
 
             if r["bp_rows"]:
                 st.write(f"**BP — {len(r['bp_rows'])} contas**")
@@ -283,8 +296,16 @@ if resultados:
     grupos = {}
     bloqueados = [r for r in resultados if r["_bloqueado"]]
     sem_dados = [r for r in resultados if r["_sem_dados"]]
+    # FIX_20260929: checkbox "Incluir nesta gravação" (default True) deixa
+    # fora do grupo sem precisar remover -- resolve o caso de um arquivo
+    # que processa normal (CNPJ ok, tem contas) mas a contadora nao quer
+    # gravar agora (ex.: PDF antigo/errado misturado no lote por engano).
+    excluidos_checkbox = [
+        r for r in resultados
+        if not r["_bloqueado"] and not r["_sem_dados"] and r["_cod"] and not r.get("_incluir", True)
+    ]
     for r in resultados:
-        if r["_bloqueado"] or r["_sem_dados"] or not r["_cod"]:
+        if r["_bloqueado"] or r["_sem_dados"] or not r["_cod"] or not r.get("_incluir", True):
             continue
         g = grupos.setdefault(r["_cod"], {"nome": r["_nome"], "itens": []})
         g["itens"].append(r)
@@ -295,6 +316,9 @@ if resultados:
         st.caption(f"{len(bloqueados)} arquivo(s) não identificado(s) não aparecem aqui — veja o aviso na prévia acima.")
     if sem_dados:
         st.caption(f"{len(sem_dados)} arquivo(s) sem BP/DRE extraído não aparecem aqui — veja o aviso na prévia acima.")
+    if excluidos_checkbox:
+        nomes_excl = ", ".join(x["arquivo"] for x in excluidos_checkbox)
+        st.caption(f"☐ {len(excluidos_checkbox)} arquivo(s) desmarcado(s) não entram na gravação: {nomes_excl}")
 
     if not grupos:
         st.info("Nenhum arquivo pronto pra gravar ainda.")
@@ -409,7 +433,7 @@ else:
         cod_ev = ev["empresa_codigo"]
         periodo_ev = ev["periodo"]
         nome_ev = NOME_POR_COD.get(cod_ev, cod_ev)
-        quando = ev["criado_em"].strftime("%d/%m/%Y %H:%M") if ev["criado_em"] else "?"
+        quando = formatacao.hora_br(ev["criado_em"], vazio="?")
         tipos_label = ", ".join(t for t, _msg in ev["tipos"]) or "?"
         col_a, col_b = st.columns([4, 1])
         col_a.write(
