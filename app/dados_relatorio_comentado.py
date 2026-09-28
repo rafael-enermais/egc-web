@@ -58,6 +58,7 @@ import pandas as pd
 
 import db
 import indicadores
+import visao_grupo
 
 # Contas cujo nome_saida (BP) e' o TOTALIZADOR do proprio grupo -- ver
 # parser_egc.BP_TARGETS. Usado pra separar "item de linha" de "subtotal
@@ -591,7 +592,7 @@ def _montar_anexo_multi_periodo(bp_por_periodo: list, lado: str) -> list:
 
 def montar_dados_relatorio_comparativo(
     conn,
-    empresa_codigo: str,
+    empresas_codigos,
     periodos: list,
     periodos_labels: list,
     periodo_range_label: str,
@@ -600,7 +601,23 @@ def montar_dados_relatorio_comparativo(
 ) -> dict:
     """Monta o dict pronto pra
     gerador_relatorio_comparativo.gerar_pdf_comparativo(dados, caminho)
-    -- Modelo B, evolução entre 2 a 4 períodos da MESMA empresa.
+    -- Modelo B, evolução entre 2 a 4 períodos.
+
+    `empresas_codigos`: list[str] com 1 ou mais códigos (ver
+    conexao.EMPRESAS_FIXAS). 1 código só = comportamento de sempre (1
+    empresa). 2+ códigos = CONSOLIDADO (soma) entre as empresas
+    escolhidas em cada período -- pedido do Rafael 29/09/2026: "tem q
+    ser possivel gerar o evolutivo só da Enermais energia, com energia e
+    outro (exemplo) ou com todos os CNPJ no montante". Mesmo princípio
+    já usado na Visão Grupo (visao_grupo.montar_pivot_grupo/
+    montar_serie_kpis_grupo) e já testado no Modelo A
+    (test_gerador_completo.py::test_anexo_multi_coluna_empresas...) --
+    reaproveitado aqui, não reimplementado: os KPIs (Receita/EBITDA/
+    Resultado/Ativo/PL) são a SOMA dos valores já calculados por
+    `montar_dados_relatorio` de cada empresa (tudo aditivo -- sem
+    eliminação entre empresas, mesma premissa da Visão Grupo); o Anexo
+    consolidado vem de `db.listar_lancamentos_grupo` +
+    `visao_grupo.montar_pivot_grupo` (coluna "VALOR CONSOLIDADO").
 
     `periodos`: list[date] em ordem cronológica (mais antigo primeiro).
     `periodos_labels`: rótulo de cada período NA MESMA ORDEM/tamanho de
@@ -610,10 +627,16 @@ def montar_dados_relatorio_comparativo(
     `admin`: mesmo dict opcional do Modelo A (nome/cargo de
     administrador e contador, e-mail, site).
 
-    Escopo desta 1ª versão: 1 empresa só (multi-empresa consolidado, que
-    o motor de desenho também suporta via `empresas_codigos`/logo de
-    grupo, fica pra quando houver pedido concreto -- não inventar
-    escopo sem uso real definido)."""
+    FIX_20260929i: com 2+ empresas, cada período tem que existir (status
+    ATIVO) em TODAS elas -- somar um período que 1 empresa não tem daria
+    um "consolidado" incompleto sem avisar (`montar_dados_relatorio`
+    NÃO levanta exceção pra BP/DRE ausente, só devolve 0.0 -- correto
+    pro caso de 1 empresa só, perigoso aqui: um 0.0 silencioso de uma
+    empresa que na verdade tem número real em outro lugar do sistema
+    passaria despercebido no "montante"). Checagem AQUI (não só na
+    tela) pra função ficar segura mesmo chamada direto."""
+    if not empresas_codigos:
+        raise ValueError("empresas_codigos precisa ter pelo menos 1 empresa")
     if len(periodos) != len(periodos_labels):
         raise ValueError("periodos e periodos_labels precisam ter o mesmo tamanho")
     if not (2 <= len(periodos) <= 4):
@@ -622,17 +645,44 @@ def montar_dados_relatorio_comparativo(
     admin = admin or {}
     data_geracao = data_geracao or date.today().strftime("%d/%m/%Y")
 
-    empresas = {e["codigo"]: e for e in db.listar_empresas(conn)}
-    empresa = empresas.get(empresa_codigo, {})
+    empresas_map = {e["codigo"]: e for e in db.listar_empresas(conn)}
+    grupo = len(empresas_codigos) > 1
+
+    if grupo:
+        for cod in empresas_codigos:
+            periodos_da_empresa = set(db.listar_periodos(conn, cod, status="ATIVO"))
+            faltando = [p for p in periodos if p not in periodos_da_empresa]
+            if faltando:
+                faltando_txt = ", ".join(p.strftime("%m/%Y") for p in faltando)
+                raise ValueError(
+                    f"{cod} não tem período ativo em {faltando_txt} -- remova esse(s) período(s) "
+                    f"ou desmarque {cod} da seleção pra gerar o comparativo consolidado."
+                )
+
+    campos_kpi = [campo for campo, _ in _METRICAS_FLUXO + _METRICAS_SALDO]
 
     dados_por_periodo = []
     bp_por_periodo = []
     for periodo in periodos:
-        dados_p, _incluir_resultado = montar_dados_relatorio(
-            conn, empresa_codigo, periodo, periodo_label=str(periodo),
-        )
-        dados_por_periodo.append(dados_p)
-        bp_por_periodo.append(db.listar_lancamentos(conn, empresa_codigo, periodo, "BP"))
+        somas = {campo: 0.0 for campo in campos_kpi}
+        for cod in empresas_codigos:
+            dados_p, _incluir_resultado = montar_dados_relatorio(
+                conn, cod, periodo, periodo_label=str(periodo),
+            )
+            for campo in campos_kpi:
+                somas[campo] += dados_p[campo]
+        dados_por_periodo.append(somas)
+
+        if grupo:
+            lancs = db.listar_lancamentos_grupo(conn, periodo, "BP", empresas_codigos)
+            pivot = visao_grupo.montar_pivot_grupo(lancs, empresas_codigos)
+            bp_periodo = [
+                {"grupo": row["grupo"], "conta": row["conta"], "valor": row["VALOR CONSOLIDADO"]}
+                for row in pivot.to_dict("records")
+            ]
+        else:
+            bp_periodo = db.listar_lancamentos(conn, empresas_codigos[0], periodo, "BP")
+        bp_por_periodo.append(bp_periodo)
 
     def _serie(campo):
         return [d[campo] for d in dados_por_periodo]
@@ -656,11 +706,29 @@ def montar_dados_relatorio_comparativo(
     anexo_ativo = _montar_anexo_multi_periodo(bp_por_periodo, "ATIVO")
     anexo_passivo = _montar_anexo_multi_periodo(bp_por_periodo, "PASSIVO")
 
-    nome_empresa = empresa.get("nome", empresa_codigo)
+    if grupo:
+        # "Grupo Enermais" pro nome grande (mesma convenção já usada e
+        # testada no Modelo A -- test_anexo_multi_coluna_empresas..., que
+        # usa esse nome mesmo pra 2 de 6 empresas, não só quando TODAS
+        # estão selecionadas); a composição exata (quais/quantas) fica
+        # no escopo_label, que aparece logo abaixo do título na pág. 2.
+        nome_empresa = "Grupo Enermais"
+        cnpj = ""
+        escopo_label = (
+            f"Grupo Enermais ({len(empresas_codigos)} empresas: "
+            f"{' + '.join(empresas_codigos)}) · {periodo_range_label}"
+        )
+    else:
+        empresa = empresas_map.get(empresas_codigos[0], {})
+        nome_empresa = empresa.get("nome", empresas_codigos[0])
+        cnpj = empresa.get("cnpj", "")
+        escopo_label = f"{nome_empresa} · {periodo_range_label}"
+
     return dict(
-        empresa_codigo=empresa_codigo,
+        empresa_codigo=empresas_codigos[0],
+        empresas_codigos=list(empresas_codigos),
         empresa_nome=nome_empresa,
-        cnpj=empresa.get("cnpj", ""),
+        cnpj=cnpj,
         cabecalho_relatorio=f"Evolução Financeira · {periodo_range_label}",
         periodos_labels=list(periodos_labels),
         periodo_range_label=periodo_range_label,
@@ -669,7 +737,7 @@ def montar_dados_relatorio_comparativo(
         kpis_saldo=kpis_saldo,
         grafico_evolucao_metricas=grafico_evolucao_metricas,
         anexo_colunas=list(periodos_labels),
-        anexo_escopo_label=f"{nome_empresa} · {periodo_range_label}",
+        anexo_escopo_label=escopo_label,
         anexo_ativo=anexo_ativo,
         anexo_passivo=anexo_passivo,
         nome_administrador=admin.get("nome_administrador", ""),

@@ -10,13 +10,32 @@ Escopo original desta 1ª versão: 1 empresa + 1 período por geração.
 
 FIX_20260929h (Rafael, 29/09: "por mim podemos implantar o
 multi-periodos ja tb"): tela agora tem 2 modos -- "Período único"
-(fluxo de sempre, Modelo A) e "Comparativo" (Modelo B, 2 a 4 períodos
-da MESMA empresa, gerador_relatorio_comparativo.py +
-drc.montar_dados_relatorio_comparativo). Multi-EMPRESA consolidado
-(mais de 1 CNPJ no mesmo relatório) o motor de desenho também suporta
-via `empresas_codigos`/logo de grupo, mas fica pra quando houver pedido
-concreto -- não decidir sozinho esse desenho sem o Rafael ver o
-comparativo de 1 empresa rodando primeiro.
+(fluxo de sempre, Modelo A) e "Comparativo" (Modelo B, 2 a 4 períodos,
+gerador_relatorio_comparativo.py + drc.montar_dados_relatorio_comparativo).
+
+FIX_20260929i/j (Rafael, 29/09, ao conferir o 1º PDF comparativo real:
+"Falta o seletor de CNPJ não? ... tem q ser possivel gerar o evolutivo
+só da Enermais energia, com energia e outro (exemplo) ou com todos os
+CNPJ no montante"): modo Comparativo agora tem seletor de empresas
+(multiselect) -- 1 empresa sozinha, um subconjunto consolidado, ou
+todas (grupo no montante), reaproveitando a infra de Visão Grupo já
+testada (db.listar_lancamentos_grupo + visao_grupo.montar_pivot_grupo)
+por baixo de drc.montar_dados_relatorio_comparativo(empresas_codigos=).
+Os períodos oferecidos são a INTERSEÇÃO dos períodos ativos de todas as
+empresas escolhidas -- período que falta numa delas some da lista antes
+mesmo de tentar gerar (mais barato que deixar o botão falhar depois).
+
+Na mesma verificação, achado um bug real de UI (não do motor de
+desenho nem dos dados): as colunas do PDF real saíram com cabeçalho
+"12/2023, 06/2026, 06/2026, 06/2026" -- rótulo repetido, apesar dos
+valores financeiros de cada coluna estarem corretos e diferentes entre
+si (prova de que só o RÓTULO da UI estava errado, não o dado). Causa:
+key do text_input por índice posicional (`..._label_{i}`), que o
+Streamlit reusa entre reruns mesmo quando o período daquele slot muda
+(gotcha documentado: `value=` só é aplicado na 1ª vez que a key existe
+em session_state). Fix: key amarrada ao conjunto exato de períodos
+selecionados (`combo_key`), não ao índice -- qualquer mudança na
+seleção força uma key nova e o rótulo correto.
 
 Inputs editáveis na tela (decisão do Rafael, 24/09 e 28/09): período
 (label/extenso) e administrador/contador/e-mail/site — nenhum vem de
@@ -82,6 +101,7 @@ periodo_extenso = ""
 periodos_multi: list = []
 periodos_labels_multi: list = []
 periodo_range_label = ""
+empresas_multi: list = []
 
 if modo == "Período único":
     periodo_sel = st.selectbox(
@@ -106,14 +126,44 @@ if modo == "Período único":
             help='Ex.: "janeiro a junho de 2026". Pode deixar em branco.',
         )
 else:
+    st.subheader("Empresas no comparativo")
+    st.caption(
+        "Escolha 1 empresa (relatório dela sozinha), um subconjunto (consolidado dessas empresas) "
+        "ou todas (grupo Enermais no montante)."
+    )
+    empresas_sel_raw = st.multiselect(
+        "Empresas", [cod for cod, _n, _c in EMPRESAS_FIXAS],
+        default=[cod_empresa], format_func=lambda c: f"{NOME_POR_COD.get(c, c)} ({c})",
+        key="relatorio_empresas_multi",
+    )
+    empresas_multi = list(empresas_sel_raw)
+
+    periodos_ativos_multi: list = []
+    if not empresas_multi:
+        st.warning("Escolha pelo menos 1 empresa.")
+    else:
+        try:
+            periodos_por_empresa = [
+                set(db.listar_periodos(conn, cod, status="ATIVO")) for cod in empresas_multi
+            ]
+            periodos_ativos_multi = sorted(set.intersection(*periodos_por_empresa))
+        except Exception as exc:
+            st.error(f"Não foi possível consultar os períodos: {exc}")
+        if len(empresas_multi) > 1 and not periodos_ativos_multi:
+            st.warning(
+                "Nenhum período em comum entre as empresas escolhidas (cada uma tem período ativo "
+                "em datas diferentes) — reduza a seleção de empresas ou confirme os períodos importados."
+            )
+
     st.subheader("Períodos a comparar")
     st.caption(
-        "Escolha de 2 a 4 períodos da mesma empresa (ordem cronológica é ajustada "
-        "automaticamente, não importa a ordem do clique) e confirme o rótulo de cada coluna — "
-        "mesmo princípio do período único: o sistema não infere o texto sozinho."
+        "Escolha de 2 a 4 períodos (ordem cronológica é ajustada automaticamente, não importa a "
+        "ordem do clique) e confirme o rótulo de cada coluna — mesmo princípio do período único: "
+        "o sistema não infere o texto sozinho. Só aparecem aqui os períodos que TODAS as empresas "
+        "escolhidas acima têm ativos."
     )
     periodos_sel_raw = st.multiselect(
-        "Períodos (data de posição do BP)", periodos_ativos,
+        "Períodos (data de posição do BP)", periodos_ativos_multi,
         format_func=lambda p: p.strftime("%d/%m/%Y"), key="relatorio_periodos_multi",
     )
     periodos_multi = sorted(periodos_sel_raw)
@@ -122,17 +172,22 @@ else:
         st.warning("Escolha de 2 a 4 períodos pra gerar o comparativo (motor de desenho aceita esse intervalo).")
 
     if 2 <= len(periodos_multi) <= 4:
+        # FIX_20260929j: key amarrada ao conjunto EXATO de períodos
+        # selecionados, não ao índice posicional -- ver docstring do
+        # módulo pro diagnóstico completo do bug (rótulo repetido no 1º
+        # PDF real do Rafael).
+        combo_key = "_".join(p.isoformat() for p in periodos_multi)
         cols_label = st.columns(len(periodos_multi))
         for i, (col, periodo) in enumerate(zip(cols_label, periodos_multi)):
             rotulo = col.text_input(
                 periodo.strftime("%d/%m/%Y"), value=periodo.strftime("%m/%Y"),
-                key=f"relatorio_periodo_multi_label_{i}",
+                key=f"relatorio_periodo_multi_label_{combo_key}_{i}",
             )
             periodos_labels_multi.append(rotulo)
         periodo_range_label = st.text_input(
             "Rótulo do intervalo (capa)",
             value=f"{periodos_labels_multi[0]} A {periodos_labels_multi[-1]}",
-            key="relatorio_periodo_range_label",
+            key=f"relatorio_periodo_range_label_{combo_key}",
         )
 
 st.divider()
@@ -217,7 +272,7 @@ site_empresa = col4.text_input("Site da empresa", value="", key="relatorio_site"
 
 st.divider()
 
-pode_gerar = modo == "Período único" or (2 <= len(periodos_multi) <= 4)
+pode_gerar = modo == "Período único" or (2 <= len(periodos_multi) <= 4 and bool(empresas_multi))
 
 if st.button("Gerar relatório", type="primary", key="relatorio_gerar_btn", disabled=not pode_gerar):
     admin = dict(
@@ -248,16 +303,18 @@ if st.button("Gerar relatório", type="primary", key="relatorio_gerar_btn", disa
                     "provisionado como linha própria (regime de lucro presumido)."
                 )
             periodos_para_log = [periodo_sel]
+            empresas_para_log = [cod_empresa]
         else:
             range_label = periodo_range_label.strip() or f"{periodos_labels_multi[0]} A {periodos_labels_multi[-1]}"
             with st.spinner("Buscando dados e montando o relatório comparativo..."):
                 dados = drc.montar_dados_relatorio_comparativo(
-                    conn, empresa_codigo=cod_empresa, periodos=periodos_multi,
+                    conn, empresas_codigos=empresas_multi, periodos=periodos_multi,
                     periodos_labels=[lbl.strip() or p.strftime("%m/%Y") for lbl, p in zip(periodos_labels_multi, periodos_multi)],
                     periodo_range_label=range_label, admin=admin,
                 )
+                sufixo_empresas = "GRUPO" if len(empresas_multi) > 1 else empresas_multi[0]
                 nome_arquivo = (
-                    f"Evolucao_{cod_empresa}_{periodos_multi[0].strftime('%Y%m')}"
+                    f"Evolucao_{sufixo_empresas}_{periodos_multi[0].strftime('%Y%m')}"
                     f"_{periodos_multi[-1].strftime('%Y%m')}.pdf"
                 )
                 caminho = f"/tmp/{nome_arquivo}"
@@ -266,16 +323,17 @@ if st.button("Gerar relatório", type="primary", key="relatorio_gerar_btn", disa
                 pdf_bytes = f.read()
             st.success(
                 f"Relatório comparativo gerado ({len(pdf_bytes) // 1024} KB, 5 páginas, "
-                f"{len(periodos_multi)} períodos)."
+                f"{len(periodos_multi)} períodos, {len(empresas_multi)} empresa(s))."
             )
             periodos_para_log = periodos_multi
+            empresas_para_log = empresas_multi
         st.download_button(
             "⬇️ Baixar PDF", data=pdf_bytes, file_name=nome_arquivo, mime="application/pdf",
             key="relatorio_download_btn",
         )
         try:
             db.registrar_relatorio_gerado(
-                conn, empresas_codigos=[cod_empresa], periodos=periodos_para_log,
+                conn, empresas_codigos=empresas_para_log, periodos=periodos_para_log,
                 arquivo=nome_arquivo, usuario=usuario,
             )
         except Exception:
