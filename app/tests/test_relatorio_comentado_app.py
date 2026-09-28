@@ -27,6 +27,8 @@ import conexao  # noqa: E402
 import db  # noqa: E402
 import dados_relatorio_comentado as drc  # noqa: E402
 
+NOVO_SENTINELA = "➕ Cadastrar novo…"
+
 PAGE = str(Path(__file__).resolve().parent.parent / "telas" / "8_Relatorio_Comentado.py")
 
 PERIODO = datetime.date(2026, 6, 30)
@@ -67,6 +69,11 @@ def test_sem_periodo_mostra_info_sem_excecao():
 
 
 def test_carrega_formulario_com_periodo_disponivel():
+    # FIX_20260928 (dropdown+histórico de contatos, bloco 13): sem contato
+    # nenhum salvo (listar_contatos_relatorio falha com conn=None, cai no
+    # except -> [] -- mesmo comportamento de tabela ainda não migrada), o
+    # seletor cai pro sentinela "cadastrar novo" e os campos de nome/cargo
+    # viram relatorio_novo_nome_/relatorio_novo_cargo_<TIPO>.
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=[PERIODO]):
@@ -74,8 +81,30 @@ def test_carrega_formulario_com_periodo_disponivel():
         at.run(timeout=30)
         assert not at.exception, f"excecao carregando formulario: {at.exception}"
         assert at.text_input(key="relatorio_periodo_label").value == "06/2026"
-        assert at.text_input(key="relatorio_cargo_admin").value == "Administrador"
-        print("OK: Relatório Comentado — formulário carrega com defaults certos")
+        assert at.selectbox(key="relatorio_contato_sel_ADMINISTRADOR").value == NOVO_SENTINELA
+        assert at.text_input(key="relatorio_novo_cargo_ADMINISTRADOR").value == "Administrador"
+        assert at.selectbox(key="relatorio_contato_sel_CONTADOR").value == NOVO_SENTINELA
+        assert at.text_input(key="relatorio_novo_cargo_CONTADOR").value == "Contador"
+        print("OK: Relatório Comentado — formulário carrega com defaults certos (sem contato salvo, cai pro 'novo')")
+
+
+def test_seletor_de_contato_salvo_preenche_nome_e_cargo():
+    contatos = [{"id": 1, "tipo": "ADMINISTRADOR", "nome": "Edilson Nazário",
+                 "cargo": "Diretor Financeiro", "email": "edilson@enermais.com.br"}]
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos", return_value=[PERIODO]), \
+         patch.object(db, "listar_contatos_relatorio",
+                      side_effect=lambda conn, tipo: contatos if tipo == "ADMINISTRADOR" else []):
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        sel = at.selectbox(key="relatorio_contato_sel_ADMINISTRADOR")
+        assert "Edilson Nazário — Diretor Financeiro" in sel.options
+        sel.set_value("Edilson Nazário — Diretor Financeiro").run(timeout=30)
+        assert not at.exception, f"excecao selecionando contato salvo: {at.exception}"
+        # com contato salvo selecionado, nao aparecem mais os campos de "novo cadastro"
+        assert not any(ti.key == "relatorio_novo_nome_ADMINISTRADOR" for ti in at.text_input)
+        print("OK: Relatório Comentado — selecionar um contato salvo preenche nome/cargo sem exceção")
 
 
 def test_gerar_relatorio_chama_pipeline_e_nao_quebra():
@@ -98,4 +127,5 @@ def test_gerar_relatorio_chama_pipeline_e_nao_quebra():
 if __name__ == "__main__":
     test_sem_periodo_mostra_info_sem_excecao()
     test_carrega_formulario_com_periodo_disponivel()
+    test_seletor_de_contato_salvo_preenche_nome_e_cargo()
     test_gerar_relatorio_chama_pipeline_e_nao_quebra()

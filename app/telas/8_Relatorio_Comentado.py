@@ -83,15 +83,72 @@ with col2:
     )
 
 st.subheader("Administrador, contador e contato")
+
+
+def _seletor_contato(tipo: str, cargo_padrao: str, col) -> tuple[str, str]:
+    """
+    FIX_20260928 (Rafael: "normalmente são as mesmas pessoas... conseguimos
+    salvar com dropdown e histórico?"): dropdown carregando contatos já
+    salvos (egc.contatos_relatorio, bloco 13) + opção "cadastrar novo" +
+    expander pra editar o contato selecionado -- sem trocar a decisão de
+    24/09 (continua editável na hora de gerar, nome/cargo digitados aqui
+    são o que vai pro PDF, independente de estarem ou não salvos). Se a
+    migração do bloco 13 ainda não rodou, listar_contatos_relatorio
+    devolve [] e a tela cai pro comportamento antigo (só o campo "novo
+    contato"), sem quebrar.
+    NOVO_SENTINELA: opção fixa pra "não é nenhum salvo, vou digitar" --
+    string improvável de colidir com nome real, nunca gravada no banco.
+    """
+    NOVO_SENTINELA = "➕ Cadastrar novo…"
+    try:
+        salvos = db.listar_contatos_relatorio(conn, tipo)
+    except Exception:
+        salvos = []
+
+    opcoes = [NOVO_SENTINELA] + [f"{c['nome']} — {c['cargo']}" for c in salvos]
+    sel = col.selectbox(f"{tipo.capitalize()}", opcoes, key=f"relatorio_contato_sel_{tipo}")
+
+    if sel == NOVO_SENTINELA:
+        nome = col.text_input("Nome", value="", key=f"relatorio_novo_nome_{tipo}")
+        cargo = col.text_input("Cargo", value=cargo_padrao, key=f"relatorio_novo_cargo_{tipo}")
+        email = col.text_input("E-mail (opcional, só cadastro)", value="", key=f"relatorio_novo_email_{tipo}")
+        if col.button("💾 Salvar contato", key=f"relatorio_salvar_novo_{tipo}", disabled=not nome.strip()):
+            novo_id = db.salvar_contato_relatorio(
+                conn, tipo=tipo, nome=nome.strip(), cargo=cargo.strip() or cargo_padrao,
+                email=email.strip() or None, usuario=usuario,
+            )
+            if novo_id is not None:
+                col.success(f"{nome} salvo — já aparece no dropdown na próxima vez.")
+            else:
+                col.warning(
+                    "Não consegui salvar (tabela egc.contatos_relatorio ainda não existe no banco -- "
+                    "rode o bloco 13 do schema.sql). O relatório usa o nome/cargo digitados aqui normalmente."
+                )
+        return nome, cargo or cargo_padrao
+
+    contato = next(c for c in salvos if f"{c['nome']} — {c['cargo']}" == sel)
+    with col.expander(f"✏️ Editar {contato['nome']}"):
+        novo_nome = st.text_input("Nome", value=contato["nome"], key=f"relatorio_edit_nome_{tipo}_{contato['id']}")
+        novo_cargo = st.text_input("Cargo", value=contato["cargo"], key=f"relatorio_edit_cargo_{tipo}_{contato['id']}")
+        novo_email = st.text_input(
+            "E-mail (opcional, só cadastro)", value=contato.get("email") or "",
+            key=f"relatorio_edit_email_{tipo}_{contato['id']}",
+        )
+        if st.button("💾 Salvar edição", key=f"relatorio_salvar_edit_{tipo}_{contato['id']}"):
+            db.salvar_contato_relatorio(
+                conn, tipo=tipo, nome=novo_nome.strip(), cargo=novo_cargo.strip(),
+                email=novo_email.strip() or None, contato_id=contato["id"], usuario=usuario,
+            )
+            st.success("Contato atualizado.")
+            st.rerun()
+    return contato["nome"], contato["cargo"]
+
+
 col3, col4 = st.columns(2)
-with col3:
-    nome_administrador = st.text_input("Nome do administrador", value="", key="relatorio_nome_admin")
-    cargo_administrador = st.text_input("Cargo do administrador", value="Administrador", key="relatorio_cargo_admin")
-    email_empresa = st.text_input("E-mail da empresa", value="", key="relatorio_email")
-with col4:
-    nome_contador = st.text_input("Nome do contador", value="", key="relatorio_nome_contador")
-    cargo_contador = st.text_input("Cargo do contador", value="Contador", key="relatorio_cargo_contador")
-    site_empresa = st.text_input("Site da empresa", value="", key="relatorio_site")
+nome_administrador, cargo_administrador = _seletor_contato("ADMINISTRADOR", "Administrador", col3)
+email_empresa = col3.text_input("E-mail da empresa", value="", key="relatorio_email")
+nome_contador, cargo_contador = _seletor_contato("CONTADOR", "Contador", col4)
+site_empresa = col4.text_input("Site da empresa", value="", key="relatorio_site")
 
 st.divider()
 

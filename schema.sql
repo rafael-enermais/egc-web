@@ -531,3 +531,44 @@ CREATE POLICY egc_app_full_access ON egc.despesas_admin_itens FOR ALL TO egc_app
 
 -- Fim do bloco 12. Rodar so' este bloco no SQL Editor do Supabase
 -- (projeto radar-comercial) -- nao precisa rodar o arquivo inteiro de novo.
+
+-- =====================================================================
+-- BLOCO 13 — Contatos salvos (administrador/contador) do Relatorio Comentado
+--
+--   Pedido do Rafael 28/09/2026: os campos de administrador/contador da
+--   tela 8_Relatorio_Comentado.py (nome+cargo, decisao de 24/09 -- inputs
+--   editaveis, nao tabela fixa por empresa) sao quase sempre as MESMAS
+--   pessoas -- preencher a mao toda vez e' retrabalho. Dropdown com
+--   historico (esta tabela) + opcao de cadastrar/editar direto na tela,
+--   sem trocar a decisao de 24/09 (continua editavel na hora de gerar,
+--   so' ganha atalho pra nao digitar de novo).
+--
+--   NAO tem empresa_codigo de proposito -- mesma pessoa serve pras 6
+--   empresas do grupo (ex.: 1 contador so' pra todas), reaproveitamento e'
+--   o ponto do pedido. Email aqui e' so' cadastro/registro do contato
+--   (nao e' o email_empresa/site_empresa da tela, que e' institucional
+--   da empresa, campo separado e sem mudanca).
+-- =====================================================================
+
+CREATE TABLE IF NOT EXISTS egc.contatos_relatorio (
+  id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  tipo           text NOT NULL CHECK (tipo IN ('ADMINISTRADOR','CONTADOR')),
+  nome           text NOT NULL,
+  cargo          text NOT NULL,
+  email          text,
+  usuario        text,
+  criado_em      timestamptz NOT NULL DEFAULT now(),
+  atualizado_em  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_contatos_relatorio_tipo ON egc.contatos_relatorio (tipo, nome);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON egc.contatos_relatorio TO egc_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA egc TO egc_app;
+
+ALTER TABLE egc.contatos_relatorio ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS egc_app_full_access ON egc.contatos_relatorio;
+CREATE POLICY egc_app_full_access ON egc.contatos_relatorio FOR ALL TO egc_app USING (true) WITH CHECK (true);
+
+-- Fim do bloco 13. Rodar so' este bloco no SQL Editor do Supabase
+-- (projeto radar-comercial) -- nao precisa rodar o arquivo inteiro de novo.

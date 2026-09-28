@@ -777,6 +777,76 @@ def listar_relatorios_gerados(conn, limite: int = 20) -> list[dict]:
 
 
 # ─────────────────────────────────────────────
+#  CONTATOS DO RELATORIO (administrador/contador salvos — bloco 13)
+# ─────────────────────────────────────────────
+
+def listar_contatos_relatorio(conn, tipo: str) -> list[dict]:
+    """
+    Contatos salvos de um tipo ('ADMINISTRADOR' ou 'CONTADOR'), pra
+    popular o dropdown da tela 8_Relatorio_Comentado.py (pedido do
+    Rafael 28/09/2026: "normalmente são as mesmas pessoas" -- reaproveita
+    entre as 6 empresas, sem empresa_codigo de proposito). Lista vazia
+    (nunca erro) se a migracao do bloco 13 ainda nao rodou -- mesmo padrao
+    de fallback ja usado em listar_despesas_admin_itens, a tela degrada
+    pro comportamento antigo (inputs em branco) sem quebrar.
+    """
+    with conn.cursor() as cur:
+        try:
+            cur.execute(
+                """
+                SELECT id, tipo, nome, cargo, email
+                FROM egc.contatos_relatorio
+                WHERE tipo = %s
+                ORDER BY nome
+                """,
+                (tipo,),
+            )
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+        except psycopg2.errors.UndefinedTable:
+            conn.rollback()
+            return []
+
+
+def salvar_contato_relatorio(
+    conn, tipo: str, nome: str, cargo: str, email: Optional[str] = None,
+    contato_id: Optional[int] = None, usuario: Optional[str] = None,
+) -> Optional[int]:
+    """
+    Cria (contato_id=None) ou atualiza (contato_id != None) um contato
+    salvo. Retorna o id, ou None se a tabela ainda nao existir (migracao
+    do bloco 13 pendente) -- a tela avisa e segue com o campo digitado
+    na mao, nao trava a geracao do relatorio por causa disso.
+    """
+    with conn.cursor() as cur:
+        try:
+            if contato_id is not None:
+                cur.execute(
+                    """
+                    UPDATE egc.contatos_relatorio
+                    SET nome = %s, cargo = %s, email = %s, usuario = %s, atualizado_em = now()
+                    WHERE id = %s
+                    RETURNING id
+                    """,
+                    (nome, cargo, email, usuario, contato_id),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO egc.contatos_relatorio (tipo, nome, cargo, email, usuario)
+                    VALUES (%s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (tipo, nome, cargo, email, usuario),
+                )
+            row = cur.fetchone()
+            return row[0] if row else None
+        except psycopg2.errors.UndefinedTable:
+            conn.rollback()
+            return None
+
+
+# ─────────────────────────────────────────────
 #  CONTEXTO FISCAL (conhecimento de referencia — Reforma Tributaria)
 # ─────────────────────────────────────────────
 
