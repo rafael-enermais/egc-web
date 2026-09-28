@@ -507,3 +507,175 @@ def montar_dados_relatorio(
         dados["csll_irpj"] = csll_irpj
 
     return dados, tem_csll_irpj
+
+
+# ─────────────────────────────────────────────
+#  MODELO B (comparativo multi-período) -- 29/09/2026
+# ─────────────────────────────────────────────
+#
+# Camada de dados do gerador_relatorio_comparativo.py (motor de desenho ja'
+# existia e tinha teste proprio desde 26/09 -- so' faltava esta camada,
+# que busca do Supabase em vez de fixture). Pedido do Rafael: "por mim
+# podemos implantar o multi-periodos ja tb".
+#
+# Reaproveita montar_dados_relatorio() (Modelo A) PERIODO A PERIODO --
+# nao reimplementa a extracao BP/DRE nem as formulas de indicador de
+# novo, so' recorta os poucos campos que o comparativo precisa de cada
+# periodo ja calculado. Chamado N vezes (2-4 periodos, mesmo teto do
+# motor de desenho) -- redundante buscar o historico completo de novo a
+# cada chamada, mas simples e correto; otimizar (1 so historico
+# compartilhado) fica pra depois se a UI acusar lentidao real.
+
+_METRICAS_FLUXO = [
+    ("receita_liquida", "Receita Operacional Líquida"),
+    ("ebitda", "EBITDA"),
+    ("resultado_liquido", "Resultado Líquido"),
+]
+_METRICAS_SALDO = [
+    ("total_ativo", "Total do Ativo"),
+    ("patrimonio_liquido", "Patrimônio Líquido"),
+]
+
+
+def _montar_anexo_multi_periodo(bp_por_periodo: list, lado: str) -> list:
+    """anexo_ativo/anexo_passivo multi-coluna (Modelo B) a partir de N
+    listas de lançamentos BP (1 por período, MESMA ORDEM de períodos do
+    resto do relatório comparativo).
+
+    Reusa `_montar_anexo` (Modelo A, 1 período) pra cada período e
+    MESCLA as árvores por (tipo, label) em UNIÃO, não interseção: uma
+    conta/subtotal que existe em QUALQUER período do intervalo entra na
+    lista final. Se mesclasse só as contas comuns a todos os períodos,
+    uma conta que tinha saldo num período mais antigo e zerou/sumiu no
+    mais recente desapareceria silenciosamente do comparativo -- o
+    oposto da regra de ouro do módulo (nunca inventa, mas também nunca
+    esconde). Período sem aquela linha recebe 0.0 (ausência de
+    lançamento no período = saldo 0 naquele período, nunca "sem dado").
+
+    Ordem das linhas: a do primeiro período (na lista `bp_por_periodo`)
+    que tiver a linha, na ordem em que aparece lá -- linhas que só
+    aparecem em períodos seguintes (conta nova) entram no fim, na ordem
+    em que forem encontradas.
+
+    Limitação aceita: casa por (tipo, label) exato -- se a mesma conta
+    aparecer como 'conta' solta num período e 'subconta' aninhada
+    (dependente de _HIERARQUIA_BP) noutro, vira 2 linhas em vez de 1.
+    Não tratado aqui por não ter caso real observado ainda; revisar se
+    aparecer."""
+    arvores = [_montar_anexo(bp, lado) for bp in bp_por_periodo]
+    n = len(arvores)
+
+    ordem = []
+    vistas = set()
+    valores: dict = {}
+    for i, arvore in enumerate(arvores):
+        for linha in arvore:
+            tipo, label = linha[0], linha[1]
+            chave = (tipo, label)
+            if chave not in vistas:
+                vistas.add(chave)
+                ordem.append(chave)
+                if tipo != "grupo":
+                    valores[chave] = [0.0] * n
+            if tipo != "grupo":
+                valores[chave][i] = float(linha[2])
+
+    linhas = []
+    for tipo, label in ordem:
+        if tipo == "grupo":
+            linhas.append((tipo, label))
+        else:
+            linhas.append((tipo, label, *valores[(tipo, label)]))
+    return linhas
+
+
+def montar_dados_relatorio_comparativo(
+    conn,
+    empresa_codigo: str,
+    periodos: list,
+    periodos_labels: list,
+    periodo_range_label: str,
+    data_geracao: Optional[str] = None,
+    admin: Optional[dict] = None,
+) -> dict:
+    """Monta o dict pronto pra
+    gerador_relatorio_comparativo.gerar_pdf_comparativo(dados, caminho)
+    -- Modelo B, evolução entre 2 a 4 períodos da MESMA empresa.
+
+    `periodos`: list[date] em ordem cronológica (mais antigo primeiro).
+    `periodos_labels`: rótulo de cada período NA MESMA ORDEM/tamanho de
+    `periodos` (ex. ["2024", "2025", "2026"] ou ["1S2025", "2S2025",
+    "1S2026"]) -- texto que a tela deixa a contadora digitar/confirmar,
+    mesma decisão já tomada pro Modelo A (não inferir sozinho).
+    `admin`: mesmo dict opcional do Modelo A (nome/cargo de
+    administrador e contador, e-mail, site).
+
+    Escopo desta 1ª versão: 1 empresa só (multi-empresa consolidado, que
+    o motor de desenho também suporta via `empresas_codigos`/logo de
+    grupo, fica pra quando houver pedido concreto -- não inventar
+    escopo sem uso real definido)."""
+    if len(periodos) != len(periodos_labels):
+        raise ValueError("periodos e periodos_labels precisam ter o mesmo tamanho")
+    if not (2 <= len(periodos) <= 4):
+        raise ValueError("comparativo aceita de 2 a 4 períodos (mesmo teto do motor de desenho)")
+
+    admin = admin or {}
+    data_geracao = data_geracao or date.today().strftime("%d/%m/%Y")
+
+    empresas = {e["codigo"]: e for e in db.listar_empresas(conn)}
+    empresa = empresas.get(empresa_codigo, {})
+
+    dados_por_periodo = []
+    bp_por_periodo = []
+    for periodo in periodos:
+        dados_p, _incluir_resultado = montar_dados_relatorio(
+            conn, empresa_codigo, periodo, periodo_label=str(periodo),
+        )
+        dados_por_periodo.append(dados_p)
+        bp_por_periodo.append(db.listar_lancamentos(conn, empresa_codigo, periodo, "BP"))
+
+    def _serie(campo):
+        return [d[campo] for d in dados_por_periodo]
+
+    kpis_fluxo = [
+        dict(label=label, tag="fluxo", valores=(vals := _serie(campo)), acumulado=sum(vals))
+        for campo, label in _METRICAS_FLUXO
+    ]
+    kpis_saldo = [
+        dict(label=label, tag="saldo", valores=_serie(campo))
+        for campo, label in _METRICAS_SALDO
+    ]
+    # grafico de evolucao usa o mesmo subconjunto do fluxo (Receita/EBITDA/
+    # Resultado) -- sao os 3 indicadores que mais contam a historia de
+    # "como evoluimos", sem repetir os 5 do Modelo A que nao fazem
+    # sentido pra N periodos (ver docstring de gerar_pdf_comparativo).
+    grafico_evolucao_metricas = [
+        dict(label=label, valores=_serie(campo)) for campo, label in _METRICAS_FLUXO
+    ]
+
+    anexo_ativo = _montar_anexo_multi_periodo(bp_por_periodo, "ATIVO")
+    anexo_passivo = _montar_anexo_multi_periodo(bp_por_periodo, "PASSIVO")
+
+    nome_empresa = empresa.get("nome", empresa_codigo)
+    return dict(
+        empresa_codigo=empresa_codigo,
+        empresa_nome=nome_empresa,
+        cnpj=empresa.get("cnpj", ""),
+        cabecalho_relatorio=f"Evolução Financeira · {periodo_range_label}",
+        periodos_labels=list(periodos_labels),
+        periodo_range_label=periodo_range_label,
+        data_geracao=data_geracao,
+        kpis_fluxo=kpis_fluxo,
+        kpis_saldo=kpis_saldo,
+        grafico_evolucao_metricas=grafico_evolucao_metricas,
+        anexo_colunas=list(periodos_labels),
+        anexo_escopo_label=f"{nome_empresa} · {periodo_range_label}",
+        anexo_ativo=anexo_ativo,
+        anexo_passivo=anexo_passivo,
+        nome_administrador=admin.get("nome_administrador", ""),
+        cargo_administrador=admin.get("cargo_administrador", "Administrador"),
+        nome_contador=admin.get("nome_contador", ""),
+        cargo_contador=admin.get("cargo_contador", "Contador"),
+        email_empresa=admin.get("email_empresa", ""),
+        site_empresa=admin.get("site_empresa", ""),
+    )

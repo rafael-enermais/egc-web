@@ -116,6 +116,112 @@ def pagina_capa_comparativa(c, dados, pagina: int, total_paginas: int):
 
 
 # ------------------------------------------------------------------ pagina 2
+# FIX_20260929e/f/g: geometria da tabela de evolução extraída em função
+# pura (sem `canvas`), testável sem gerar PDF -- essa tabela já quebrou
+# 2 vezes (etiqueta invadindo a 1ª coluna de valor, depois colunas de
+# valor se sobrepondo) e as 2 vezes só apareceram na VERIFICAÇÃO VISUAL,
+# nunca no teste automatizado, porque os testes existentes usavam
+# rótulos curtos e números pequenos (o teste do motor de desenho é
+# propositalmente "não valida pixel" -- ver docstring de
+# test_gerador_relatorio_comparativo.py). Extrair a geometria permite um
+# teste de regressão que confere os números de verdade (rótulo mais
+# longo hoje + valor de 8 dígitos, 2 a 4 períodos) sem duplicar a
+# fórmula no teste.
+def _layout_tabela_evolucao(largura, n_col, linhas):
+    """Calcula a geometria da tabela de evolução (larguras de coluna,
+    tamanho de fonte do valor, e por linha: tamanho de fonte do rótulo e
+    posição da etiqueta FLUXO/SALDO) -- tudo em pontos relativos ao x
+    inicial da tabela (0.0), sem desenhar nada. `_tabela_evolucao` só
+    desenha o que isto calcula."""
+    col_var_w = 62.0
+    gap = 6.0
+    # FIX_20260929e (achado gerando o 1º PDF comparativo real, dado da
+    # Energia): a reserva pro label+etiqueta (era 150pt) só bastava pros
+    # rótulos mais curtos ("EBITDA") -- com "Receita Operacional Líquida"
+    # (~137pt em bold 9.5) a etiqueta FLUXO/SALDO, desenhada logo após o
+    # texto do label, invadia a 1ª coluna de valor sempre que havia 3 ou
+    # 4 períodos (menos largura sobra por coluna, x_col(0) fica mais
+    # apertado).
+    #
+    # FIX_20260929f (mesmo PDF real, achado NA VERIFICAÇÃO VISUAL do fix
+    # acima): subir a reserva pra 230pt resolveu a etiqueta, mas encolheu
+    # `valor_col_w` abaixo da largura real de valores de 8 dígitos (~R$
+    # 33.353.150,00, ~79pt em regular 9.5 -- escala Enermais de verdade,
+    # não os valores pequenos do teste do motor de desenho) -- em 4
+    # períodos as colunas de valor ficavam mais estreitas que o texto e
+    # os números de colunas vizinhas apareciam colados/sobrepostos.
+    # Reserva volta pra 190pt (ainda cobre rótulo+etiqueta com folga --
+    # ver label_max_w abaixo) e quem se ajusta agora é a FONTE do valor:
+    # encolhe (mesmo padrão de A._tamanho_fonte_1_linha) até o maior
+    # valor da tabela caber na largura real da coluna. 1 tamanho só pra
+    # tabela inteira (não por célula) pra manter todas as linhas
+    # alinhadas visualmente. Com 2-3 períodos cabe no tamanho padrão
+    # (9.5) sem encolher; só com 4 períodos + valor de 8 dígitos encolhe
+    # (~7.2pt, medido) -- conferido visualmente e em
+    # test_gerador_relatorio_comparativo.py.
+    RESERVA_LABEL_TAG = 190.0
+    valor_col_w = (largura - RESERVA_LABEL_TAG - col_var_w - (n_col - 1) * gap) / n_col
+    valor_col_w = max(valor_col_w, 50.0)
+
+    def x_col(i):
+        return largura - col_var_w - 14 - (n_col - 1 - i) * (valor_col_w + gap)
+
+    # FIX_20260929g (2ª verificação visual do FIX_20260929f, mesmos PDFs
+    # sintéticos escala Enermais): a trava antiga (`tag_x_max = x_col(0) -
+    # 90`) partia de uma largura de valor fixa que não existe mais -- com
+    # a fonte do valor agora dinâmica, o texto do valor da coluna 0 pode
+    # ficar mais estreito (period count alto) e os 90pt de folga passam a
+    # não bastar; era exatamente o oposto do problema do FIX_20260929e
+    # (que resolvia isso subindo a reserva geral, mas aí reabria o
+    # overlap entre colunas de valor). A área reservada pro rótulo+
+    # etiqueta (RESERVA_LABEL_TAG) menos o padding de 14pt usado em
+    # `x_col` é, por construção, EXATAMENTE a folga disponível entre o
+    # início da tabela e a borda esquerda da 1ª coluna de valor -- e isso
+    # NÃO depende de n_col (conferido numericamente e no teste de
+    # regressão pra 2/3/4 períodos). Em vez de adivinhar uma folga em
+    # pontos, o rótulo agora ENCOLHE (mesmo padrão de
+    # A._tamanho_fonte_1_linha, usado na pág.2 do Modelo A) até rótulo +
+    # etiqueta caberem dentro dessa área garantida -- funciona pra
+    # qualquer rótulo futuro e qualquer n_col, sem reabrir nenhum dos 2
+    # bugs anteriores.
+    LABEL_TAG_GAP = 8.0
+    TAG_W = 34.0
+    label_tag_max_w = RESERVA_LABEL_TAG - 14.0
+    label_max_w = label_tag_max_w - LABEL_TAG_GAP - TAG_W
+
+    # FIX_20260929f: tamanho de fonte dos valores, único pra tabela toda,
+    # calculado a partir do valor mais largo de fato presente nela (não
+    # um tamanho fixo torcendo pra funcionar em todo caso futuro).
+    valor_font_size = 9.5
+    textos_valores = [
+        moeda_br(v, forcar_sinal=(v < 0))
+        for linha in linhas
+        for v in linha.get("valores", [])
+    ]
+    if textos_valores:
+        maior_valor_txt = max(
+            textos_valores, key=lambda t: stringWidth(t, FONT["regular"], valor_font_size)
+        )
+        valor_font_size = A._tamanho_fonte_1_linha(
+            maior_valor_txt, FONT["regular"], valor_font_size, valor_col_w, minimo=6.5,
+        )
+
+    linhas_geo = []
+    for linha in linhas:
+        label_size = A._tamanho_fonte_1_linha(linha["label"], FONT["bold"], 9.5, label_max_w, minimo=7.5)
+        w_label = stringWidth(linha["label"], FONT["bold"], label_size)
+        # min() aqui é defesa em profundidade: só entra em jogo se o
+        # rótulo ainda estourar mesmo no piso mínimo de _tamanho_fonte_1_linha.
+        tag_x0 = min(w_label + LABEL_TAG_GAP, label_tag_max_w - TAG_W)
+        linhas_geo.append({"label_size": label_size, "w_label": w_label, "tag_x0": tag_x0})
+
+    return {
+        "valor_col_w": valor_col_w, "x_col": x_col, "col_var_w": col_var_w,
+        "valor_font_size": valor_font_size, "label_max_w": label_max_w,
+        "TAG_W": TAG_W, "linhas": linhas_geo,
+    }
+
+
 def _tabela_evolucao(c, x, largura, y_top, titulos_colunas, linhas, mostrar_variacao=True):
     """Tabela de evolucao de indicadores -- N colunas (1 por periodo) +
     coluna de Variacao (ultimo vs 1o periodo). Cada `linha`: {label,
@@ -123,18 +229,18 @@ def _tabela_evolucao(c, x, largura, y_top, titulos_colunas, linhas, mostrar_vari
 
     Nao reusa `_linha_anexo`/`_coluna_anexo` (aquele motor foi desenhado
     pra arvore de conta contabil com grupo/subconta -- aqui e' so' uma
-    lista chata de indicadores, layout mais simples de tabela normal)."""
-    col_var_w = 62.0
+    lista chata de indicadores, layout mais simples de tabela normal).
+    A geometria (larguras, tamanhos de fonte) mora em
+    `_layout_tabela_evolucao` -- aqui só desenha."""
     n_col = len(titulos_colunas)
-    gap = 6.0
-    valor_col_w = (largura - 150 - col_var_w - (n_col - 1) * gap) / n_col
-    valor_col_w = max(valor_col_w, 50.0)
+    geo = _layout_tabela_evolucao(largura, n_col, linhas)
+    valor_font_size = geo["valor_font_size"]
+    TAG_W = geo["TAG_W"]
 
     def x_col(i):
-        return x + largura - col_var_w - 14 - (n_col - 1 - i) * (valor_col_w + gap)
+        return x + geo["x_col"](i)
 
     x_var = x + largura
-
     y = y_top
     for i, titulo in enumerate(titulos_colunas):
         txt(c, x_col(i), y, titulo.upper(), font="bold", size=7.5, color=GREY_TEXT, align="right")
@@ -145,17 +251,18 @@ def _tabela_evolucao(c, x, largura, y_top, titulos_colunas, linhas, mostrar_vari
     c.line(x, Y(y + 4), x + largura, Y(y + 4))
     y += 18
 
-    for linha in linhas:
+    for linha, linha_geo in zip(linhas, geo["linhas"]):
         vals = linha["valores"]
-        txt(c, x, y, linha["label"], font="bold", size=9.5, color="#1c1c1a")
+        label_size = linha_geo["label_size"]
+        txt(c, x, y, linha["label"], font="bold", size=label_size, color="#1c1c1a")
         tag_txt = "FLUXO" if linha["tag"] == "fluxo" else "SALDO"
         tag_cor = NAVY if linha["tag"] == "fluxo" else RED_ACCENT
-        w_label = stringWidth(linha["label"], FONT["bold"], 9.5)
-        rect(c, x + w_label + 8, y - 8, x + w_label + 8 + 34, y + 2, fill=tag_cor, radius=2)
-        txt(c, x + w_label + 25, y - 1, tag_txt, font="bold", size=6.5, color="#FFFFFF", align="center")
+        tag_x0 = x + linha_geo["tag_x0"]
+        rect(c, tag_x0, y - 8, tag_x0 + TAG_W, y + 2, fill=tag_cor, radius=2)
+        txt(c, tag_x0 + TAG_W / 2, y - 1, tag_txt, font="bold", size=6.5, color="#FFFFFF", align="center")
         for i, v in enumerate(vals):
             cor_v = RED_ACCENT if v < 0 else NAVY
-            txt(c, x_col(i), y, moeda_br(v, forcar_sinal=(v < 0)), font="regular", size=9.5, color=cor_v, align="right")
+            txt(c, x_col(i), y, moeda_br(v, forcar_sinal=(v < 0)), font="regular", size=valor_font_size, align="right", color=cor_v)
         if mostrar_variacao and vals[0]:
             delta = (vals[-1] - vals[0]) / abs(vals[0])
             cor_delta = RED_ACCENT if delta < 0 else "#1a7a3c"
