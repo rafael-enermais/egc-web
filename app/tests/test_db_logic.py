@@ -492,6 +492,38 @@ def test_listar_despesas_admin_itens_tabela_ainda_nao_existe_retorna_vazio():
     print("OK: listar_despesas_admin_itens — tabela ausente retorna vazio")
 
 
+def test_registrar_relatorio_gerado_insere_com_colunas_certas():
+    cur = FakeCursor(fetchone_result=(7,))
+    conn = FakeConn(cur)
+    novo_id = db.registrar_relatorio_gerado(
+        conn, empresas_codigos=["ENERGIA"], periodos=[datetime.date(2026, 6, 30)],
+        arquivo="Demonstrativo_ENERGIA_20260630.pdf", usuario="rafael@enermais.com.br",
+    )
+    assert novo_id == 7
+    sql, params = cur.executed[0]
+    assert "INSERT INTO egc.relatorios_gerados" in sql
+    assert params == (["ENERGIA"], [datetime.date(2026, 6, 30)], "Demonstrativo_ENERGIA_20260630.pdf", "rafael@enermais.com.br")
+    print("OK: registrar_relatorio_gerado grava empresas/periodos/arquivo/usuario")
+
+
+def test_listar_relatorios_gerados_ordena_por_gerado_em_desc():
+    fetch = [
+        {"id": 2, "empresas": ["ENERGIA"], "periodos": [datetime.date(2026, 6, 30)],
+         "arquivo": "b.pdf", "usuario": "x", "gerado_em": datetime.datetime(2026, 9, 28, 10, 0)},
+    ]
+    cur = FakeCursor(
+        fetchall_result=[tuple(d.values()) for d in fetch],
+        description=[(k,) for k in fetch[0].keys()],
+    )
+    conn = FakeConn(cur)
+    out = db.listar_relatorios_gerados(conn, limite=5)
+    assert out == fetch
+    sql, params = cur.executed[0]
+    assert "ORDER BY gerado_em DESC" in sql
+    assert params == (5,)
+    print("OK: listar_relatorios_gerados devolve dict com todas as colunas, mais recente primeiro")
+
+
 if __name__ == "__main__":
     testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
     falhas = 0
