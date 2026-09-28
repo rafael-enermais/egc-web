@@ -35,6 +35,7 @@ from datetime import date
 from typing import Optional
 
 import pandas as pd
+import psycopg2
 import requests
 from requests.auth import HTTPBasicAuth
 from psycopg2.extras import execute_values
@@ -426,39 +427,49 @@ def identificar_e_gravar_bills_orfaos(conn, import_id: str, empresa_codigo: str)
     data_min_janela = pd.Timestamp(data_min) - janela
     data_max_janela = pd.Timestamp(data_max) + janela
 
-    mapa_debtor = _mapear_debtor_para_empresa(conn)
-    bills = _carregar_bills_creditores(conn)
+    try:
+        mapa_debtor = _mapear_debtor_para_empresa(conn)
+        bills = _carregar_bills_creditores(conn)
 
-    with conn.cursor() as cur:
-        cur.execute("SELECT DISTINCT sienge_bill_id FROM egc.nf_conciliacao WHERE sienge_bill_id IS NOT NULL")
-        ja_associados = {row[0] for row in cur.fetchall()}
+        with conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT sienge_bill_id FROM egc.nf_conciliacao WHERE sienge_bill_id IS NOT NULL")
+            ja_associados = {row[0] for row in cur.fetchall()}
 
-    orfaos = _filtrar_bills_orfaos(bills, mapa_debtor, empresa_codigo, ja_associados, data_min_janela, data_max_janela)
-
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT bill_id, pendencia_status FROM egc.nf_bills_orfaos "
-            "WHERE import_id = %s AND pendencia_status IS NOT NULL AND pendencia_status <> 'PENDENTE'",
-            (import_id,),
+        orfaos = _filtrar_bills_orfaos(
+            bills, mapa_debtor, empresa_codigo, ja_associados, data_min_janela, data_max_janela
         )
-        status_preservados = {row[0]: row[1] for row in cur.fetchall()}
 
-        cur.execute("DELETE FROM egc.nf_bills_orfaos WHERE import_id = %s", (import_id,))
-
-        for _, b in orfaos.iterrows():
-            bill_id = int(b["bill_id"])
+        with conn.cursor() as cur:
             cur.execute(
-                """
-                INSERT INTO egc.nf_bills_orfaos
-                    (import_id, empresa_codigo, bill_id, document_number, issue_date,
-                     total_invoice_amount, creditor_nome, creditor_cnpj, pendencia_status, atualizado_em)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
-                """,
-                (import_id, empresa_codigo, bill_id, b["document_number"], b["issue_date"],
-                 float(b["total_invoice_amount"]) if pd.notna(b["total_invoice_amount"]) else None,
-                 b.get("creditor_nome"), b.get("creditor_cnpj"),
-                 status_preservados.get(bill_id, "PENDENTE")),
+                "SELECT bill_id, pendencia_status FROM egc.nf_bills_orfaos "
+                "WHERE import_id = %s AND pendencia_status IS NOT NULL AND pendencia_status <> 'PENDENTE'",
+                (import_id,),
             )
+            status_preservados = {row[0]: row[1] for row in cur.fetchall()}
+
+            cur.execute("DELETE FROM egc.nf_bills_orfaos WHERE import_id = %s", (import_id,))
+
+            for _, b in orfaos.iterrows():
+                bill_id = int(b["bill_id"])
+                cur.execute(
+                    """
+                    INSERT INTO egc.nf_bills_orfaos
+                        (import_id, empresa_codigo, bill_id, document_number, issue_date,
+                         total_invoice_amount, creditor_nome, creditor_cnpj, pendencia_status, atualizado_em)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                    """,
+                    (import_id, empresa_codigo, bill_id, b["document_number"], b["issue_date"],
+                     float(b["total_invoice_amount"]) if pd.notna(b["total_invoice_amount"]) else None,
+                     b.get("creditor_nome"), b.get("creditor_cnpj"),
+                     status_preservados.get(bill_id, "PENDENTE")),
+                )
+    except psycopg2.errors.UndefinedTable:
+        # egc.nf_bills_orfaos ainda nao existe (bloco 14 do schema.sql nao
+        # rodado no Supabase) -- degrada pro comportamento de antes deste
+        # fix (0 orfaos) em vez de quebrar a conferencia inteira (que ja'
+        # rodou e gravou a parte normal antes de chegar aqui).
+        conn.rollback()
+        return 0
 
     return len(orfaos)
 
