@@ -524,6 +524,70 @@ def test_listar_relatorios_gerados_ordena_por_gerado_em_desc():
     print("OK: listar_relatorios_gerados devolve dict com todas as colunas, mais recente primeiro")
 
 
+def test_listar_contatos_relatorio_filtra_por_tipo_ordena_por_nome():
+    fetch = [
+        {"id": 3, "tipo": "CONTADOR", "nome": "Cleber Mineli Lopes", "cargo": "Contador", "email": "cleber@x.com"},
+    ]
+    cur = FakeCursor(
+        fetchall_result=[tuple(d.values()) for d in fetch],
+        description=[(k,) for k in fetch[0].keys()],
+    )
+    conn = FakeConn(cur)
+    out = db.listar_contatos_relatorio(conn, "CONTADOR")
+    assert out == fetch
+    sql, params = cur.executed[0]
+    assert "FROM egc.contatos_relatorio" in sql
+    assert "WHERE tipo = %s" in sql
+    assert "ORDER BY nome" in sql
+    assert params == ("CONTADOR",)
+    print("OK: listar_contatos_relatorio filtra por tipo e ordena por nome")
+
+
+def test_salvar_contato_relatorio_sem_id_insere_novo():
+    cur = FakeCursor(fetchone_result=(10,))
+    conn = FakeConn(cur)
+    novo_id = db.salvar_contato_relatorio(
+        conn, tipo="ADMINISTRADOR", nome="Edilson Nazário", cargo="Diretor Financeiro",
+        email="edilson@enermais.com.br", usuario="rafael@enermais.com.br",
+    )
+    assert novo_id == 10
+    sql, params = cur.executed[0]
+    assert "INSERT INTO egc.contatos_relatorio" in sql
+    assert params == ("ADMINISTRADOR", "Edilson Nazário", "Diretor Financeiro", "edilson@enermais.com.br", "rafael@enermais.com.br")
+    print("OK: salvar_contato_relatorio sem contato_id faz INSERT")
+
+
+def test_salvar_contato_relatorio_com_id_atualiza_existente():
+    cur = FakeCursor(fetchone_result=(10,))
+    conn = FakeConn(cur)
+    novo_id = db.salvar_contato_relatorio(
+        conn, tipo="ADMINISTRADOR", nome="Edilson Nazário", cargo="CFO",
+        email="edilson@enermais.com.br", contato_id=10, usuario="rafael@enermais.com.br",
+    )
+    assert novo_id == 10
+    sql, params = cur.executed[0]
+    assert "UPDATE egc.contatos_relatorio" in sql
+    assert "atualizado_em = now()" in sql
+    assert params == ("Edilson Nazário", "CFO", "edilson@enermais.com.br", "rafael@enermais.com.br", 10)
+    print("OK: salvar_contato_relatorio com contato_id faz UPDATE (edição), não duplica")
+
+
+def test_listar_contatos_relatorio_tabela_ainda_nao_existe_retorna_vazio():
+    conn = _FakeConnComRollback(_FakeCursorTabelaInexistente())
+    out = db.listar_contatos_relatorio(conn, "CONTADOR")
+    assert out == []
+    assert conn.rollback_chamado
+    print("OK: listar_contatos_relatorio — tabela ausente (migração do bloco 13 pendente) retorna vazio")
+
+
+def test_salvar_contato_relatorio_tabela_ainda_nao_existe_nao_quebra():
+    conn = _FakeConnComRollback(_FakeCursorTabelaInexistente())
+    novo_id = db.salvar_contato_relatorio(conn, tipo="CONTADOR", nome="X", cargo="Contador")
+    assert novo_id is None
+    assert conn.rollback_chamado
+    print("OK: salvar_contato_relatorio — tabela ausente não quebra a geração do relatório")
+
+
 if __name__ == "__main__":
     testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
     falhas = 0
