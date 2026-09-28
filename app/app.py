@@ -351,6 +351,10 @@ paginas = [
     # BP/DRE: manifesto de NF-e da Receita Federal x Contas a Pagar do
     # Sienge. Ver EGC 00-handoff.md seção 62 pro desenho.
     st.Page("telas/7_Notas_Fiscais.py", title="Notas Fiscais", icon="🧾"),
+    # Fase 2 (28/09/2026): gera o Demonstrativo Comentado com dado real do
+    # Supabase -- ver dados_relatorio_comentado.py. 1ª versão, 1 empresa +
+    # 1 período por geração.
+    st.Page("telas/8_Relatorio_Comentado.py", title="Relatório Comentado", icon="📄"),
     # Dashboard de Projeção removido do menu por pedido do Rafael
     # (22/09/2026): numeros ficavam irreais em horizonte longo com pouco
     # historico real (tendencia linear sem teto). Codigo e tabelas

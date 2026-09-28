@@ -730,6 +730,53 @@ def buscar_lancamentos_manuais(
 
 
 # ─────────────────────────────────────────────
+#  RELATORIOS GERADOS (Fase 2, 28/09/2026 — historico de geracao de PDF)
+# ─────────────────────────────────────────────
+
+def registrar_relatorio_gerado(
+    conn, empresas_codigos: list[str], periodos: list[date], arquivo: str, usuario: Optional[str] = None,
+) -> int:
+    """
+    Loga 1 geracao de relatorio comentado/comparativo em
+    egc.relatorios_gerados (tabela ja existe desde o schema inicial —
+    'substitui LOG_PDF_GERADO' do VBA, que era exatamente o log que
+    NUNCA registrava nada de verdade no V3/Excel, bug conhecido corrigido
+    ali; aqui e' a 1a vez que algo escreve nesta tabela). Nao levanta
+    excecao pra quem chama tratar como melhor-esforco, igual
+    registrar_evento -- a tela ja mostrou o PDF gerado, o log e' so'
+    historico.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO egc.relatorios_gerados (empresas, periodos, arquivo, usuario)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id
+            """,
+            (empresas_codigos, periodos, arquivo, usuario),
+        )
+        return cur.fetchone()[0]
+
+
+def listar_relatorios_gerados(conn, limite: int = 20) -> list[dict]:
+    """Ultimas geracoes de relatorio, mais recente primeiro -- historico
+    pra tela (nao guarda o PDF em si, so' o registro de quando/quem/quais
+    empresas+periodos)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, empresas, periodos, arquivo, usuario, gerado_em
+            FROM egc.relatorios_gerados
+            ORDER BY gerado_em DESC
+            LIMIT %s
+            """,
+            (limite,),
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+# ─────────────────────────────────────────────
 #  CONTEXTO FISCAL (conhecimento de referencia — Reforma Tributaria)
 # ─────────────────────────────────────────────
 
