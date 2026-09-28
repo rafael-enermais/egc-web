@@ -71,8 +71,12 @@ def test_leituras_das_novas_paginas_sao_neutras():
     funcs = [g._leitura_receita_custos, g._leitura_despesas, g._leitura_resultado,
              g._leitura_ebitda, g._leitura_balanco]
     for fn in funcs:
-        p_prejuizo = fn(dados_prejuizo)
-        p_lucro = fn(dados_lucro)
+        # _leitura_balanco ganhou pagina/total_paginas no FIX_20260928e
+        # (referencias de pagina cruzada -- Resultado/Anexo -- dinamicas
+        # em vez de hardcoded); 7/9 = layout padrao (com pagina_resultado).
+        extra_args = (7, 9) if fn is g._leitura_balanco else ()
+        p_prejuizo = fn(dados_prejuizo, *extra_args)
+        p_lucro = fn(dados_lucro, *extra_args)
         assert len(p_prejuizo) == len(p_lucro)
         for a, b in zip(p_prejuizo, p_lucro):
             assert _sem_numeros(a) == _sem_numeros(b), f"{fn.__name__}: texto muda de palavra entre os 2 sinais:\n{a}\n{b}"
@@ -80,6 +84,30 @@ def test_leituras_das_novas_paginas_sao_neutras():
         for palavra in PALAVRAS_PROIBIDAS:
             assert palavra not in texto, f"{fn.__name__}: texto não é neutro, contém '{palavra}'"
     print(f"OK: {len(funcs)} funções de leitura das páginas novas são neutras (lucro/prejuízo, despesas acima/abaixo do lucro bruto)")
+
+
+def test_leitura_balanco_referencia_pagina_certa_com_e_sem_resultado():
+    # FIX_20260928e (Rafael, "a página 7 do relatório (DRE)... alterou
+    # bastante" -- achado revisando o texto, não a cor/layout):
+    # _leitura_balanco citava "página 5" (Resultado) e "página 8" (Anexo)
+    # FIXOS, só certos no layout de 9 páginas. Em lucro presumido (ou
+    # qualquer período sem pagina_resultado incluída) o relatório vira 8
+    # páginas -- Balanço é página 6, não existe página de Resultado pra
+    # citar, e o Anexo é página 7, não 8. O texto tem que refletir isso
+    # dinamicamente, não hardcoded.
+    d = BASE
+
+    # Layout de 9 paginas (com pagina_resultado): Balanco = pagina 7.
+    p1, p2 = g._leitura_balanco(d, 7, 9)
+    assert "página 5" in p2, "com Resultado presente, deveria citar a página 5 (onde ele está)"
+    assert "página 8" in p2, "Anexo vem logo depois do Balanço: página 8 no layout de 9 páginas"
+
+    # Layout de 8 paginas (sem pagina_resultado): Balanco = pagina 6.
+    p1b, p2b = g._leitura_balanco(d, 6, 8)
+    assert "página 5" not in p2b, "sem página de Resultado nenhuma, não pode citar uma página que não existe"
+    assert "página 7" in p2b, "Anexo vem logo depois do Balanço: página 7 no layout de 8 páginas (não 8)"
+    assert "página 8" not in p2b
+    print("OK: _leitura_balanco referencia Resultado/Anexo pelo número de página real de cada layout, não hardcoded")
 
 
 def test_grafico_ranking_horizontal_nao_quebra_lista_vazia():

@@ -67,6 +67,38 @@ def test_classificar_valor_divergente():
     assert r["sienge_bill_id"] == 300
 
 
+def test_classificar_1_centavo_de_diferenca_bate_apesar_do_erro_de_ponto_flutuante():
+    # Bug real achado 28/09/2026 conferindo pendencias_nf_ENERGIA_07_2026.xlsx
+    # contra o manifesto ja conferido a mao pela contadora: nota da Gramaeira
+    # Pereira (Sienge R$ 6.000,01, manifesto R$ 6.000,00) saia como
+    # VALOR_DIVERGENTE mesmo a diferenca sendo exatamente 1 centavo (dentro
+    # de TOLERANCIA_VALOR) -- abs(6000.01-6000.0) em float python da
+    # 0.010000000000218, que e' MAIOR que 0.01. Devia bater como LANCADA.
+    bills = _bills([
+        [600, 591, "NFE ", "10486", 6000.01, None, "76.424.845/0001-76", "76424845000176", "10486"],
+    ])
+    row = {"_cnpj_normalizado": "76424845000176", "_numero_normalizado": "10486",
+           "_valor_float": 6000.00, "Chave": None, "Num": "10486"}
+    r = nf_sienge._classificar_nota(row, bills)
+    assert r["status"] == "LANCADA", (
+        "diferenca de exatamente 1 centavo deve bater dentro de TOLERANCIA_VALOR, "
+        "erro de ponto flutuante nao pode fazer a nota parecer divergente"
+    )
+    assert r["confianca"] == "NUMERO_CNPJ_VALOR"
+
+
+def test_classificar_2_centavos_de_diferenca_continua_divergente():
+    # Confirma que o fix (round antes de comparar) nao afrouxa a tolerancia
+    # real -- 2 centavos de diferenca continua sendo VALOR_DIVERGENTE.
+    bills = _bills([
+        [601, 591, "NFE ", "999", 100.02, None, "07.393.522/0001-40", "07393522000140", "999"],
+    ])
+    row = {"_cnpj_normalizado": "07393522000140", "_numero_normalizado": "999",
+           "_valor_float": 100.00, "Chave": None, "Num": "999"}
+    r = nf_sienge._classificar_nota(row, bills)
+    assert r["status"] == "VALOR_DIVERGENTE"
+
+
 def test_classificar_numero_divergente_mesmo_cnpj_e_valor():
     bills = _bills([
         [400, 591, "NFE ", "777", 500.00, None, "07.393.522/0001-40", "07393522000140", "777"],
