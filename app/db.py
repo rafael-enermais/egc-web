@@ -780,15 +780,26 @@ def listar_relatorios_gerados(conn, limite: int = 20) -> list[dict]:
 #  CONTATOS DO RELATORIO (administrador/contador salvos — bloco 13)
 # ─────────────────────────────────────────────
 
-def listar_contatos_relatorio(conn, tipo: str) -> list[dict]:
+def listar_contatos_relatorio(conn) -> list[dict]:
     """
-    Contatos salvos de um tipo ('ADMINISTRADOR' ou 'CONTADOR'), pra
-    popular o dropdown da tela 8_Relatorio_Comentado.py (pedido do
-    Rafael 28/09/2026: "normalmente são as mesmas pessoas" -- reaproveita
-    entre as 6 empresas, sem empresa_codigo de proposito). Lista vazia
-    (nunca erro) se a migracao do bloco 13 ainda nao rodou -- mesmo padrao
-    de fallback ja usado em listar_despesas_admin_itens, a tela degrada
-    pro comportamento antigo (inputs em branco) sem quebrar.
+    TODOS os contatos salvos (administrador, contador, ou qualquer outro
+    tipo historico), pra popular o dropdown da tela 8_Relatorio_Comentado.py
+    -- reaproveita entre as 6 empresas, sem empresa_codigo de proposito.
+
+    FIX_20260929b (Rafael, depois de testar ao vivo: "ficou separado, não
+    seria mais fácil manter 1 lista só pra ambos... a lista única poderia
+    trocar facilmente os lados"): ANTES filtrava por `tipo`
+    ('ADMINISTRADOR' x 'CONTADOR'), gerando 2 listas -- um contato salvo do
+    lado Administrador nunca aparecia no dropdown do Contador, mesmo sendo
+    a mesma pessoa que so' mudou de lado num relatorio novo. Agora e' 1
+    lista so', compartilhada pelos 2 seletores -- qualquer contato salvo
+    pode ser escolhido pra qualquer lado, sem recadastrar. A coluna `tipo`
+    continua gravada (registra de qual lado o contato foi cadastrado da
+    1a vez), so' deixou de ser usada pra FILTRAR a listagem.
+
+    Lista vazia (nunca erro) se a migracao do bloco 13 ainda nao rodou --
+    mesmo padrao de fallback ja usado em listar_despesas_admin_itens, a
+    tela degrada pro comportamento antigo (inputs em branco) sem quebrar.
     """
     with conn.cursor() as cur:
         try:
@@ -796,10 +807,8 @@ def listar_contatos_relatorio(conn, tipo: str) -> list[dict]:
                 """
                 SELECT id, tipo, nome, cargo, email
                 FROM egc.contatos_relatorio
-                WHERE tipo = %s
                 ORDER BY nome
-                """,
-                (tipo,),
+                """
             )
             cols = [d[0] for d in cur.description]
             return [dict(zip(cols, row)) for row in cur.fetchall()]

@@ -524,8 +524,11 @@ def test_listar_relatorios_gerados_ordena_por_gerado_em_desc():
     print("OK: listar_relatorios_gerados devolve dict com todas as colunas, mais recente primeiro")
 
 
-def test_listar_contatos_relatorio_filtra_por_tipo_ordena_por_nome():
+def test_listar_contatos_relatorio_devolve_todos_sem_filtrar_tipo_ordena_por_nome():
+    # FIX_20260929b: lista única compartilhada pelos 2 seletores (ADMINISTRADOR
+    # e CONTADOR) -- não filtra mais por tipo, devolve todo mundo salvo.
     fetch = [
+        {"id": 1, "tipo": "ADMINISTRADOR", "nome": "Alex Troiano Rodrigues", "cargo": "Administrador", "email": None},
         {"id": 3, "tipo": "CONTADOR", "nome": "Cleber Mineli Lopes", "cargo": "Contador", "email": "cleber@x.com"},
     ]
     cur = FakeCursor(
@@ -533,14 +536,14 @@ def test_listar_contatos_relatorio_filtra_por_tipo_ordena_por_nome():
         description=[(k,) for k in fetch[0].keys()],
     )
     conn = FakeConn(cur)
-    out = db.listar_contatos_relatorio(conn, "CONTADOR")
+    out = db.listar_contatos_relatorio(conn)
     assert out == fetch
     sql, params = cur.executed[0]
     assert "FROM egc.contatos_relatorio" in sql
-    assert "WHERE tipo = %s" in sql
+    assert "WHERE tipo" not in sql
     assert "ORDER BY nome" in sql
-    assert params == ("CONTADOR",)
-    print("OK: listar_contatos_relatorio filtra por tipo e ordena por nome")
+    assert params is None
+    print("OK: listar_contatos_relatorio devolve todos os contatos (sem filtro de tipo), ordenados por nome")
 
 
 def test_salvar_contato_relatorio_sem_id_insere_novo():
@@ -574,7 +577,7 @@ def test_salvar_contato_relatorio_com_id_atualiza_existente():
 
 def test_listar_contatos_relatorio_tabela_ainda_nao_existe_retorna_vazio():
     conn = _FakeConnComRollback(_FakeCursorTabelaInexistente())
-    out = db.listar_contatos_relatorio(conn, "CONTADOR")
+    out = db.listar_contatos_relatorio(conn)
     assert out == []
     assert conn.rollback_chamado
     print("OK: listar_contatos_relatorio — tabela ausente (migração do bloco 13 pendente) retorna vazio")

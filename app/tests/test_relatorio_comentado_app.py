@@ -94,8 +94,7 @@ def test_seletor_de_contato_salvo_preenche_nome_e_cargo():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=[PERIODO]), \
-         patch.object(db, "listar_contatos_relatorio",
-                      side_effect=lambda conn, tipo: contatos if tipo == "ADMINISTRADOR" else []):
+         patch.object(db, "listar_contatos_relatorio", return_value=contatos):
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
         sel = at.selectbox(key="relatorio_contato_sel_ADMINISTRADOR")
@@ -105,6 +104,26 @@ def test_seletor_de_contato_salvo_preenche_nome_e_cargo():
         # com contato salvo selecionado, nao aparecem mais os campos de "novo cadastro"
         assert not any(ti.key == "relatorio_novo_nome_ADMINISTRADOR" for ti in at.text_input)
         print("OK: Relatório Comentado — selecionar um contato salvo preenche nome/cargo sem exceção")
+
+
+def test_lista_de_contatos_e_compartilhada_entre_administrador_e_contador():
+    # FIX_20260929b (Rafael: "ficou separado... a lista única poderia
+    # trocar facilmente os lados") -- 1 contato salvo aparece nos 2
+    # dropdowns (ADMINISTRADOR e CONTADOR), não só no lado onde foi
+    # cadastrado da 1a vez.
+    contatos = [{"id": 1, "tipo": "ADMINISTRADOR", "nome": "Edilson Nazário",
+                 "cargo": "Diretor Financeiro", "email": "edilson@enermais.com.br"}]
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos", return_value=[PERIODO]), \
+         patch.object(db, "listar_contatos_relatorio", return_value=contatos):
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        opcoes_admin = at.selectbox(key="relatorio_contato_sel_ADMINISTRADOR").options
+        opcoes_contador = at.selectbox(key="relatorio_contato_sel_CONTADOR").options
+        assert "Edilson Nazário — Diretor Financeiro" in opcoes_admin
+        assert "Edilson Nazário — Diretor Financeiro" in opcoes_contador
+        print("OK: Relatório Comentado — contato salvo aparece nos 2 seletores (lista única, não mais separada)")
 
 
 def test_gerar_relatorio_chama_pipeline_e_nao_quebra():
