@@ -179,8 +179,16 @@ if arquivo is not None and st.button("▶️ Rodar conferência", key="nf_btn_ro
             _log_erro("Falha ao gravar/conciliar manifesto", detalhe=str(exc), empresa_codigo=cod_empresa)
             st.stop()
 
-    st.success(f"Conferência concluída: {resumo['total']} nota(s) · "
-               f"{resumo['lancadas']} lançada(s) · {resumo['pendencias']} pendência(s).")
+    msg_final = (f"Conferência concluída: {resumo['total']} nota(s) · "
+                 f"{resumo['lancadas']} lançada(s) · {resumo['pendencias']} pendência(s).")
+    if resumo.get("orfaos_sienge"):
+        # FIX_20260928f (Rafael: "a nota q estiver no Sienge, e não tiver
+        # na receita, tem q virar pendencia tb"): so' > 0 quando ja' existe
+        # pelo menos 1 match LANCADA anterior desta empresa (ver docstring
+        # de identificar_e_gravar_bills_orfaos) -- por isso avisa aqui em
+        # vez de deixar passar batido dentro do numero de "pendencias" normal.
+        msg_final += f" · ⚠️ {resumo['orfaos_sienge']} título(s) no Sienge sem nota no manifesto."
+    st.success(msg_final)
 
 st.divider()
 
@@ -192,18 +200,34 @@ if not import_id_atual:
     st.caption("Rode uma conferência acima pra ver o resultado aqui.")
 else:
     tabela = nf_sienge.listar_conciliacao(conn, import_id_atual)
+    # FIX_20260928f (direção reversa, pedido do Rafael): órfãos do Sienge
+    # entram na MESMA tabela (origem='SIENGE_ORFAO' os distingue) pra
+    # herdar de graça o filtro/dataframe/export/status já existentes
+    # abaixo, em vez de duplicar toda essa lógica pra uma 2ª tabela.
+    try:
+        orfaos = nf_sienge.listar_orfaos_sienge(conn, import_id_atual)
+    except Exception:
+        orfaos = pd.DataFrame()
+    if not orfaos.empty:
+        tabela = pd.concat([tabela, orfaos], ignore_index=True)
+
     if tabela.empty:
         st.caption("Sem notas nesta rodada.")
     else:
-        total = len(tabela)
-        lancadas = int((tabela["status"] == "LANCADA").sum())
+        tabela_manifesto = tabela[tabela["origem"] == "MANIFESTO"]
+        total = len(tabela_manifesto)
+        lancadas = int((tabela_manifesto["status"] == "LANCADA").sum())
         pendentes = total - lancadas
+        orfaos_count = int((tabela["origem"] == "SIENGE_ORFAO").sum())
 
-        k1, k2, k3, k4 = st.columns(4)
+        k1, k2, k3, k4, k5 = st.columns(5)
         k1.metric("Notas no manifesto", total)
         k2.metric("Lançadas no Sienge", lancadas)
-        k3.metric("Pendências", pendentes)
-        k4.metric("Taxa de conciliação", formatacao.pct_br(lancadas / total if total else None))
+        k3.metric("Pendências (nota sem Sienge)", pendentes)
+        k4.metric("Sienge sem nota", orfaos_count,
+                  help="Título lançado no Sienge sem nota correspondente no manifesto da Receita "
+                       "(pedido do Rafael 28/09/2026 -- rede de segurança, não é pra acontecer).")
+        k5.metric("Taxa de conciliação", formatacao.pct_br(lancadas / total if total else None))
 
         filtro_status = st.multiselect(
             "Filtrar por status", options=sorted(tabela["status"].unique()),
@@ -212,7 +236,11 @@ else:
         )
         tabela_filtrada = tabela[tabela["status"].isin(filtro_status)] if filtro_status else tabela
 
-        tabela_fmt = tabela_filtrada.copy()
+        # registro_id/origem sao internos (usados so' pelo "Salvar status"
+        # abaixo, via pendencias_df) -- fora da tela/planilha que a
+        # contadora ve, pra nao acrescentar coluna tecnica sem sentido pra ela.
+        colunas_internas = ["registro_id", "origem"]
+        tabela_fmt = tabela_filtrada.drop(columns=colunas_internas).copy()
         tabela_fmt["valor"] = tabela_fmt["valor"].apply(formatacao.moeda_br)
         tabela_fmt["sienge_valor"] = tabela_fmt["sienge_valor"].apply(formatacao.moeda_br)
         st.dataframe(tabela_fmt, hide_index=True, use_container_width=True)
@@ -228,7 +256,7 @@ else:
             # formatacao.remover_timezone_para_excel). Nao muda o que
             # aparece na tela (st.dataframe, linha acima, aceita tz
             # normalmente) -- so' a exportacao precisa do tratamento.
-            export_df = formatacao.remover_timezone_para_excel(pendencias_df)
+            export_df = formatacao.remover_timezone_para_excel(pendencias_df.drop(columns=colunas_internas))
             export_df.to_excel(buffer, index=False, sheet_name="Pendencias")
             st.download_button(
                 "⬇️ Baixar planilha de pendências (pra mandar ao Suprimentos)",
@@ -254,19 +282,20 @@ else:
                     key="nf_pendencia_status_sel",
                 )
                 if st.button("Salvar status", key="nf_btn_salvar_status"):
+                    # FIX_20260928f: antes buscava manifesto_id via SQL
+                    # casando por numero_nota (texto) -- frágil (2 notas
+                    # podem ter o mesmo número) e não cobria os órfãos do
+                    # Sienge (não têm manifesto_id nenhum). listar_conciliacao/
+                    # listar_orfaos_sienge já trazem registro_id + origem
+                    # prontos, direto da linha selecionada.
                     linha = pendencias_df[pendencias_df["numero_nota"] == nota_sel].iloc[0]
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "SELECT manifesto_id FROM egc.nf_conciliacao WHERE import_id = %s AND "
-                            "manifesto_id IN (SELECT id FROM egc.nf_manifesto_import WHERE numero_nota = %s AND import_id = %s)",
-                            (import_id_atual, nota_sel, import_id_atual),
-                        )
-                        row = cur.fetchone()
-                    if row:
-                        nf_sienge.atualizar_status_pendencia(conn, row[0], novo_status, usuario)
-                        st.success(f"Nota {nota_sel} marcada como {novo_status}.")
-                        _log_info(f"Pendência nota {nota_sel} -> {novo_status}", cod_empresa)
-                        st.rerun()
+                    if linha["origem"] == "SIENGE_ORFAO":
+                        nf_sienge.atualizar_status_orfao_sienge(conn, int(linha["registro_id"]), novo_status, usuario)
+                    else:
+                        nf_sienge.atualizar_status_pendencia(conn, int(linha["registro_id"]), novo_status, usuario)
+                    st.success(f"Nota {nota_sel} marcada como {novo_status}.")
+                    _log_info(f"Pendência nota {nota_sel} -> {novo_status}", cod_empresa)
+                    st.rerun()
 
 st.divider()
 

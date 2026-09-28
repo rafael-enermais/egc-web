@@ -144,6 +144,115 @@ def test_classificar_bills_vazio_nao_quebra():
     assert r["status"] == "NAO_ENCONTRADA"
 
 
+# ───────── direção reversa (bloco 14, FIX_20260928f) ─────────
+
+def _bills_completo(linhas):
+    """Fixture equivalente a _bills() acima, so' que com as colunas que
+    _filtrar_bills_orfaos usa (debtor_id/issue_date/creditor_nome --
+    acrescentadas a _carregar_bills_creditores nesta mudanca)."""
+    cols = ["bill_id", "debtor_id", "creditor_id", "document_identification_id", "document_number",
+            "issue_date", "total_invoice_amount", "access_key_number", "creditor_cnpj", "creditor_nome"]
+    return pd.DataFrame(linhas, columns=cols)
+
+
+def test_filtrar_orfaos_bill_valido_entra():
+    bills = _bills_completo([
+        [900, 591, 10, "NFE ", "111", pd.Timestamp("2026-07-15"), 500.0, None, "01.234.567/0001-00", "Fornecedor X"],
+    ])
+    mapa = {591: "ENERGIA"}
+    r = nf_sienge._filtrar_bills_orfaos(
+        bills, mapa, "ENERGIA", set(), pd.Timestamp("2026-07-01"), pd.Timestamp("2026-07-31"),
+    )
+    assert len(r) == 1
+    assert int(r.iloc[0]["bill_id"]) == 900
+
+
+def test_filtrar_orfaos_tipo_fora_do_universo_nfe_nf_nao_entra():
+    bills = _bills_completo([
+        [901, 591, 10, "RDV ", "222", pd.Timestamp("2026-07-15"), 500.0, None, "01.234.567/0001-00", "Fornecedor X"],
+    ])
+    mapa = {591: "ENERGIA"}
+    r = nf_sienge._filtrar_bills_orfaos(
+        bills, mapa, "ENERGIA", set(), pd.Timestamp("2026-07-01"), pd.Timestamp("2026-07-31"),
+    )
+    assert r.empty, "titulo que nao e' NFE/NF nao deve virar pendencia reversa"
+
+
+def test_filtrar_orfaos_debtor_de_outra_empresa_nao_entra():
+    # Protecao central do bloco 14: Sienge e' 1 conta so' pras 6 empresas,
+    # um titulo cujo debtor_id ja' foi confirmado de OUTRA empresa nao
+    # pode virar pendencia da empresa que esta' rodando a conferencia.
+    bills = _bills_completo([
+        [902, 723, 10, "NFE ", "333", pd.Timestamp("2026-07-15"), 500.0, None, "01.234.567/0001-00", "Fornecedor X"],
+    ])
+    mapa = {723: "SMG"}
+    r = nf_sienge._filtrar_bills_orfaos(
+        bills, mapa, "ENERGIA", set(), pd.Timestamp("2026-07-01"), pd.Timestamp("2026-07-31"),
+    )
+    assert r.empty
+
+
+def test_filtrar_orfaos_debtor_nunca_mapeado_nao_entra():
+    # debtor_id sem nenhum match LANCADA no historico ainda -- nao arrisca
+    # falso positivo, fica de fora ate' a empresa ter pelo menos 1 match.
+    bills = _bills_completo([
+        [903, 999, 10, "NFE ", "444", pd.Timestamp("2026-07-15"), 500.0, None, "01.234.567/0001-00", "Fornecedor X"],
+    ])
+    r = nf_sienge._filtrar_bills_orfaos(
+        bills, {}, "ENERGIA", set(), pd.Timestamp("2026-07-01"), pd.Timestamp("2026-07-31"),
+    )
+    assert r.empty
+
+
+def test_filtrar_orfaos_ja_associado_a_alguma_nota_nao_entra():
+    # Bill ja' tem sienge_bill_id preenchido em alguma linha de
+    # nf_conciliacao (mesmo que so' como candidato VALOR/NUMERO_DIVERGENTE)
+    # -- ja' esta' contabilizado do lado do match direto, nao e' "orfao".
+    bills = _bills_completo([
+        [904, 591, 10, "NFE ", "555", pd.Timestamp("2026-07-15"), 500.0, None, "01.234.567/0001-00", "Fornecedor X"],
+    ])
+    mapa = {591: "ENERGIA"}
+    r = nf_sienge._filtrar_bills_orfaos(
+        bills, mapa, "ENERGIA", {904}, pd.Timestamp("2026-07-01"), pd.Timestamp("2026-07-31"),
+    )
+    assert r.empty
+
+
+def test_filtrar_orfaos_fora_da_janela_de_data_nao_entra():
+    bills = _bills_completo([
+        [905, 591, 10, "NFE ", "666", pd.Timestamp("2026-01-01"), 500.0, None, "01.234.567/0001-00", "Fornecedor X"],
+    ])
+    mapa = {591: "ENERGIA"}
+    r = nf_sienge._filtrar_bills_orfaos(
+        bills, mapa, "ENERGIA", set(), pd.Timestamp("2026-07-01"), pd.Timestamp("2026-07-31"),
+    )
+    assert r.empty
+
+
+def test_filtrar_orfaos_bills_vazio_nao_quebra():
+    r = nf_sienge._filtrar_bills_orfaos(
+        _bills_completo([]), {}, "ENERGIA", set(), pd.Timestamp("2026-07-01"), pd.Timestamp("2026-07-31"),
+    )
+    assert r.empty
+
+
+def test_mapear_debtor_para_empresa_inequivoco():
+    cur = FakeCursor(fetchall_result=[(591, "ENERGIA", 12)])
+    conn = FakeConn(cur)
+    mapa = nf_sienge._mapear_debtor_para_empresa(conn)
+    assert mapa == {591: "ENERGIA"}
+
+
+def test_mapear_debtor_para_empresa_ambiguo_fica_de_fora():
+    # Mesmo debtor_id ja' bateu LANCADA com 2 empresas diferentes em algum
+    # momento do historico -- relacao ambigua, nao confia (nao deveria
+    # acontecer, mas ja' teve mais de 1 bug de dado real neste projeto).
+    cur = FakeCursor(fetchall_result=[(591, "ENERGIA", 5), (591, "SMG", 1)])
+    conn = FakeConn(cur)
+    mapa = nf_sienge._mapear_debtor_para_empresa(conn)
+    assert mapa == {}
+
+
 # ───────────────────── mock de conexao (DB-API) ─────────────────────
 
 class FakeCursor:

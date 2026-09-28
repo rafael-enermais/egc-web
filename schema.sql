@@ -572,3 +572,56 @@ CREATE POLICY egc_app_full_access ON egc.contatos_relatorio FOR ALL TO egc_app U
 
 -- Fim do bloco 13. Rodar so' este bloco no SQL Editor do Supabase
 -- (projeto radar-comercial) -- nao precisa rodar o arquivo inteiro de novo.
+
+-- =====================================================================
+-- BLOCO 14 — Direcao reversa da conciliacao de Notas Fiscais (Sienge sem
+-- nota no manifesto)
+--
+--   Pedido explicito do Rafael 28/09/2026: "A nota q estiver no Sienge,
+--   e nao tiver na receita, tem q virar pendencia tb, (nao e' pra
+--   acontecer, mas caso aconteca importante nao passar batido)".
+--
+--   nf_conciliacao (bloco anterior) NAO serve pra isso -- manifesto_id e'
+--   NOT NULL (1 linha = 1 nota do MANIFESTO), e aqui e' o oposto: sobra
+--   titulo, falta nota. Por isso tabela propria.
+--
+--   Escopo (ver nf_sienge.py, funcao identificar_e_gravar_bills_orfaos e
+--   o bloco de comentario acima dela pra o raciocinio completo): o
+--   Sienge e' 1 conta so' compartilhada pelas 6 empresas do grupo, entao
+--   um titulo so' e' considerado "orfao" desta empresa quando o
+--   debtor_id dele ja bateu, sem ambiguidade, com esta empresa em algum
+--   match LANCADA anterior (aprendido sozinho, sem de-para manual) -- e
+--   dentro da janela de data das notas deste import (+-15 dias). Reduz
+--   falso positivo (titulo de outra empresa aparecendo pendencia aqui)
+--   ao custo de so' comecar a funcionar pra empresa que ja' teve pelo
+--   menos 1 nota encontrada no Sienge alguma vez.
+-- =====================================================================
+
+CREATE TABLE IF NOT EXISTS egc.nf_bills_orfaos (
+  id                     bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  import_id              uuid NOT NULL,
+  empresa_codigo         text NOT NULL,
+  bill_id                bigint NOT NULL,
+  document_number        text,
+  issue_date             date,
+  total_invoice_amount   numeric(14,2),
+  creditor_nome          text,
+  creditor_cnpj          text,
+  pendencia_status       text CHECK (pendencia_status IS NULL OR pendencia_status IN ('PENDENTE','ENVIADO_SUPRIMENTOS','RESOLVIDO','DESCARTADO')),
+  atualizado_por         text,
+  atualizado_em          timestamptz NOT NULL DEFAULT now(),
+  criado_em              timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_nf_bills_orfaos_import ON egc.nf_bills_orfaos (import_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_nf_bills_orfaos_import_bill ON egc.nf_bills_orfaos (import_id, bill_id);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON egc.nf_bills_orfaos TO egc_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA egc TO egc_app;
+
+ALTER TABLE egc.nf_bills_orfaos ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS egc_app_full_access ON egc.nf_bills_orfaos;
+CREATE POLICY egc_app_full_access ON egc.nf_bills_orfaos FOR ALL TO egc_app USING (true) WITH CHECK (true);
+
+-- Fim do bloco 14. Rodar so' este bloco no SQL Editor do Supabase
+-- (projeto radar-comercial) -- nao precisa rodar o arquivo inteiro de novo.
