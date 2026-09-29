@@ -396,6 +396,15 @@ if st.button("Gerar relatório", type="primary", key="relatorio_gerar_btn", disa
             pass  # log e' melhor-esforco -- o PDF ja foi gerado e entregue, nao pode quebrar por causa disso
     except Exception as exc:
         st.error(f"Não foi possível gerar o relatório: {exc}")
+        # FIX_20260929l (Rafael, 29/09: consolidado multi-CNPJ + 1 período
+        # travando com "unhashable type: 'list'" em produção -- 3700+
+        # cenários sintéticos/AppTest não reproduziram, precisa do
+        # traceback real). Diagnóstico temporário: mostra o traceback
+        # completo (arquivo/linha) além da mensagem curta -- reverter
+        # depois que a causa real for identificada e corrigida.
+        import traceback
+        with st.expander("🔍 Detalhe técnico do erro (diagnóstico temporário)"):
+            st.code(traceback.format_exc())
 
 st.divider()
 with st.expander("📜 Últimas gerações"):
