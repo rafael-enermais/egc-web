@@ -27,6 +27,7 @@ jobs:
 
       - name: Rodar a ingestao
         env:
+          NF_DIAS_RETROATIVOS: "90"
           SIENGE_BASE_URL: ${{ secrets.SIENGE_BASE_URL }}
           SIENGE_USER: ${{ secrets.SIENGE_USER }}
           SIENGE_PASSWORD: ${{ secrets.SIENGE_PASSWORD }}
