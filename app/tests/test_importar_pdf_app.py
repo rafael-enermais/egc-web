@@ -117,6 +117,83 @@ def test_importar_pdf_sem_cnpj_nao_defaulta_pra_energia():
         print("OK: Importar PDF — CNPJ nao identificado nao defaulta mais silenciosamente pra Energia")
 
 
+FAKE_RESULT_DRE_COM_GRANULARIDADE = [
+    {
+        "arquivo": "smg_dre_2trim.pdf",
+        "bp_rows": [],
+        "dre_rows": [("RECEITA BRUTA", 1000.0, "RECEITAS", "PDF")],
+        "admin_itens": [],
+        "log": [],
+        "meta": [(
+            "SMG Solucoes Ltda", "18.387.666/0001-00", "30/06/2026",
+            "smg_dre_2trim.pdf", "DRE", "SPED", "01/04/2026", "trimestral",
+        )],
+    }
+]
+
+
+def test_importar_pdf_granularidade_editavel_default_e_override():
+    # FIX_20260929c: a contadora confirma/corrige a granularidade detectada
+    # antes de gravar (pedido do Rafael: "ela define e confirma se e'
+    # trimestral, semestral, etc"). Cobre: (1) o selectbox aparece pra DRE
+    # com o valor DETECTADO como default; (2) se ela troca pra outro valor,
+    # e' ESSE que vai pro banco (nao o detectado cru).
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_importacoes_recentes", return_value=[]), \
+         patch.object(db, "inativar_periodo_existente", return_value=0) as mock_inativar, \
+         patch.object(db, "inserir_lancamentos", return_value=1) as mock_inserir, \
+         patch.object(db, "registrar_importacao", return_value=None):
+
+        at = AppTest.from_file(PAGE)
+        at.session_state["import_resultados"] = [dict(FAKE_RESULT_DRE_COM_GRANULARIDADE[0])]
+        at.run(timeout=30)
+        assert not at.exception, f"excecao com DRE + granularidade detectada: {at.exception}"
+
+        sel = at.selectbox(key="granularidade_confirmada_0")
+        assert sel.value == "trimestral", f"default deveria ser o detectado ('trimestral'), veio {sel.value!r}"
+
+        # contadora corrige pra semestral (ex.: o mesmo fechamento tem os
+        # dois modelos e ela decide que este PDF e' o semestral)
+        sel.set_value("semestral").run(timeout=30)
+        assert not at.exception, f"excecao apos corrigir granularidade: {at.exception}"
+
+        botoes_gravar = [b for b in at.button if "Gravar" in b.label]
+        assert botoes_gravar, "botao de gravar deveria estar disponivel (CNPJ resolvido, tem DRE)"
+        botoes_gravar[0].click().run(timeout=30)
+        assert not at.exception, f"excecao ao gravar com granularidade corrigida: {at.exception}"
+
+        assert mock_inativar.called, "db.inativar_periodo_existente deveria ter sido chamado"
+        assert mock_inativar.call_args.kwargs.get("granularidade") == "semestral", (
+            f"inativar_periodo_existente deveria usar a granularidade CORRIGIDA ('semestral'), "
+            f"veio {mock_inativar.call_args.kwargs.get('granularidade')!r}"
+        )
+        assert mock_inserir.called, "db.inserir_lancamentos deveria ter sido chamado"
+        assert mock_inserir.call_args.kwargs.get("granularidade") == "semestral", (
+            f"inserir_lancamentos deveria gravar a granularidade CORRIGIDA ('semestral'), "
+            f"veio {mock_inserir.call_args.kwargs.get('granularidade')!r}"
+        )
+        print("OK: Importar PDF — granularidade editavel, default = detectada, override vai pro banco")
+
+
+def test_importar_pdf_bp_nao_tem_selector_de_granularidade():
+    # BP e' foto de 1 data -- nunca teve periodo_inicio/intervalo declarado,
+    # entao nao teria sentido pedir pra contadora "inventar" uma cobertura
+    # (REGRA DE OURO: nunca inventa dado). Confirma que so' aparece o
+    # selector de granularidade pra DRE, nao pra BP.
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_importacoes_recentes", return_value=[]):
+        at = AppTest.from_file(PAGE)
+        at.session_state["import_resultados"] = [dict(FAKE_RESULT_SEM_CNPJ[0])]  # tipo BP
+        at.run(timeout=30)
+        assert not at.exception, f"excecao com BP: {at.exception}"
+        assert not any(s.key == "granularidade_confirmada_0" for s in at.selectbox), (
+            "BP nao deveria ter selector de granularidade"
+        )
+        print("OK: Importar PDF — BP nao ganha selector de granularidade (so' DRE)")
+
+
 def test_importar_pdf_historico_vazio_sem_excecao():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \

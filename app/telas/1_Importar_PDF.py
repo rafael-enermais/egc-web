@@ -63,6 +63,15 @@ NOME_POR_COD = {cod: nome for cod, nome, _cnpj in EMPRESAS_FIXAS}
 COLUNAS_BP = ["Grupo", "Conta", "Valor", "Origem"]
 COLUNAS_DRE = ["Conta", "Valor", "Grupo", "Origem"]
 
+# Editavel pela contadora (FIX_20260929c) -- ela confirma/corrige a
+# granularidade detectada antes de gravar. "" = "não declarada" (mesmo
+# rotulo usado em 2_Revisao_Correcao.py/3_Arquivar_Recuperar.py/
+# 4_Visao_Grupo.py/8_Relatorio_Comentado.py pra consistencia visual).
+_OPCOES_GRANULARIDADE = {
+    "": "Não declarada", "mensal": "Mensal", "trimestral": "Trimestral",
+    "semestral": "Semestral", "anual": "Anual", "outra": "Outro intervalo",
+}
+
 st.title("📥 Importar PDF")
 
 usuario = usuario_atual()
@@ -207,13 +216,31 @@ if resultados:
             if r["meta"]:
                 empresa, cnpj, periodo, nome_arq, tipo, fmt, periodo_inicio, granularidade = r["meta"][0]
                 st.write(f"**Empresa detectada no PDF:** {empresa} ({cnpj or 'CNPJ não identificado'}) — **Período:** {periodo} — **Tipo:** {tipo} — **Formato:** {fmt}")
-                # Granularidade real (24/09/2026): so' mostra quando o proprio
-                # PDF declarou o intervalo -- BP nao tem (e foto de 1 data),
-                # e nunca e' inferida por calculo, so' lida do documento.
-                if periodo_inicio and granularidade:
-                    st.caption(f"📅 Cobertura detectada: {periodo_inicio} a {periodo} — **{granularidade}**")
-                elif tipo == "DRE":
-                    st.caption("📅 Cobertura: não consegui identificar o intervalo declarado no PDF (granularidade ficará em branco).")
+                # Granularidade (29/09/2026, FIX_20260929c): editavel pela
+                # contadora -- ela confirma ou corrige o que foi detectado
+                # antes de gravar (pedido do Rafael: "ela define e confirma
+                # se e' trimestral, semestral, etc"). So' aparece pra DRE --
+                # BP nao tem intervalo, e' foto de 1 data (nunca teve
+                # periodo_inicio pra comecar), entao nao faz sentido pedir
+                # pra contadora "inventar" uma cobertura que o PDF nao
+                # declara (REGRA DE OURO: nunca inventa numero/dado).
+                if tipo == "DRE":
+                    if periodo_inicio and granularidade:
+                        st.caption(f"📅 Cobertura declarada no PDF: {periodo_inicio} a {periodo} — detectei **{granularidade}**. Confirme ou corrija abaixo:")
+                    else:
+                        st.caption("📅 Não consegui identificar o intervalo declarado no PDF — selecione a granularidade manualmente:")
+                    granularidade_escolhida = st.selectbox(
+                        "Granularidade deste DRE",
+                        list(_OPCOES_GRANULARIDADE.keys()),
+                        index=list(_OPCOES_GRANULARIDADE.keys()).index(granularidade if granularidade in _OPCOES_GRANULARIDADE else ""),
+                        format_func=lambda g: _OPCOES_GRANULARIDADE[g],
+                        key=f"granularidade_confirmada_{i}",
+                    )
+                    r["_granularidade_confirmada"] = granularidade_escolhida
+                else:
+                    # BP: sem selector -- fica sempre "" (nunca declarada),
+                    # consistente com parser_egc.calcular_granularidade.
+                    r["_granularidade_confirmada"] = ""
 
                 resolucao = empresa_por_cnpj(cnpj)
                 if resolucao:
@@ -348,7 +375,14 @@ if resultados:
                             periodo_inicio_date = _dt.datetime.strptime(periodo_inicio, "%d/%m/%Y").date()
                         except Exception:
                             periodo_inicio_date = None
-                    granularidade_val = granularidade or None
+                    # FIX_20260929c: usa a granularidade CONFIRMADA pela
+                    # contadora na previa (widget por linha, secao 2) -- nao
+                    # a detectada crua -- se ela corrigiu, e' essa que vale.
+                    # r.get(...) com fallback pro valor detectado cobre o
+                    # caso (nao deveria acontecer) de o widget nao ter
+                    # rodado pra este item.
+                    granularidade_confirmada = r.get("_granularidade_confirmada", granularidade or "")
+                    granularidade_val = granularidade_confirmada or None
 
                     for tipo, rows in (("BP", r["bp_rows"]), ("DRE", r["dre_rows"])):
                         if not rows:
@@ -359,7 +393,7 @@ if resultados:
                             # um semestral ativo (ou vice-versa) que porventura
                             # feche na MESMA data (ver db.inativar_periodo_existente).
                             n_inativados = db.inativar_periodo_existente(
-                                conn, cod_g, periodo_date, tipo, granularidade=granularidade or "",
+                                conn, cod_g, periodo_date, tipo, granularidade=granularidade_confirmada,
                             )
                             n_gravados = db.inserir_lancamentos(
                                 conn, cod_g, tipo, periodo_date, rows, r["arquivo"], usuario,
