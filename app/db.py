@@ -47,7 +47,14 @@ def listar_empresas(conn) -> list[dict]:
 # ─────────────────────────────────────────────
 
 def listar_periodos(conn, empresa_codigo: str, status: str = "ATIVO") -> list[date]:
-    """Períodos distintos de uma empresa com o status pedido (ATIVO ou INATIVO)."""
+    """
+    Períodos distintos (só a data-fim) de uma empresa com o status pedido
+    (ATIVO ou INATIVO). Continua devolvendo so' `date` -- usado em varios
+    lugares que so' precisam da data (Revisao/Correcao, Arquivar/
+    Recuperar, Visao Grupo, chat) e nao decidem entre 2 granularidades do
+    mesmo periodo_fim. Onde essa decisao importa de verdade (gerador de
+    relatorio, painel de completude), usa listar_periodos_detalhado.
+    """
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -61,18 +68,62 @@ def listar_periodos(conn, empresa_codigo: str, status: str = "ATIVO") -> list[da
         return [row[0] for row in cur.fetchall()]
 
 
+def listar_periodos_detalhado(conn, empresa_codigo: str, status: str = "ATIVO") -> list[dict]:
+    """
+    Fase 3 (29/09/2026, "vamos estruturar e implantar a granularidade...
+    podemos casar toda a estrutura com isso"): mesma consulta de
+    listar_periodos, mas 1 linha por (periodo, granularidade) -- pra
+    quem precisa DIFERENCIAR um semestre fechado de um trimestre que
+    fecham na MESMA data (ex. 30/06/2026), em vez de colapsar num só
+    `date`. Usado pelo seletor de período do Relatório Comentado e pelo
+    painel de completude/pendências.
+
+    Retorna [{"periodo": date, "granularidade": str}, ...], mais recente
+    primeiro; granularidade "" = não declarada no PDF (BP sem intervalo
+    próprio, ou import anterior a 24/09/2026 -- normalizado pelo bloco 16
+    do schema.sql, nunca None aqui).
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT periodo, COALESCE(granularidade, '') AS granularidade
+            FROM egc.lancamentos
+            WHERE empresa_codigo = %s AND status = %s
+            ORDER BY periodo DESC, granularidade
+            """,
+            (empresa_codigo, status),
+        )
+        return [{"periodo": row[0], "granularidade": row[1]} for row in cur.fetchall()]
+
+
 # ─────────────────────────────────────────────
 #  IMPORTACAO
 # ─────────────────────────────────────────────
 
-def inativar_periodo_existente(conn, empresa_codigo: str, periodo: date, tipo: str) -> int:
+def inativar_periodo_existente(
+    conn, empresa_codigo: str, periodo: date, tipo: str, granularidade: str = "",
+) -> int:
     """
-    Reimportacao do MESMO empresa+periodo+tipo: inativa (nunca apaga) as
-    linhas ATIVAS anteriores antes de gravar as novas — equivalente ao
-    'FIX CRITICO 20/07/2026' do VBA (remove linhas pre-existentes antes
-    de regravar), so que aqui vira soft-inactivate em vez de hard-delete,
-    seguindo a mesma filosofia que levou a remover o 'Desfazer' do painel
-    (nunca apagar historico de forma irreversivel).
+    Reimportacao do MESMO empresa+periodo+tipo+granularidade: inativa
+    (nunca apaga) as linhas ATIVAS anteriores antes de gravar as novas —
+    equivalente ao 'FIX CRITICO 20/07/2026' do VBA (remove linhas
+    pre-existentes antes de regravar), so que aqui vira soft-inactivate
+    em vez de hard-delete, seguindo a mesma filosofia que levou a
+    remover o 'Desfazer' do painel (nunca apagar historico de forma
+    irreversivel).
+
+    granularidade (Fase 3, 29/09/2026 -- resposta pra pergunta real do
+    Rafael sobre 2 PDFs do mesmo empresa+periodo_fim com abrangencia
+    diferente, ex. semestre x trimestre ambos fechando 30/06/2026):
+    ANTES desta mudanca, so' olhava empresa+periodo+tipo -- o 2o PDF
+    inativava o 1o mesmo com granularidade DIFERENTE, sem avisar que a
+    abrangencia tinha mudado. Agora so' inativa o que tem a MESMA
+    granularidade (default "" = sem intervalo declarado, o caso comum
+    de BP e de imports anteriores a 24/09/2026) -- reimportar o
+    trimestral de novo continua substituindo so' o trimestral antigo; o
+    semestral que porventura esteja ativo pro mesmo periodo_fim fica
+    intocado, os dois convivem (ver bloco 17 do schema.sql, chave ativa
+    agora inclui granularidade).
     Retorna quantas linhas foram inativadas.
     """
     with conn.cursor() as cur:
@@ -80,9 +131,10 @@ def inativar_periodo_existente(conn, empresa_codigo: str, periodo: date, tipo: s
             """
             UPDATE egc.lancamentos
             SET status = 'INATIVO', atualizado_em = now()
-            WHERE empresa_codigo = %s AND periodo = %s AND tipo = %s AND status = 'ATIVO'
+            WHERE empresa_codigo = %s AND periodo = %s AND tipo = %s
+              AND COALESCE(granularidade, '') = %s AND status = 'ATIVO'
             """,
-            (empresa_codigo, periodo, tipo),
+            (empresa_codigo, periodo, tipo, granularidade),
         )
         return cur.rowcount
 
@@ -278,17 +330,31 @@ def listar_importacoes_recentes(conn, limite: int = 30) -> list[dict]:
 #  REVISAO / CORRECAO MANUAL
 # ─────────────────────────────────────────────
 
-def listar_lancamentos(conn, empresa_codigo: str, periodo: date, tipo: str, status: str = "ATIVO") -> list[dict]:
+def listar_lancamentos(
+    conn, empresa_codigo: str, periodo: date, tipo: str, status: str = "ATIVO",
+    granularidade: Optional[str] = None,
+) -> list[dict]:
+    """
+    granularidade (Fase 3, 29/09/2026): filtro OPCIONAL -- None (default)
+    nao filtra (comportamento de sempre, usado por quem ainda nao decide
+    entre 2 granularidades do mesmo periodo_fim, ex. Revisao/Correcao).
+    Passe explicitamente (mesmo "") quando 2 documentos podem coexistir
+    ATIVOS pro mesmo periodo_fim (ver inativar_periodo_existente) e o
+    chamador precisa de UM dos dois, nao os dois misturados -- caso do
+    gerador de relatorio (dados_relatorio_comentado.montar_dados_relatorio).
+    """
+    sql = """
+        SELECT id, grupo, conta, valor, origem, pdf_original, arquivo_pdf, atualizado_em
+        FROM egc.lancamentos
+        WHERE empresa_codigo = %s AND periodo = %s AND tipo = %s AND status = %s
+    """
+    params = [empresa_codigo, periodo, tipo, status]
+    if granularidade is not None:
+        sql += " AND COALESCE(granularidade, '') = %s"
+        params.append(granularidade)
+    sql += " ORDER BY grupo, conta"
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT id, grupo, conta, valor, origem, pdf_original, arquivo_pdf, atualizado_em
-            FROM egc.lancamentos
-            WHERE empresa_codigo = %s AND periodo = %s AND tipo = %s AND status = %s
-            ORDER BY grupo, conta
-            """,
-            (empresa_codigo, periodo, tipo, status),
-        )
+        cur.execute(sql, tuple(params))
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
@@ -353,31 +419,47 @@ def salvar_correcao_manual(
 #  ARQUIVAR / RECUPERAR (equivalente a ArquivarImportacao/RecuperarImportacao)
 # ─────────────────────────────────────────────
 
-def arquivar_periodo(conn, empresa_codigo: str, periodo: date) -> int:
-    """Inativa TODAS as linhas (BP+DRE) do periodo — nunca apaga."""
+def arquivar_periodo(conn, empresa_codigo: str, periodo: date, granularidade: Optional[str] = None) -> int:
+    """
+    Inativa TODAS as linhas (BP+DRE) do periodo — nunca apaga.
+
+    granularidade (Fase 3, 29/09/2026): filtro OPCIONAL -- None (default)
+    arquiva TODAS as granularidades desse periodo_fim de uma vez (mesmo
+    comportamento de sempre; se so' existe 1 granularidade ativa nesse
+    periodo, que e' o caso comum, nao muda nada). Passe explicitamente
+    quando o periodo_fim tem 2 granularidades ATIVAS ao mesmo tempo (ex.
+    trimestral e semestral, ambos fechando 30/06/2026) e so' 1 delas deve
+    ser arquivada.
+    """
+    sql = """
+        UPDATE egc.lancamentos
+        SET status = 'INATIVO', atualizado_em = now()
+        WHERE empresa_codigo = %s AND periodo = %s AND status = 'ATIVO'
+    """
+    params = [empresa_codigo, periodo]
+    if granularidade is not None:
+        sql += " AND COALESCE(granularidade, '') = %s"
+        params.append(granularidade)
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            UPDATE egc.lancamentos
-            SET status = 'INATIVO', atualizado_em = now()
-            WHERE empresa_codigo = %s AND periodo = %s AND status = 'ATIVO'
-            """,
-            (empresa_codigo, periodo),
-        )
+        cur.execute(sql, tuple(params))
         return cur.rowcount
 
 
-def recuperar_periodo(conn, empresa_codigo: str, periodo: date) -> int:
-    """Reativa um periodo previamente arquivado."""
+def recuperar_periodo(conn, empresa_codigo: str, periodo: date, granularidade: Optional[str] = None) -> int:
+    """Reativa um periodo previamente arquivado. granularidade: mesmo filtro
+    opcional de arquivar_periodo (None = todas as granularidades desse
+    periodo_fim)."""
+    sql = """
+        UPDATE egc.lancamentos
+        SET status = 'ATIVO', atualizado_em = now()
+        WHERE empresa_codigo = %s AND periodo = %s AND status = 'INATIVO'
+    """
+    params = [empresa_codigo, periodo]
+    if granularidade is not None:
+        sql += " AND COALESCE(granularidade, '') = %s"
+        params.append(granularidade)
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            UPDATE egc.lancamentos
-            SET status = 'ATIVO', atualizado_em = now()
-            WHERE empresa_codigo = %s AND periodo = %s AND status = 'INATIVO'
-            """,
-            (empresa_codigo, periodo),
-        )
+        cur.execute(sql, tuple(params))
         return cur.rowcount
 
 
@@ -422,6 +504,27 @@ def listar_periodos_grupo(conn, empresas_codigos: list[str], status: str = "ATIV
         return [row[0] for row in cur.fetchall()]
 
 
+def listar_periodos_grupo_detalhado(conn, empresas_codigos: list[str], status: str = "ATIVO") -> list[dict]:
+    """
+    Mesma logica de listar_periodos_detalhado, mas pra uniao de varias
+    empresas (equivalente detalhado de listar_periodos_grupo) -- usado
+    pelo painel de completude/pendencias e pelo modo multi-empresa do
+    Relatorio Comentado, que precisam saber QUAL granularidade cada
+    periodo tem, nao so' a data.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT periodo, COALESCE(granularidade, '') AS granularidade
+            FROM egc.lancamentos
+            WHERE empresa_codigo = ANY(%s) AND status = %s
+            ORDER BY periodo DESC, granularidade
+            """,
+            (empresas_codigos, status),
+        )
+        return [{"periodo": row[0], "granularidade": row[1]} for row in cur.fetchall()]
+
+
 def listar_lancamentos_grupo_periodos(
     conn, periodos: list[date], tipo: str, empresas_codigos: list[str], status: str = "ATIVO"
 ) -> list[dict]:
@@ -437,11 +540,17 @@ def listar_lancamentos_grupo_periodos(
     (1 periodo) continua existindo do jeito que esta' -- usada pela tabela
     de detalhe (1 periodo por vez) e pela ferramenta consultar_visao_grupo
     do chat, sem mudar nenhuma das duas.
+
+    Cada linha ganha tambem `granularidade` (Fase 3, 29/09/2026) -- usado
+    pelo painel de completude (visao_grupo.calcular_completude_grupo) pra
+    nao misturar 2 documentos de abrangencia diferente no mesmo
+    periodo_fim como se fossem 1 so'. Quem so' precisa de periodo+conta
+    (ex. indicadores.calcular_indicadores) ignora a coluna extra.
     """
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT empresa_codigo, periodo, grupo, conta, valor
+            SELECT empresa_codigo, periodo, grupo, conta, valor, COALESCE(granularidade, '') AS granularidade
             FROM egc.lancamentos
             WHERE periodo = ANY(%s) AND tipo = %s AND status = %s AND empresa_codigo = ANY(%s)
             ORDER BY periodo, grupo, conta
@@ -453,7 +562,8 @@ def listar_lancamentos_grupo_periodos(
 
 
 def listar_lancamentos_grupo(
-    conn, periodo: date, tipo: str, empresas_codigos: list[str], status: str = "ATIVO"
+    conn, periodo: date, tipo: str, empresas_codigos: list[str], status: str = "ATIVO",
+    granularidade: Optional[str] = None,
 ) -> list[dict]:
     """
     Lancamentos "achatados" (1 linha por empresa+grupo+conta) de varias
@@ -468,17 +578,25 @@ def listar_lancamentos_grupo(
     seguro. Contas que so existem em 1 empresa ficam com 0 nas outras --
     normal (cada empresa tem seu proprio plano de contas), igual na
     planilha "BALANCO GRUPO"/"DRE GRUPO".
+
+    granularidade (Fase 3, 29/09/2026): filtro OPCIONAL, mesma regra de
+    listar_lancamentos -- None nao filtra (compatibilidade); passe
+    explicitamente quando o periodo_fim pode ter 2 granularidades ATIVAS
+    ao mesmo tempo e o consolidado precisa de UMA so' (ver
+    dados_relatorio_comentado._consolidar_periodo).
     """
+    sql = """
+        SELECT empresa_codigo, grupo, conta, valor
+        FROM egc.lancamentos
+        WHERE periodo = %s AND tipo = %s AND status = %s AND empresa_codigo = ANY(%s)
+    """
+    params = [periodo, tipo, status, empresas_codigos]
+    if granularidade is not None:
+        sql += " AND COALESCE(granularidade, '') = %s"
+        params.append(granularidade)
+    sql += " ORDER BY grupo, conta"
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT empresa_codigo, grupo, conta, valor
-            FROM egc.lancamentos
-            WHERE periodo = %s AND tipo = %s AND status = %s AND empresa_codigo = ANY(%s)
-            ORDER BY grupo, conta
-            """,
-            (periodo, tipo, status, empresas_codigos),
-        )
+        cur.execute(sql, tuple(params))
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
@@ -487,24 +605,40 @@ def listar_lancamentos_grupo(
 #  PROJECAO (BP/DRE) — ajustes manuais + materializacao
 # ─────────────────────────────────────────────
 
-def listar_historico_grupo(conn, empresa_codigo: str, tipo: str, status: str = "ATIVO") -> list[dict]:
+def listar_historico_grupo(
+    conn, empresa_codigo: str, tipo: str, status: str = "ATIVO", granularidade: Optional[str] = None,
+) -> list[dict]:
     """
     TODO o historico (todos os periodos, nao so 1) de 1 empresa+tipo,
     achatado (1 linha por periodo+grupo+conta) -- usado no Dashboard de
     Projecao pra montar a serie temporal de cada conta (agrupado
-    client-side por (grupo,conta) e passado pra projecao.gerar_baseline).
+    client-side por (grupo,conta) e passado pra projecao.gerar_baseline)
+    e nos indicadores contabeis da Inicio (indicadores.calcular_indicadores).
     Ordena por periodo, grupo, conta.
+
+    granularidade (Fase 3, 29/09/2026): filtro OPCIONAL, None por padrao
+    (nao filtra -- comportamento de sempre). LIMITACAO CONHECIDA ainda
+    NAO resolvida nesta fase: se um periodo_fim tiver 2 granularidades
+    ATIVAS ao mesmo tempo (ex. trimestral e semestral, ambos 30/06/2026)
+    e quem chama nao passar granularidade, indicadores.calcular_indicadores
+    (groupby periodo+conta) SOMA as 2 no mesmo ponto da serie -- indicador
+    errado sem aviso. Series temporais (Inicio, KPI consolidado do grupo)
+    ainda nao filtram por granularidade nesta fase -- ver PROJETO_EGC_v3.0.md/
+    00-handoff.md pra esse item ficar registrado como pendencia conhecida,
+    nao escondido.
     """
+    sql = """
+        SELECT periodo, grupo, conta, valor
+        FROM egc.lancamentos
+        WHERE empresa_codigo = %s AND tipo = %s AND status = %s
+    """
+    params = [empresa_codigo, tipo, status]
+    if granularidade is not None:
+        sql += " AND COALESCE(granularidade, '') = %s"
+        params.append(granularidade)
+    sql += " ORDER BY periodo, grupo, conta"
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT periodo, grupo, conta, valor
-            FROM egc.lancamentos
-            WHERE empresa_codigo = %s AND tipo = %s AND status = %s
-            ORDER BY periodo, grupo, conta
-            """,
-            (empresa_codigo, tipo, status),
-        )
+        cur.execute(sql, tuple(params))
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 

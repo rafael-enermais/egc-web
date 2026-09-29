@@ -658,3 +658,89 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_lancamentos_ativo
 
 -- Fim do bloco 15. Rodar so' este bloco no SQL Editor do Supabase
 -- (projeto radar-comercial) -- nao precisa rodar o arquivo inteiro de novo.
+-- SUPERSEDIDO pelo bloco 17 (29/09/2026) -- granularidade entra na chave
+-- de identidade do periodo ativo. O bloco 17 substitui este indice pelo
+-- dele (DROP + CREATE de novo com a coluna a mais); nao precisa rodar
+-- este bloco 15 separado se for direto pro 17.
+
+-- =====================================================================
+-- BLOCO 16 — Normaliza periodo_inicio/granularidade em egc.lancamentos
+--
+--   Pergunta real do Rafael (29/09/2026): "a contadora possui PDF... 1
+--   semestre fechado e 1 trimestre, de 04/2026 a 06/2026 -- Oq acontece
+--   se eu subir, ele diferencia por esse periodo?" -- resposta apurada
+--   direto no codigo (nao suposicao): periodo_inicio/granularidade ja
+--   eram capturados por linha desde 24/09/2026 (parser_egc.
+--   calcular_granularidade, a partir do "Periodo: X a Y" que o PROPRIO
+--   PDF declara -- nunca calculado/estimado), mas nao entravam na
+--   identidade de "periodo ativo" em lugar nenhum -- 2 documentos com o
+--   MESMO periodo_fim (ex. 30/06/2026) colidiam como se fossem o mesmo
+--   import, e o 2o inativava o 1o silenciosamente (aviso generico "N
+--   linha(s) arquivada(s)", sem mencionar que a ABRANGENCIA mudou).
+--
+--   Resposta do Rafael (29/09/2026): "vamos estruturar e implantar a
+--   granularidade, pq acredito q sempre vai existir... podemos casar
+--   toda a estrutura com isso". Este bloco e' a fundacao (coluna
+--   normalizada); o bloco 17 muda a CHAVE de identidade em si.
+--
+--   Idempotente -- pode rodar de novo sem efeito colateral mesmo se
+--   periodo_inicio/granularidade ja existirem (foram adicionadas fora
+--   de banda em 24/09/2026, sem entrar no DDL base la em cima -- ver
+--   fallback UndefinedColumn em db.inserir_lancamentos, agora so'
+--   rede de seguranca residual).
+-- =====================================================================
+
+ALTER TABLE egc.lancamentos ADD COLUMN IF NOT EXISTS periodo_inicio date;
+ALTER TABLE egc.lancamentos ADD COLUMN IF NOT EXISTS granularidade text;
+
+-- Normaliza NULL -> '' (BP legado sem intervalo, ou import anterior a
+-- 24/09/2026) ANTES de travar NOT NULL -- '' e' o valor real usado pelo
+-- resto do sistema pra "sem intervalo declarado" (parser_egc.
+-- calcular_granularidade ja devolve '' nesse caso, nunca None a partir
+-- daqui), NUNCA NULL (NULL quebraria a comparacao de igualdade da
+-- chave ativa do bloco 17 -- Postgres nunca considera NULL = NULL).
+UPDATE egc.lancamentos SET granularidade = '' WHERE granularidade IS NULL;
+ALTER TABLE egc.lancamentos ALTER COLUMN granularidade SET DEFAULT '';
+ALTER TABLE egc.lancamentos ALTER COLUMN granularidade SET NOT NULL;
+
+-- Fim do bloco 16. Rodar so' este bloco no SQL Editor do Supabase
+-- (projeto radar-comercial) -- nao precisa rodar o arquivo inteiro de novo.
+
+-- =====================================================================
+-- BLOCO 17 — Granularidade entra na chave de identidade do periodo ativo
+--
+--   Continuacao do bloco 16 (mesmo pedido, 29/09/2026): antes,
+--   "periodo ativo" = (empresa_codigo, tipo, periodo). Agora =
+--   (empresa_codigo, tipo, periodo, granularidade) -- um semestre
+--   fechado e um trimestre com o MESMO periodo_fim podem conviver
+--   ATIVOS ao mesmo tempo (2 linhas por conta, uma de cada
+--   granularidade) em vez de um sobrescrever o outro.
+--
+--   Pre-requisito (mesma logica do bloco 15 original): se o bloco 15 ja
+--   rodou, o indice antigo (sem granularidade) ja impedia 2 linhas ATIVO
+--   colidirem em empresa+tipo+periodo+grupo+conta -- entao NUNCA existem
+--   hoje 2 granularidades diferentes ATIVAS pro mesmo periodo_fim (o 2o
+--   import ja tinha inativado o 1o antes deste bloco rodar), e o DROP+
+--   CREATE abaixo e' seguro sem checagem extra. Se o bloco 15 NUNCA
+--   rodou, rode a mesma consulta de conferencia (conferencia_
+--   lancamentos_20260929.txt) antes -- por seguranca, nao por
+--   necessidade tecnica nova (a chave so' ficou MAIS especifica, nunca
+--   menos).
+-- =====================================================================
+
+DROP INDEX IF EXISTS egc.uq_lancamentos_ativo;
+CREATE UNIQUE INDEX uq_lancamentos_ativo
+  ON egc.lancamentos (empresa_codigo, tipo, periodo, granularidade, grupo, conta)
+  WHERE status = 'ATIVO';
+
+DROP INDEX IF EXISTS egc.idx_lancamentos_busca;
+CREATE INDEX idx_lancamentos_busca
+  ON egc.lancamentos (empresa_codigo, periodo, tipo, granularidade, grupo, conta)
+  WHERE status = 'ATIVO';
+
+-- Fim do bloco 17. Rodar so' este bloco no SQL Editor do Supabase
+-- (projeto radar-comercial) -- nao precisa rodar o arquivo inteiro de novo.
+-- IMPORTANTE: rode os blocos 16 e 17 ANTES de publicar o codigo desta
+-- fase (db.py/telas atualizados assumem que a coluna granularidade
+-- existe, NOT NULL, sem fallback UndefinedColumn novo -- so' o antigo
+-- de inserir_lancamentos continua como rede de seguranca residual).

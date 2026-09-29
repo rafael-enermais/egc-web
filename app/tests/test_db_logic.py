@@ -62,8 +62,23 @@ def test_inativar_periodo_existente_status_e_condicoes():
     assert "UPDATE egc.lancamentos" in sql
     assert "SET status = 'INATIVO'" in sql
     assert "status = 'ATIVO'" in sql  # so mexe no que esta ativo
-    assert params == ("ENERGIA", datetime.date(2023, 12, 31), "BP")
+    # Fase 3 (29/09/2026): granularidade entra na condicao -- default ""
+    # (sem intervalo declarado) quando o chamador nao passa nada.
+    assert "granularidade" in sql
+    assert params == ("ENERGIA", datetime.date(2023, 12, 31), "BP", "")
     print("OK: inativar_periodo_existente")
+
+
+def test_inativar_periodo_existente_so_mexe_na_mesma_granularidade():
+    """Fase 3 (29/09/2026) -- resposta pra pergunta real do Rafael: um
+    trimestral novo NAO pode inativar um semestral ativo (ou vice-versa)
+    que porventura feche na MESMA data."""
+    cur = FakeCursor()
+    conn = FakeConn(cur)
+    db.inativar_periodo_existente(conn, "ENERGIA", datetime.date(2026, 6, 30), "DRE", granularidade="trimestral")
+    _, params = cur.executed[0]
+    assert params == ("ENERGIA", datetime.date(2026, 6, 30), "DRE", "trimestral")
+    print("OK: inativar_periodo_existente — granularidade explícita entra no filtro, não mexe na outra")
 
 
 def test_inserir_lancamentos_bp_e_dre_ordem_de_colunas():
@@ -209,10 +224,10 @@ def test_listar_lancamentos_grupo_monta_sql_filtros_e_ordem():
 
 
 def test_listar_lancamentos_grupo_periodos_usa_any_pra_lista_de_periodos():
-    cols = ["empresa_codigo", "periodo", "grupo", "conta", "valor"]
+    cols = ["empresa_codigo", "periodo", "grupo", "conta", "valor", "granularidade"]
     linhas = [
-        ("ENERGIA", datetime.date(2026, 5, 31), "ATIVO", "TOTAL DO ATIVO", 1000000.00),
-        ("ENERGIA", datetime.date(2026, 6, 30), "ATIVO", "TOTAL DO ATIVO", 1100000.00),
+        ("ENERGIA", datetime.date(2026, 5, 31), "ATIVO", "TOTAL DO ATIVO", 1000000.00, ""),
+        ("ENERGIA", datetime.date(2026, 6, 30), "ATIVO", "TOTAL DO ATIVO", 1100000.00, "trimestral"),
     ]
     cur = FakeCursor(fetchall_result=linhas, description=[(c,) for c in cols])
     conn = FakeConn(cur)
@@ -224,11 +239,31 @@ def test_listar_lancamentos_grupo_periodos_usa_any_pra_lista_de_periodos():
     assert "ORDER BY periodo, grupo, conta" in sql
     assert params == (periodos, "BP", "ATIVO", ["ENERGIA"])
     assert len(lancs) == 2
+    # Fase 3 (29/09/2026): cada linha ganha tambem granularidade -- usado
+    # pelo painel de completude pra nao misturar 2 documentos de
+    # abrangencia diferente no mesmo periodo_fim.
     assert lancs[0] == {
         "empresa_codigo": "ENERGIA", "periodo": datetime.date(2026, 5, 31),
-        "grupo": "ATIVO", "conta": "TOTAL DO ATIVO", "valor": 1000000.00,
+        "grupo": "ATIVO", "conta": "TOTAL DO ATIVO", "valor": 1000000.00, "granularidade": "",
     }
-    print("OK: listar_lancamentos_grupo_periodos — usa ANY(%s) pra lista de períodos, cada linha com o campo periodo")
+    assert lancs[1]["granularidade"] == "trimestral"
+    print("OK: listar_lancamentos_grupo_periodos — usa ANY(%s) pra lista de períodos, cada linha com periodo+granularidade")
+
+
+def test_listar_periodos_detalhado_devolve_periodo_e_granularidade():
+    cols = ["periodo", "granularidade"]
+    linhas = [(datetime.date(2026, 6, 30), "trimestral"), (datetime.date(2026, 6, 30), "semestral")]
+    cur = FakeCursor(fetchall_result=linhas, description=[(c,) for c in cols])
+    conn = FakeConn(cur)
+    periodos = db.listar_periodos_detalhado(conn, "ENERGIA", status="ATIVO")
+    sql, params = cur.executed[0]
+    assert "COALESCE(granularidade" in sql
+    assert params == ("ENERGIA", "ATIVO")
+    assert periodos == [
+        {"periodo": datetime.date(2026, 6, 30), "granularidade": "trimestral"},
+        {"periodo": datetime.date(2026, 6, 30), "granularidade": "semestral"},
+    ]
+    print("OK: listar_periodos_detalhado — 1 linha por (periodo, granularidade), o mesmo periodo_fim pode ter 2")
 
 
 def test_listar_historico_grupo_todos_periodos_sem_filtro_de_periodo():

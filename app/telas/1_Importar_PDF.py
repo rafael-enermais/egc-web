@@ -354,7 +354,13 @@ if resultados:
                         if not rows:
                             continue
                         try:
-                            n_inativados = db.inativar_periodo_existente(conn, cod_g, periodo_date, tipo)
+                            # Fase 3 (29/09/2026): so' inativa o que tem a MESMA
+                            # granularidade -- um trimestral novo nao apaga mais
+                            # um semestral ativo (ou vice-versa) que porventura
+                            # feche na MESMA data (ver db.inativar_periodo_existente).
+                            n_inativados = db.inativar_periodo_existente(
+                                conn, cod_g, periodo_date, tipo, granularidade=granularidade or "",
+                            )
                             n_gravados = db.inserir_lancamentos(
                                 conn, cod_g, tipo, periodo_date, rows, r["arquivo"], usuario,
                                 periodo_inicio=periodo_inicio_date, granularidade=granularidade_val,

@@ -75,7 +75,10 @@ def _patches(codigos_com_periodo=("ENERGIA", "SMG")):
     def _listar_periodos(conn, cod, status="ATIVO"):
         return [PERIODO] if cod in codigos_com_periodo else []
 
-    def _listar_lancamentos_grupo(conn, periodo, tipo, cods, status="ATIVO"):
+    def _listar_periodos_detalhado(conn, cod, status="ATIVO"):
+        return [{"periodo": PERIODO, "granularidade": ""}] if cod in codigos_com_periodo else []
+
+    def _listar_lancamentos_grupo(conn, periodo, tipo, cods, status="ATIVO", granularidade=None):
         fonte = BP_GRUPO if tipo == "BP" else DRE_GRUPO
         return [x for x in fonte if x["empresa_codigo"] in cods]
 
@@ -83,7 +86,7 @@ def _patches(codigos_com_periodo=("ENERGIA", "SMG")):
         fonte = BP_GRUPO if tipo == "BP" else DRE_GRUPO
         return [dict(x, periodo=PERIODO) for x in fonte if x["empresa_codigo"] in cods]
 
-    def _listar_lancamentos(conn, cod, periodo, tipo, status="ATIVO"):
+    def _listar_lancamentos(conn, cod, periodo, tipo, status="ATIVO", granularidade=None):
         # Caminho de 1 empresa (string) -- mesmo formato de db.listar_lancamentos
         # (sem empresa_codigo na chave), filtrado das mesmas fontes sinteticas.
         fonte = BP_GRUPO if tipo == "BP" else DRE_GRUPO
@@ -104,6 +107,7 @@ def _patches(codigos_com_periodo=("ENERGIA", "SMG")):
     return [
         patch("dados_relatorio_comentado.db.listar_empresas", return_value=EMPRESAS),
         patch("dados_relatorio_comentado.db.listar_periodos", side_effect=_listar_periodos),
+        patch("dados_relatorio_comentado.db.listar_periodos_detalhado", side_effect=_listar_periodos_detalhado),
         patch("dados_relatorio_comentado.db.listar_periodos_grupo", return_value=[PERIODO]),
         patch("dados_relatorio_comentado.db.listar_lancamentos_grupo", side_effect=_listar_lancamentos_grupo),
         patch("dados_relatorio_comentado.db.listar_lancamentos_grupo_periodos", side_effect=_listar_lancamentos_grupo_periodos),

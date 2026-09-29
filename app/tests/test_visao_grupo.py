@@ -212,7 +212,7 @@ def test_calcular_completude_grupo_marca_completo_so_bp_so_dre_e_faltando():
 def test_calcular_completude_grupo_lista_vazia_de_periodos_devolve_vazio():
     completude = visao_grupo.calcular_completude_grupo([], MOCK_LANCS_COMPLETUDE_BP, MOCK_LANCS_COMPLETUDE_DRE, EMPRESAS_MOCK)
     assert len(completude) == 0
-    assert list(completude.columns) == ["Período", "Empresa", "empresa_codigo", "tem_bp", "tem_dre", "Status"]
+    assert list(completude.columns) == ["Período", "Granularidade", "Empresa", "empresa_codigo", "tem_bp", "tem_dre", "Status"]
     print("OK: calcular_completude_grupo — lista de períodos vazia devolve DataFrame vazio com colunas certas")
 
 
@@ -224,6 +224,38 @@ def test_calcular_completude_grupo_sem_lancamento_nenhum_marca_tudo_faltando():
     print("OK: calcular_completude_grupo — sem lançamento nenhum, todas as empresas ficam Faltando")
 
 
+def test_calcular_completude_grupo_2_granularidades_mesmo_periodo_fim_nao_se_misturam():
+    """Fase 3 (29/09/2026) -- resposta pra pergunta real do Rafael:
+    trimestral (04-06/2026) e semestral (01-06/2026) fechando os 2 em
+    30/06/2026, ENERGIA só tem o trimestral completo (BP+DRE); o
+    semestral só tem BP. Sem granularidade na chave, isso colapsaria
+    numa linha só e mascararia a pendência do semestral."""
+    periodos_det = [
+        {"periodo": datetime.date(2026, 6, 30), "granularidade": "trimestral"},
+        {"periodo": datetime.date(2026, 6, 30), "granularidade": "semestral"},
+    ]
+    lancs_bp = [
+        {"empresa_codigo": "ENERGIA", "periodo": datetime.date(2026, 6, 30), "granularidade": "trimestral", "grupo": "G", "conta": "X", "valor": Decimal("1")},
+        {"empresa_codigo": "ENERGIA", "periodo": datetime.date(2026, 6, 30), "granularidade": "semestral", "grupo": "G", "conta": "X", "valor": Decimal("1")},
+    ]
+    lancs_dre = [
+        {"empresa_codigo": "ENERGIA", "periodo": datetime.date(2026, 6, 30), "granularidade": "trimestral", "grupo": "G", "conta": "Y", "valor": Decimal("1")},
+        # sem DRE semestral
+    ]
+    completude = visao_grupo.calcular_completude_grupo(periodos_det, lancs_bp, lancs_dre, EMPRESAS_MOCK)
+    assert len(completude) == 4  # 2 granularidades x 2 empresas
+
+    def _status(cod, granularidade):
+        linha = completude[(completude["empresa_codigo"] == cod) & (completude["Granularidade"] == granularidade)].iloc[0]
+        return linha["Status"]
+
+    assert _status("ENERGIA", "trimestral") == "✅ Completo"
+    assert _status("ENERGIA", "semestral") == "⚠️ Só BP"
+    assert _status("SMG", "trimestral") == "❌ Faltando"
+    assert _status("SMG", "semestral") == "❌ Faltando"
+    print("OK: calcular_completude_grupo — 2 granularidades do mesmo periodo_fim ficam em linhas separadas, sem se misturar")
+
+
 # ─────────────── resumir_completude_por_periodo (2a leva, 23/09/2026) ────
 
 def test_resumir_completude_por_periodo_agrega_completo_e_incompleto():
@@ -232,7 +264,7 @@ def test_resumir_completude_por_periodo_agrega_completo_e_incompleto():
         periodos, MOCK_LANCS_COMPLETUDE_BP, MOCK_LANCS_COMPLETUDE_DRE, EMPRESAS_MOCK,
     )
     resumo = visao_grupo.resumir_completude_por_periodo(completude)
-    assert list(resumo.columns) == ["Período", "Status", "Empresas pendentes"]
+    assert list(resumo.columns) == ["Período", "Granularidade", "Status", "Empresas pendentes"]
     assert len(resumo) == 2, f"esperava 1 linha por período (2), veio {len(resumo)}"
     # mais recente primeiro
     assert list(resumo["Período"]) == [datetime.date(2026, 6, 30), datetime.date(2026, 5, 31)]
@@ -264,7 +296,7 @@ def test_resumir_completude_por_periodo_vazio_devolve_vazio():
     vazio = visao_grupo.calcular_completude_grupo([], [], [], EMPRESAS_MOCK)
     resumo = visao_grupo.resumir_completude_por_periodo(vazio)
     assert len(resumo) == 0
-    assert list(resumo.columns) == ["Período", "Status", "Empresas pendentes"]
+    assert list(resumo.columns) == ["Período", "Granularidade", "Status", "Empresas pendentes"]
     print("OK: resumir_completude_por_periodo — completude vazia devolve DataFrame vazio com colunas certas")
 
 

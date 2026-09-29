@@ -65,6 +65,7 @@ import dados_relatorio_comentado as drc  # noqa: E402
 import gerador_relatorio_comentado as g  # noqa: E402
 import gerador_relatorio_comparativo as gc  # noqa: E402
 import formatacao  # noqa: E402
+import visao_grupo  # noqa: E402
 
 NOME_POR_COD = {cod: nome for cod, nome, _cnpj in EMPRESAS_FIXAS}
 
@@ -79,15 +80,96 @@ st.caption(
     "Confira os campos abaixo antes de gerar — nenhum é preenchido sozinho pelo sistema."
 )
 
-def _periodos_intersecao(cods: list) -> list:
-    """União/interseção dos períodos ATIVOS das empresas escolhidas --
-    mesma lógica já usada e testada no modo Comparativo, extraída aqui
-    pra ser reaproveitada também no "Período único" com 2+ empresas
-    (FIX_20260929k). Com 1 empresa só, é simplesmente os períodos dela."""
+_NOME_GRANULARIDADE = {
+    "mensal": "Mensal", "trimestral": "Trimestral", "semestral": "Semestral",
+    "anual": "Anual", "outra": "Outro intervalo", "": "",
+}
+
+# ─────────── Painel de pendências / completude (movido da Início em
+# 29/09/2026 -- "o painel de pendencias da pagina inicio poderia ir p
+# pagina do gerador, poderia conferir quais disponivel para geracao do
+# relatorio, o fluxo seria melhor tb") ───────────
+# Fica AQUI (não mais na Início) porque é exatamente aqui que a
+# informação importa na hora: antes de escolher empresa/período pra
+# gerar, a contadora já vê quais períodos (e quais granularidades, Fase
+# 3) estão prontos (BP+DRE) e quais ainda faltam alguma peça. Zero query
+# nova: reaproveita db.listar_periodos_grupo_detalhado/
+# listar_lancamentos_grupo_periodos, mesma infra já usada e testada na
+# Início/Visão Grupo.
+cods_todos = [cod for cod, _nome, _cnpj in EMPRESAS_FIXAS]
+with st.expander("📋 Painel de pendências — o que está pronto pra gerar", expanded=False):
+    try:
+        periodos_grupo_det = db.listar_periodos_grupo_detalhado(conn, cods_todos, status="ATIVO")
+        lancs_bp_grupo = db.listar_lancamentos_grupo_periodos(
+            conn, [d["periodo"] for d in periodos_grupo_det], "BP", cods_todos, status="ATIVO",
+        )
+        lancs_dre_grupo = db.listar_lancamentos_grupo_periodos(
+            conn, [d["periodo"] for d in periodos_grupo_det], "DRE", cods_todos, status="ATIVO",
+        )
+        completude = visao_grupo.calcular_completude_grupo(
+            periodos_grupo_det, lancs_bp_grupo, lancs_dre_grupo, EMPRESAS_FIXAS,
+        )
+        resumo_pendencias = visao_grupo.resumir_completude_por_periodo(completude)
+    except Exception as exc:
+        st.warning(f"Não foi possível montar o painel de pendências: {exc}")
+        resumo_pendencias = None
+
+    if resumo_pendencias is None:
+        pass
+    elif resumo_pendencias.empty:
+        st.caption("Sem período nenhum no grupo ainda pra avaliar pendências.")
+    else:
+        resumo_fmt = resumo_pendencias.assign(
+            Período=resumo_pendencias["Período"].apply(lambda p: p.strftime("%m/%Y")),
+            Granularidade=resumo_pendencias["Granularidade"].apply(lambda g: _NOME_GRANULARIDADE.get(g, g) or "—"),
+        )
+        n_incompletos = (resumo_fmt["Status"].str.startswith("⚠️")).sum()
+        if n_incompletos == 0:
+            st.success("Todos os períodos do grupo com BP e DRE completos nas 6 empresas — pronto pra gerar.")
+        else:
+            st.caption(
+                f"{n_incompletos} período(s)/granularidade(s) com pelo menos 1 empresa faltando BP e/ou DRE "
+                "— o relatório dessa empresa nesse período ainda não pode ser gerado."
+            )
+        st.dataframe(resumo_fmt, hide_index=True, use_container_width=True)
+
+st.divider()
+
+
+def _periodos_intersecao_detalhado(cods: list) -> list:
+    """
+    Interseção dos (período, granularidade) ATIVOS das empresas
+    escolhidas -- mesma lógica já usada e testada no modo Comparativo
+    (FIX_20260929k), agora sobre PARES (período, granularidade) em vez
+    de só a data (Fase 3, 29/09/2026: "vamos estruturar e implantar a
+    granularidade... já que o gerador tb faz essa geração com
+    multi-select"). Com 1 empresa só, é simplesmente os períodos dela.
+    Retorna list[tuple[date, str]], mais recente primeiro.
+    """
     if not cods:
         return []
-    por_empresa = [set(db.listar_periodos(conn, cod, status="ATIVO")) for cod in cods]
-    return sorted(set.intersection(*por_empresa))
+    por_empresa = [
+        {(d["periodo"], d["granularidade"]) for d in db.listar_periodos_detalhado(conn, cod, status="ATIVO")}
+        for cod in cods
+    ]
+    # Ordena CRESCENTE (período mais antigo primeiro) -- mesmo comportamento
+    # de sempre da antiga _periodos_intersecao (a seleção default do
+    # selectbox de "Período único" é o índice 0 -- ver
+    # test_relatorio_comentado_app.py::test_trocar_periodo_no_unico...).
+    return sorted(set.intersection(*por_empresa), key=lambda pg: (pg[0], pg[1]))
+
+
+def _rotulo_periodo_granularidade(periodo: date, granularidade: str, ambiguo: bool) -> str:
+    """
+    Rótulo do seletor de período -- só mostra a granularidade quando ela
+    existe E quando esse período_fim tem mais de 1 granularidade ativa
+    ao mesmo tempo (`ambiguo`) -- caso comum (1 granularidade só) fica
+    igual a sempre, sem ruído visual pra contadora.
+    """
+    base = periodo.strftime("%d/%m/%Y")
+    if ambiguo and granularidade:
+        return f"{base} — {_NOME_GRANULARIDADE.get(granularidade, granularidade)}"
+    return base
 
 
 nomes_emp = [f"{nome} ({cod})" for cod, nome, _cnpj in EMPRESAS_FIXAS]
@@ -119,8 +201,10 @@ modo = st.radio(
 periodo_sel = None
 periodo_label = ""
 periodo_extenso = ""
+granularidade_sel = ""  # Fase 3 (29/09/2026) — granularidade do período único escolhido
 periodos_multi: list = []
 periodos_labels_multi: list = []
+granularidades_multi: list = []  # Fase 3 — 1 granularidade por período do Comparativo
 periodo_range_label = ""
 empresas_multi: list = []
 
@@ -139,12 +223,12 @@ if modo == "Período único":
     )
     empresas_unico_multi = list(empresas_unico_sel_raw)
 
-    periodos_disponiveis_unico: list = []
+    periodos_disponiveis_unico: list = []  # list[tuple[date, str]]
     if not empresas_unico_multi:
         st.warning("Escolha pelo menos 1 empresa.")
     else:
         try:
-            periodos_disponiveis_unico = _periodos_intersecao(empresas_unico_multi)
+            periodos_disponiveis_unico = _periodos_intersecao_detalhado(empresas_unico_multi)
         except Exception as exc:
             st.error(f"Não foi possível consultar os períodos: {exc}")
         if len(empresas_unico_multi) > 1 and not periodos_disponiveis_unico:
@@ -154,16 +238,28 @@ if modo == "Período único":
             )
 
     if periodos_disponiveis_unico:
-        periodo_sel = st.selectbox(
+        # Fase 3 (29/09/2026): quando o MESMO periodo_fim tem 2 documentos
+        # de abrangência diferente ativos (ex. trimestral e semestral
+        # fechando na mesma data -- ver db.inativar_periodo_existente), os
+        # 2 aparecem aqui como opções DISTINTAS, com a granularidade no
+        # rótulo -- sem isso, a contadora não teria como escolher qual
+        # dos dois quer no relatório.
+        datas_repetidas = {d for d, _g in periodos_disponiveis_unico
+                            if sum(1 for d2, _g2 in periodos_disponiveis_unico if d2 == d) > 1}
+        periodo_granul_sel = st.selectbox(
             "Período (data de posição do BP)", periodos_disponiveis_unico,
-            format_func=lambda p: p.strftime("%d/%m/%Y"), key="relatorio_periodo_sel",
+            format_func=lambda pg: _rotulo_periodo_granularidade(pg[0], pg[1], pg[0] in datas_repetidas),
+            key="relatorio_periodo_sel",
         )
+        periodo_sel, granularidade_sel = periodo_granul_sel
 
         st.subheader("Período — como aparece no relatório")
-        st.caption(
-            "Sem coluna confiável de granularidade no banco pra inferir isso sozinho — confirme o texto "
-            "que vai aparecer na capa e no cabeçalho do relatório."
+        dica_granul = (
+            f" O PDF importado declara este período como **{_NOME_GRANULARIDADE.get(granularidade_sel, granularidade_sel)}**"
+            f" — reflita isso no rótulo se fizer sentido (ex.: \"2º Trimestre 2026\")."
+            if granularidade_sel else ""
         )
+        st.caption(f"Confirme o texto que vai aparecer na capa e no cabeçalho do relatório.{dica_granul}")
         # FIX_20260929m (achado revendo o mesmo gotcha ja corrigido no modo
         # Comparativo -- FIX_20260929j -- que nunca tinha sido aplicado aqui:
         # key fixa ("relatorio_periodo_label") faz o Streamlit reusar o
@@ -171,8 +267,10 @@ if modo == "Período único":
         # porque value= so' e' aplicado na 1a vez que a key existe em
         # session_state. Rotulo amarrado ao periodo escolhido (mesmo
         # principio da combo_key do Comparativo) -- trocar o periodo forca
-        # uma key nova e o value= recem-calculado volta a valer.
-        periodo_key_unico = periodo_sel.isoformat()
+        # uma key nova e o value= recem-calculado volta a valer. Key agora
+        # inclui a granularidade tb (Fase 3) -- as 2 opções do mesmo
+        # periodo_fim não podem compartilhar rótulo default.
+        periodo_key_unico = f"{periodo_sel.isoformat()}_{granularidade_sel}"
         col1, col2 = st.columns(2)
         with col1:
             periodo_label = st.text_input(
@@ -186,6 +284,8 @@ if modo == "Período único":
                 key=f"relatorio_periodo_extenso_{periodo_key_unico}",
                 help='Ex.: "janeiro a junho de 2026". Pode deixar em branco.',
             )
+    else:
+        granularidade_sel = ""
 else:
     st.subheader("Empresas no comparativo")
     st.caption(
@@ -199,15 +299,12 @@ else:
     )
     empresas_multi = list(empresas_sel_raw)
 
-    periodos_ativos_multi: list = []
+    periodos_ativos_multi: list = []  # list[tuple[date, str]]
     if not empresas_multi:
         st.warning("Escolha pelo menos 1 empresa.")
     else:
         try:
-            periodos_por_empresa = [
-                set(db.listar_periodos(conn, cod, status="ATIVO")) for cod in empresas_multi
-            ]
-            periodos_ativos_multi = sorted(set.intersection(*periodos_por_empresa))
+            periodos_ativos_multi = _periodos_intersecao_detalhado(empresas_multi)
         except Exception as exc:
             st.error(f"Não foi possível consultar os períodos: {exc}")
         if len(empresas_multi) > 1 and not periodos_ativos_multi:
@@ -221,13 +318,19 @@ else:
         "Escolha de 2 a 4 períodos (ordem cronológica é ajustada automaticamente, não importa a "
         "ordem do clique) e confirme o rótulo de cada coluna — mesmo princípio do período único: "
         "o sistema não infere o texto sozinho. Só aparecem aqui os períodos que TODAS as empresas "
-        "escolhidas acima têm ativos."
+        "escolhidas acima têm ativos. Quando 2 documentos de abrangência diferente (ex. trimestral e "
+        "semestral) fecham na mesma data, os 2 aparecem como opções separadas."
     )
+    datas_repetidas_multi = {d for d, _g in periodos_ativos_multi
+                              if sum(1 for d2, _g2 in periodos_ativos_multi if d2 == d) > 1}
     periodos_sel_raw = st.multiselect(
         "Períodos (data de posição do BP)", periodos_ativos_multi,
-        format_func=lambda p: p.strftime("%d/%m/%Y"), key="relatorio_periodos_multi",
+        format_func=lambda pg: _rotulo_periodo_granularidade(pg[0], pg[1], pg[0] in datas_repetidas_multi),
+        key="relatorio_periodos_multi",
     )
-    periodos_multi = sorted(periodos_sel_raw)
+    periodos_pg_multi = sorted(periodos_sel_raw, key=lambda pg: pg[0])
+    periodos_multi = [pg[0] for pg in periodos_pg_multi]
+    granularidades_multi = [pg[1] for pg in periodos_pg_multi]
 
     if periodos_multi and not (2 <= len(periodos_multi) <= 4):
         st.warning("Escolha de 2 a 4 períodos pra gerar o comparativo (motor de desenho aceita esse intervalo).")
@@ -236,8 +339,9 @@ else:
         # FIX_20260929j: key amarrada ao conjunto EXATO de períodos
         # selecionados, não ao índice posicional -- ver docstring do
         # módulo pro diagnóstico completo do bug (rótulo repetido no 1º
-        # PDF real do Rafael).
-        combo_key = "_".join(p.isoformat() for p in periodos_multi)
+        # PDF real do Rafael). Inclui granularidade (Fase 3) -- 2 opções
+        # do mesmo periodo_fim não podem compartilhar key/rótulo default.
+        combo_key = "_".join(f"{p.isoformat()}-{g}" for p, g in periodos_pg_multi)
         cols_label = st.columns(len(periodos_multi))
         for i, (col, periodo) in enumerate(zip(cols_label, periodos_multi)):
             rotulo = col.text_input(
@@ -353,6 +457,7 @@ if st.button("Gerar relatório", type="primary", key="relatorio_gerar_btn", disa
                     conn, empresa_codigo=empresa_arg, periodo=periodo_sel,
                     periodo_label=periodo_label.strip() or periodo_sel.strftime("%m/%Y"),
                     periodo_extenso=periodo_extenso.strip(), admin=admin,
+                    granularidade=granularidade_sel,
                 )
                 nome_arquivo = f"Demonstrativo_{sufixo_empresas_unico}_{periodo_sel.strftime('%Y%m%d')}.pdf"
                 caminho = f"/tmp/{nome_arquivo}"
@@ -378,6 +483,7 @@ if st.button("Gerar relatório", type="primary", key="relatorio_gerar_btn", disa
                     conn, empresas_codigos=empresas_multi, periodos=periodos_multi,
                     periodos_labels=[lbl.strip() or p.strftime("%m/%Y") for lbl, p in zip(periodos_labels_multi, periodos_multi)],
                     periodo_range_label=range_label, admin=admin,
+                    granularidades=granularidades_multi,
                 )
                 sufixo_empresas = "GRUPO" if len(empresas_multi) > 1 else empresas_multi[0]
                 nome_arquivo = (
