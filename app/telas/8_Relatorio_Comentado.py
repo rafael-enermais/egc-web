@@ -40,6 +40,16 @@ seleção força uma key nova e o rótulo correto.
 Inputs editáveis na tela (decisão do Rafael, 24/09 e 28/09): período
 (label/extenso) e administrador/contador/e-mail/site — nenhum vem de
 tabela fixa nem é inferido automaticamente.
+
+FIX_20260929k (Rafael, 29/09: "multi-CNPJ, 1 periodo so, como um unico
+consolidado... tem q ser possivel gerar CNPJ e periodos a escolha"):
+"Período único" agora também aceita multi-empresa (multiselect igual ao
+Comparativo, mesma lógica de interseção de períodos) -- 2+ empresas
+chama montar_dados_relatorio(empresa_codigo=<lista>), que consolida
+("montante") via Modelo A pra 1 UNICO período. Diferente do
+Comparativo (Modelo B, que é uma EVOLUÇÃO entre 2-4 períodos e não faz
+sentido com 1 período só) -- decisão tomada com o Rafael: o consolidado
+de 1 período usa o Modelo A (narrativo completo), não o B.
 """
 import sys
 from pathlib import Path
@@ -68,6 +78,17 @@ st.caption(
     "Gera o Demonstrativo Comentado (PDF) a partir do BP/DRE já importado. "
     "Confira os campos abaixo antes de gerar — nenhum é preenchido sozinho pelo sistema."
 )
+
+def _periodos_intersecao(cods: list) -> list:
+    """União/interseção dos períodos ATIVOS das empresas escolhidas --
+    mesma lógica já usada e testada no modo Comparativo, extraída aqui
+    pra ser reaproveitada também no "Período único" com 2+ empresas
+    (FIX_20260929k). Com 1 empresa só, é simplesmente os períodos dela."""
+    if not cods:
+        return []
+    por_empresa = [set(db.listar_periodos(conn, cod, status="ATIVO")) for cod in cods]
+    return sorted(set.intersection(*por_empresa))
+
 
 nomes_emp = [f"{nome} ({cod})" for cod, nome, _cnpj in EMPRESAS_FIXAS]
 idx_emp = st.selectbox(
@@ -103,28 +124,57 @@ periodos_labels_multi: list = []
 periodo_range_label = ""
 empresas_multi: list = []
 
-if modo == "Período único":
-    periodo_sel = st.selectbox(
-        "Período (data de posição do BP)", periodos_ativos,
-        format_func=lambda p: p.strftime("%d/%m/%Y"), key="relatorio_periodo_sel",
-    )
+empresas_unico_multi: list = []
 
-    st.subheader("Período — como aparece no relatório")
+if modo == "Período único":
+    st.subheader("Empresas no relatório")
     st.caption(
-        "Sem coluna confiável de granularidade no banco pra inferir isso sozinho — confirme o texto "
-        "que vai aparecer na capa e no cabeçalho do relatório."
+        "Escolha 1 empresa (relatório dela sozinha) ou um subconjunto/todas pra gerar o "
+        "CONSOLIDADO (montante) dessas empresas num único período."
     )
-    col1, col2 = st.columns(2)
-    with col1:
-        periodo_label = st.text_input(
-            "Rótulo do período (capa/cabeçalho)", value=periodo_sel.strftime("%m/%Y"),
-            key="relatorio_periodo_label", help='Ex.: "1º Semestre 2026", "Junho/2026", "Exercício 2025".',
+    empresas_unico_sel_raw = st.multiselect(
+        "Empresas", [cod for cod, _n, _c in EMPRESAS_FIXAS],
+        default=[cod_empresa], format_func=lambda c: f"{NOME_POR_COD.get(c, c)} ({c})",
+        key="relatorio_empresas_unico_multi",
+    )
+    empresas_unico_multi = list(empresas_unico_sel_raw)
+
+    periodos_disponiveis_unico: list = []
+    if not empresas_unico_multi:
+        st.warning("Escolha pelo menos 1 empresa.")
+    else:
+        try:
+            periodos_disponiveis_unico = _periodos_intersecao(empresas_unico_multi)
+        except Exception as exc:
+            st.error(f"Não foi possível consultar os períodos: {exc}")
+        if len(empresas_unico_multi) > 1 and not periodos_disponiveis_unico:
+            st.warning(
+                "Nenhum período em comum entre as empresas escolhidas (cada uma tem período ativo "
+                "em datas diferentes) — reduza a seleção de empresas ou confirme os períodos importados."
+            )
+
+    if periodos_disponiveis_unico:
+        periodo_sel = st.selectbox(
+            "Período (data de posição do BP)", periodos_disponiveis_unico,
+            format_func=lambda p: p.strftime("%d/%m/%Y"), key="relatorio_periodo_sel",
         )
-    with col2:
-        periodo_extenso = st.text_input(
-            "Período por extenso (texto de apoio)", value="", key="relatorio_periodo_extenso",
-            help='Ex.: "janeiro a junho de 2026". Pode deixar em branco.',
+
+        st.subheader("Período — como aparece no relatório")
+        st.caption(
+            "Sem coluna confiável de granularidade no banco pra inferir isso sozinho — confirme o texto "
+            "que vai aparecer na capa e no cabeçalho do relatório."
         )
+        col1, col2 = st.columns(2)
+        with col1:
+            periodo_label = st.text_input(
+                "Rótulo do período (capa/cabeçalho)", value=periodo_sel.strftime("%m/%Y"),
+                key="relatorio_periodo_label", help='Ex.: "1º Semestre 2026", "Junho/2026", "Exercício 2025".',
+            )
+        with col2:
+            periodo_extenso = st.text_input(
+                "Período por extenso (texto de apoio)", value="", key="relatorio_periodo_extenso",
+                help='Ex.: "janeiro a junho de 2026". Pode deixar em branco.',
+            )
 else:
     st.subheader("Empresas no comparativo")
     st.caption(
@@ -272,7 +322,10 @@ site_empresa = col4.text_input("Site da empresa", value="", key="relatorio_site"
 
 st.divider()
 
-pode_gerar = modo == "Período único" or (2 <= len(periodos_multi) <= 4 and bool(empresas_multi))
+pode_gerar = (
+    (modo == "Período único" and bool(empresas_unico_multi) and periodo_sel is not None)
+    or (modo != "Período único" and 2 <= len(periodos_multi) <= 4 and bool(empresas_multi))
+)
 
 if st.button("Gerar relatório", type="primary", key="relatorio_gerar_btn", disabled=not pode_gerar):
     admin = dict(
@@ -282,20 +335,23 @@ if st.button("Gerar relatório", type="primary", key="relatorio_gerar_btn", disa
     )
     try:
         if modo == "Período único":
+            empresa_arg = empresas_unico_multi if len(empresas_unico_multi) > 1 else empresas_unico_multi[0]
+            sufixo_empresas_unico = "GRUPO" if len(empresas_unico_multi) > 1 else empresas_unico_multi[0]
             with st.spinner("Buscando dados e montando o relatório..."):
                 dados, incluir_pagina_resultado = drc.montar_dados_relatorio(
-                    conn, empresa_codigo=cod_empresa, periodo=periodo_sel,
+                    conn, empresa_codigo=empresa_arg, periodo=periodo_sel,
                     periodo_label=periodo_label.strip() or periodo_sel.strftime("%m/%Y"),
                     periodo_extenso=periodo_extenso.strip(), admin=admin,
                 )
-                nome_arquivo = f"Demonstrativo_{cod_empresa}_{periodo_sel.strftime('%Y%m%d')}.pdf"
+                nome_arquivo = f"Demonstrativo_{sufixo_empresas_unico}_{periodo_sel.strftime('%Y%m%d')}.pdf"
                 caminho = f"/tmp/{nome_arquivo}"
                 g.gerar_pdf_completo(dados, caminho, incluir_pagina_resultado=incluir_pagina_resultado)
             with open(caminho, "rb") as f:
                 pdf_bytes = f.read()
             st.success(
                 f"Relatório gerado ({len(pdf_bytes) // 1024} KB, "
-                f"{'9' if incluir_pagina_resultado else '8'} páginas)."
+                f"{'9' if incluir_pagina_resultado else '8'} páginas"
+                f"{f', {len(empresas_unico_multi)} empresas consolidadas' if len(empresas_unico_multi) > 1 else ''})."
             )
             if not incluir_pagina_resultado:
                 st.caption(
@@ -303,7 +359,7 @@ if st.button("Gerar relatório", type="primary", key="relatorio_gerar_btn", disa
                     "provisionado como linha própria (regime de lucro presumido)."
                 )
             periodos_para_log = [periodo_sel]
-            empresas_para_log = [cod_empresa]
+            empresas_para_log = list(empresas_unico_multi)
         else:
             range_label = periodo_range_label.strip() or f"{periodos_labels_multi[0]} A {periodos_labels_multi[-1]}"
             with st.spinner("Buscando dados e montando o relatório comparativo..."):

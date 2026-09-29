@@ -271,6 +271,48 @@ def test_botao_gerar_desabilitado_com_menos_de_2_periodos_no_comparativo():
         print("OK: Relatório Comentado — botão Gerar desabilitado no comparativo com menos de 2 períodos")
 
 
+def test_periodo_unico_com_varias_empresas_consolida_e_passa_lista_pro_backend():
+    # FIX_20260929k (Rafael: "multi-CNPJ, 1 periodo so, como um unico
+    # consolidado... tem q ser possivel gerar CNPJ e periodos a escolha") --
+    # escolhendo 2 empresas no multiselect NOVO do modo "Período único", o
+    # backend tem que receber a LISTA (não a string de 1 empresa só) e o
+    # nome do arquivo vira "GRUPO", igual já acontece no Comparativo.
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos", return_value=[PERIODO]), \
+         patch.object(drc, "montar_dados_relatorio", return_value=(DADOS_FIXTURE, True)) as m_montar, \
+         patch.object(db, "registrar_relatorio_gerado") as m_log:
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        at.multiselect(key="relatorio_empresas_unico_multi").set_value(["ENERGIA", "SMG"]).run(timeout=30)
+        botao = next(b for b in at.button if b.label == "Gerar relatório")
+        assert not botao.disabled
+        botao.click().run(timeout=30)
+        assert not at.exception, f"excecao gerando consolidado de 2 empresas (periodo unico): {at.exception}"
+        assert m_montar.call_args.kwargs["empresa_codigo"] == ["ENERGIA", "SMG"]
+        assert m_log.call_args.kwargs["empresas_codigos"] == ["ENERGIA", "SMG"]
+        assert any("2 empresas consolidadas" in s.value for s in at.success)
+        print("OK: Relatório Comentado — seletor de empresas do período único manda a lista certa pro backend (consolidado)")
+
+
+def test_periodo_unico_1_empresa_continua_enviando_string_sem_regressao():
+    # Regressao: com o multiselect novo (default = so' a empresa do topo),
+    # o comportamento de sempre (1 empresa, string) nao pode mudar.
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos", return_value=[PERIODO]), \
+         patch.object(drc, "montar_dados_relatorio", return_value=(DADOS_FIXTURE, True)) as m_montar, \
+         patch.object(db, "registrar_relatorio_gerado") as m_log:
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        botao = next(b for b in at.button if b.label == "Gerar relatório")
+        botao.click().run(timeout=30)
+        assert not at.exception, f"excecao gerando relatorio de 1 empresa: {at.exception}"
+        assert m_montar.call_args.kwargs["empresa_codigo"] == "ENERGIA"
+        assert m_log.call_args.kwargs["empresas_codigos"] == ["ENERGIA"]
+        print("OK: Relatório Comentado — período único com 1 empresa (default) continua mandando string, sem regressão")
+
+
 def test_gerar_relatorio_chama_pipeline_e_nao_quebra():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
@@ -298,6 +340,8 @@ if __name__ == "__main__":
     test_carrega_formulario_com_periodo_disponivel()
     test_seletor_de_contato_salvo_preenche_nome_e_cargo()
     test_lista_de_contatos_e_compartilhada_entre_administrador_e_contador()
+    test_periodo_unico_com_varias_empresas_consolida_e_passa_lista_pro_backend()
+    test_periodo_unico_1_empresa_continua_enviando_string_sem_regressao()
     test_gerar_relatorio_chama_pipeline_e_nao_quebra()
     test_gerar_relatorio_comparativo_chama_pipeline_e_nao_quebra()
     test_botao_gerar_desabilitado_com_menos_de_2_periodos_no_comparativo()

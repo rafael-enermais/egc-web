@@ -356,9 +356,73 @@ def _texto_comparativo(rotulo: str, atual: Optional[float], anterior: Optional[f
     return f"{rotulo}: período anterior com base zero, variação percentual não aplicável."
 
 
+def _consolidar_periodo(conn, empresas_codigos: list, periodo: date, tipo: str) -> list:
+    """BP ou DRE consolidado (soma aditiva, sem eliminacao entre
+    empresas -- mesma premissa da Visao Grupo, confirmada com o Rafael)
+    de N empresas pra 1 UNICO periodo. Formato {grupo, conta, valor},
+    compativel com _mapa()/_montar_anexo() (mesmas chaves que
+    db.listar_lancamentos devolve, so' sem id/origem/pdf_original/
+    atualizado_em, que ninguem le aqui). Reaproveita a mesma infra ja
+    testada do Modelo B/Visao Grupo (db.listar_lancamentos_grupo +
+    visao_grupo.montar_pivot_grupo, coluna "VALOR CONSOLIDADO") -- soma
+    nao reimplementada de novo."""
+    lancs = db.listar_lancamentos_grupo(conn, periodo, tipo, empresas_codigos)
+    pivot = visao_grupo.montar_pivot_grupo(lancs, empresas_codigos)
+    return [
+        {"grupo": row["grupo"], "conta": row["conta"], "valor": row["VALOR CONSOLIDADO"]}
+        for row in pivot.to_dict("records")
+    ]
+
+
+def _consolidar_historico(conn, empresas_codigos: list, tipo: str) -> list:
+    """Historico consolidado (uniao dos periodos ATIVOS de QUALQUER
+    empresa do grupo, nao intersecao) no mesmo formato de
+    db.listar_historico_grupo (1 empresa): {periodo, grupo, conta,
+    valor}, somado entre as empresas por (periodo, grupo, conta).
+    Alimenta indicadores.calcular_indicadores sem tocar no motor de
+    formulas (mesma regra de "nao reimplementar" do resto do modulo).
+
+    Periodo que falta numa empresa do grupo entra como 0.0 dela pra
+    fins de TENDENCIA (mesma premissa ja aceita e testada em
+    visao_grupo.montar_serie_kpis_grupo pro grafico de evolucao do
+    grupo) -- diferente da checagem ESTRITA feita em
+    montar_dados_relatorio pro periodo PEDIDO (o numero final do
+    relatorio nunca soma 0.0 silencioso de uma empresa ausente; esta
+    funcao so' alimenta indicador de tendencia/comparativo com periodo
+    anterior)."""
+    periodos = db.listar_periodos_grupo(conn, empresas_codigos, status="ATIVO")
+    if not periodos:
+        return []
+    lancs = db.listar_lancamentos_grupo_periodos(conn, periodos, tipo, empresas_codigos)
+    if not lancs:
+        return []
+    df = pd.DataFrame(lancs)
+    df["valor"] = df["valor"].astype(float)
+    agrupado = df.groupby(["periodo", "grupo", "conta"], as_index=False)["valor"].sum()
+    return agrupado.to_dict("records")
+
+
+def _consolidar_despesas_admin_itens(conn, empresas_codigos: list, periodo: date) -> list:
+    """Soma os itens de despesas administrativas (Fase 2, ranking --
+    tabela isolada egc.despesas_admin_itens) das empresas do grupo por
+    nome de conta. Ordem: 1a aparicao entre as empresas (a ordenacao
+    final por valor ja' acontece em _montar_despesas_admin_itens, que
+    esta funcao alimenta do mesmo jeito que db.listar_despesas_admin_itens
+    alimenta o caso de 1 empresa)."""
+    somas: dict = {}
+    ordem: list = []
+    for cod in empresas_codigos:
+        for conta, valor in db.listar_despesas_admin_itens(conn, cod, periodo):
+            if conta not in somas:
+                somas[conta] = 0.0
+                ordem.append(conta)
+            somas[conta] += valor
+    return [(conta, somas[conta]) for conta in ordem]
+
+
 def montar_dados_relatorio(
     conn,
-    empresa_codigo: str,
+    empresa_codigo,
     periodo: date,
     periodo_label: str,
     periodo_extenso: str = "",
@@ -368,6 +432,20 @@ def montar_dados_relatorio(
     """Monta (dados, incluir_pagina_resultado) prontos pra
     gerador_relatorio_comentado.gerar_pdf_completo(dados, caminho,
     incluir_pagina_resultado).
+
+    `empresa_codigo`: str (1 empresa, comportamento de sempre) OU
+    list[str] com 2+ codigos -- CONSOLIDADO ("montante") do grupo pra
+    este UNICO periodo (pedido do Rafael, 29/09/2026: "multi-CNPJ, 1
+    periodo so, como um unico consolidado" -- via Modelo A, nao o B,
+    porque o B e' um relatorio de EVOLUCAO entre periodos e nao faz
+    sentido com 1 periodo so). Mesmo principio aditivo (sem eliminacao
+    entre empresas) ja usado no Modelo B/Visao Grupo, reaproveitado via
+    _consolidar_periodo/_consolidar_historico/_consolidar_despesas_admin_itens
+    -- nao reimplementado aqui. Com 2+ codigos, cada um precisa ter o
+    periodo pedido ATIVO (mesma checagem estrita do Modelo B: um
+    "consolidado" incompleto sem avisar seria pior que travar). Caminho
+    de 1 empresa fica 100% intocado (mesmo codigo/mesmo retorno de
+    sempre) -- so' o caminho de 2+ e' novo.
 
     periodo_label/periodo_extenso: texto que a contadora digita/confirma
     na tela (decisao do Rafael 28/09/2026 -- nao ha' coluna confiavel de
@@ -381,19 +459,40 @@ def montar_dados_relatorio(
     admin = admin or {}
     data_geracao = data_geracao or date.today().strftime("%d/%m/%Y")
 
-    empresas = {e["codigo"]: e for e in db.listar_empresas(conn)}
-    empresa = empresas.get(empresa_codigo, {})
+    codigos = [empresa_codigo] if isinstance(empresa_codigo, str) else list(empresa_codigo)
+    if not codigos:
+        raise ValueError("empresa_codigo precisa ter pelo menos 1 empresa")
+    grupo = len(codigos) > 1
 
-    bp_periodo = db.listar_lancamentos(conn, empresa_codigo, periodo, "BP")
-    dre_periodo = db.listar_lancamentos(conn, empresa_codigo, periodo, "DRE")
+    empresas = {e["codigo"]: e for e in db.listar_empresas(conn)}
+
+    if grupo:
+        for cod in codigos:
+            if periodo not in set(db.listar_periodos(conn, cod, status="ATIVO")):
+                raise ValueError(
+                    f"{cod} nao tem o periodo {periodo.strftime('%m/%Y')} ativo -- remova essa "
+                    "empresa da selecao ou escolha outro periodo pra gerar o consolidado."
+                )
+        bp_periodo = _consolidar_periodo(conn, codigos, periodo, "BP")
+        dre_periodo = _consolidar_periodo(conn, codigos, periodo, "DRE")
+        bp_hist = _consolidar_historico(conn, codigos, "BP")
+        dre_hist = _consolidar_historico(conn, codigos, "DRE")
+        itens_admin = _consolidar_despesas_admin_itens(conn, codigos, periodo)
+        periodos_ativos = db.listar_periodos_grupo(conn, codigos, status="ATIVO")
+        empresa = {}
+    else:
+        cod_unico = codigos[0]
+        empresa = empresas.get(cod_unico, {})
+        bp_periodo = db.listar_lancamentos(conn, cod_unico, periodo, "BP")
+        dre_periodo = db.listar_lancamentos(conn, cod_unico, periodo, "DRE")
+        bp_hist = db.listar_historico_grupo(conn, cod_unico, "BP")
+        dre_hist = db.listar_historico_grupo(conn, cod_unico, "DRE")
+        itens_admin = db.listar_despesas_admin_itens(conn, cod_unico, periodo)
+        periodos_ativos = db.listar_periodos(conn, cod_unico, status="ATIVO")
+
     bp_map = _mapa(bp_periodo)
     dre_map = _mapa(dre_periodo)
-
-    bp_hist = db.listar_historico_grupo(conn, empresa_codigo, "BP")
-    dre_hist = db.listar_historico_grupo(conn, empresa_codigo, "DRE")
     indic_df = indicadores.calcular_indicadores(bp_hist, dre_hist)
-
-    itens_admin = db.listar_despesas_admin_itens(conn, empresa_codigo, periodo)
 
     # ---- Receita / Custos (pagina 3) ----
     receita_bruta = dre_map.get("RECEITA OPERACIONAL BRUTA", 0.0) + dre_map.get("RECEITAS OPERACIONAIS DIVERSAS", 0.0)
@@ -446,7 +545,6 @@ def montar_dados_relatorio(
     endividamento_geral = _linha_indicador(indic_df, periodo, "Endividamento Geral") or 0.0
 
     # ---- Comparativos com periodo anterior (textos livres) ----
-    periodos_ativos = db.listar_periodos(conn, empresa_codigo, status="ATIVO")
     periodos_ordenados = sorted(periodos_ativos)
     periodo_anterior = None
     if periodo in periodos_ordenados:
@@ -474,10 +572,17 @@ def montar_dados_relatorio(
         f"e endividamento geral de {endividamento_geral*100:.1f}% do ativo total."
     )
 
+    if grupo:
+        nome_empresa = "Grupo Enermais"
+        cnpj = ""
+    else:
+        nome_empresa = empresa.get("nome", codigos[0])
+        cnpj = empresa.get("cnpj", "")
+
     dados = dict(
-        empresa_codigo=empresa_codigo,
-        empresa_nome=empresa.get("nome", empresa_codigo),
-        cnpj=empresa.get("cnpj", ""),
+        empresa_codigo=codigos[0],
+        empresa_nome=nome_empresa,
+        cnpj=cnpj,
         cabecalho_relatorio=f"Demonstrativo Comentado · {periodo_label}",
         periodo_label=periodo_label,
         periodo_extenso=periodo_extenso,
@@ -504,6 +609,8 @@ def montar_dados_relatorio(
         nome_contador=admin.get("nome_contador", ""), cargo_contador=admin.get("cargo_contador", "Contador"),
         email_empresa=admin.get("email_empresa", ""), site_empresa=admin.get("site_empresa", ""),
     )
+    if grupo:
+        dados["empresas_codigos"] = list(codigos)
     if tem_csll_irpj:
         dados["csll_irpj"] = csll_irpj
 
