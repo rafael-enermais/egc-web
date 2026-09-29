@@ -107,19 +107,24 @@ def resumir_completude_por_periodo(completude: pd.DataFrame) -> pd.DataFrame:
     que falta sem precisar abrir nada.
 
     completude: saida de calcular_completude_grupo (colunas Período,
-    Empresa, empresa_codigo, tem_bp, tem_dre, Status).
+    Granularidade, Empresa, empresa_codigo, tem_bp, tem_dre, Status).
 
-    Retorna 1 linha por periodo (mais recente primeiro), colunas: Período,
-    Status ("✅ Completo (N/N)" ou "⚠️ Incompleto (x/N)"), Empresas
-    pendentes (nomes separados por vírgula, "—" se completo). DataFrame
-    vazio (mesmas colunas) se completude vier vazio.
+    Retorna 1 linha por (periodo, granularidade) -- mais recente primeiro
+    -- colunas: Período, Granularidade, Status ("✅ Completo (N/N)" ou
+    "⚠️ Incompleto (x/N)"), Empresas pendentes (nomes separados por
+    vírgula, "—" se completo). Fase 3 (29/09/2026): agrupa por
+    (Período, Granularidade) em vez de só Período -- um trimestral e um
+    semestral que fecham na MESMA data agora aparecem como 2 linhas
+    distintas, cada 1 com seu próprio status de completude, em vez de se
+    misturarem numa só. DataFrame vazio (mesmas colunas) se completude
+    vier vazio.
     """
-    colunas = ["Período", "Status", "Empresas pendentes"]
+    colunas = ["Período", "Granularidade", "Status", "Empresas pendentes"]
     if completude.empty:
         return pd.DataFrame(columns=colunas)
 
     linhas = []
-    for periodo, grupo in completude.groupby("Período", sort=False):
+    for (periodo, granularidade), grupo in completude.groupby(["Período", "Granularidade"], sort=False):
         total = len(grupo)
         completas = grupo[grupo["Status"] == "✅ Completo"]
         pendentes = grupo[grupo["Status"] != "✅ Completo"]
@@ -130,10 +135,13 @@ def resumir_completude_por_periodo(completude: pd.DataFrame) -> pd.DataFrame:
         else:
             status = f"⚠️ Incompleto ({n_completas}/{total})"
             nomes_pendentes = ", ".join(pendentes["Empresa"])
-        linhas.append({"Período": periodo, "Status": status, "Empresas pendentes": nomes_pendentes})
+        linhas.append({
+            "Período": periodo, "Granularidade": granularidade,
+            "Status": status, "Empresas pendentes": nomes_pendentes,
+        })
 
     saida = pd.DataFrame(linhas, columns=colunas)
-    return saida.sort_values("Período", ascending=False).reset_index(drop=True)
+    return saida.sort_values(["Período", "Granularidade"], ascending=[False, True]).reset_index(drop=True)
 
 
 def calcular_completude_grupo(
@@ -142,35 +150,52 @@ def calcular_completude_grupo(
 ) -> pd.DataFrame:
     """
     Matriz de completude de dados por empresa x periodo -- usada no painel
-    de pendencias da Inicio (23/09/2026, retomando item deferido em
+    de pendencias/completude (23/09/2026, retomando item deferido em
     22/09: "quais pendencias ainda faltam alem do gerador de
-    relatorios?"). Zero query nova: lancs_bp/lancs_dre vem de
-    db.listar_lancamentos_grupo_periodos (mesma funcao ja usada no resumo
-    do grupo desta tela e na Inicio), so' reaproveita pra marcar presenca/
-    ausencia por (empresa, periodo).
+    relatorios?"; movido pra pagina do Relatorio Comentado em 29/09/2026
+    -- "o painel de pendencias... poderia ir p pagina do gerador,
+    poderia conferir quais disponivel para geracao"). Zero query nova:
+    lancs_bp/lancs_dre vem de db.listar_lancamentos_grupo_periodos (mesma
+    funcao ja usada no resumo do grupo desta tela), so' reaproveita pra
+    marcar presenca/ausencia por (empresa, periodo, granularidade).
 
-    periodos: lista de periodos a cobrir (normalmente
-    db.listar_periodos_grupo -- uniao com status ATIVO entre as empresas).
+    periodos: lista de periodos a cobrir -- ACEITA tanto list[date]
+    (comportamento antigo, granularidade fica sempre "") quanto
+    list[dict] no formato de db.listar_periodos_grupo_detalhado
+    ({"periodo","granularidade"}) -- Fase 3 (29/09/2026): granularidade
+    faz parte da identidade do periodo (2 documentos de abrangencia
+    diferente, ex. trimestral e semestral, podem estar ATIVOS ao mesmo
+    tempo no MESMO periodo_fim -- ver db.inativar_periodo_existente) e o
+    painel de completude nao pode mais colapsar os 2 numa linha so'.
     empresas: lista (codigo, nome, cnpj), mesmo formato de
     conexao.EMPRESAS_FIXAS.
 
-    Retorna 1 linha por (periodo, empresa) -- colunas: Periodo (date),
-    Empresa (nome), empresa_codigo, tem_bp (bool), tem_dre (bool), Status
+    Retorna 1 linha por (periodo, granularidade, empresa) -- colunas:
+    Período (date), Granularidade (str, "" = não declarada), Empresa
+    (nome), empresa_codigo, tem_bp (bool), tem_dre (bool), Status
     ("Completo"/"So' BP"/"So' DRE"/"Faltando"). Lista de periodos vazia
     devolve DataFrame vazio com as mesmas colunas (nada pra iterar).
     """
-    colunas = ["Período", "Empresa", "empresa_codigo", "tem_bp", "tem_dre", "Status"]
+    colunas = ["Período", "Granularidade", "Empresa", "empresa_codigo", "tem_bp", "tem_dre", "Status"]
     if not periodos:
         return pd.DataFrame(columns=colunas)
 
-    set_bp = {(r["empresa_codigo"], r["periodo"]) for r in lancs_bp}
-    set_dre = {(r["empresa_codigo"], r["periodo"]) for r in lancs_dre}
+    periodos_norm = [
+        (p["periodo"], p["granularidade"]) if isinstance(p, dict) else (p, "")
+        for p in periodos
+    ]
+
+    def _chave(r: dict) -> tuple:
+        return (r["empresa_codigo"], r["periodo"], r.get("granularidade", ""))
+
+    set_bp = {_chave(r) for r in lancs_bp}
+    set_dre = {_chave(r) for r in lancs_dre}
 
     linhas = []
-    for periodo in periodos:
+    for periodo, granularidade in periodos_norm:
         for cod, nome, _cnpj in empresas:
-            tem_bp = (cod, periodo) in set_bp
-            tem_dre = (cod, periodo) in set_dre
+            tem_bp = (cod, periodo, granularidade) in set_bp
+            tem_dre = (cod, periodo, granularidade) in set_dre
             if tem_bp and tem_dre:
                 status = "✅ Completo"
             elif tem_bp:
@@ -180,7 +205,7 @@ def calcular_completude_grupo(
             else:
                 status = "❌ Faltando"
             linhas.append({
-                "Período": periodo, "Empresa": nome, "empresa_codigo": cod,
+                "Período": periodo, "Granularidade": granularidade, "Empresa": nome, "empresa_codigo": cod,
                 "tem_bp": tem_bp, "tem_dre": tem_dre, "Status": status,
             })
     return pd.DataFrame(linhas, columns=colunas)

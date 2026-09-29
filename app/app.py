@@ -24,7 +24,6 @@ from auth import require_login
 from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS
 import db
 import indicadores
-import visao_grupo
 import formatacao
 
 st.set_page_config(page_title="EGC — EnerMais", page_icon="📊", layout="wide")
@@ -303,42 +302,14 @@ def pagina_inicio():
                 texto, delta_txt = _fmt_grupo(col, fmt)
                 container.metric(label, texto, delta=delta_txt)
 
-    # ─────────── Painel de pendências (23/09/2026, resumido em 23/09/2026 —
-    # 2ª leva de feedback ao vivo) ───────────
-    # 2ª metade do item retomado em 22/09: "quais pendências ainda faltam
-    # além do gerador de relatórios?" -- completude de dados por
-    # empresa × período. Zero query nova: reaproveita
-    # db.listar_periodos_grupo/listar_lancamentos_grupo_periodos (as
-    # mesmas já chamadas na seção acima e usadas por Visão Grupo).
-    #
-    # Fix (mesmo dia, 2ª leva): a 1ª versão tinha 2 tabelas parecidas
-    # (pendentes soltas + matriz completa num expander) -- "parece
-    # repetida" (Rafael). Resumido numa ÚNICA tabela macro por período
-    # (visao_grupo.resumir_completude_por_periodo): status do período
-    # inteiro + quais empresas faltam, sem precisar abrir nada.
+    # Painel de pendências: MOVIDO pra página "Relatório Comentado" em
+    # 29/09/2026 (pedido do Rafael: "o painel de pendencias da pagina
+    # inicio poderia ir p pagina do gerador, poderia conferir quais
+    # disponivel para geracao do relatorio, o fluxo seria melhor tb") --
+    # fica mais útil bem ali, no momento de escolher o que gerar, do que
+    # solto na Início. Ver telas/8_Relatorio_Comentado.py.
     st.divider()
-    st.subheader("Painel de pendências")
-    try:
-        completude = visao_grupo.calcular_completude_grupo(
-            periodos_grupo, lancs_bp_grupo, lancs_dre_grupo, EMPRESAS_FIXAS,
-        )
-        resumo_pendencias = visao_grupo.resumir_completude_por_periodo(completude)
-    except Exception as exc:
-        st.warning(f"Não foi possível montar o painel de pendências: {exc}")
-        _registrar_evento_seguro(conn, "inicio", "ERRO", "Falha ao montar painel de pendências",
-                                  usuario=usuario, detalhe=str(exc))
-        resumo_pendencias = pd.DataFrame()
-
-    if resumo_pendencias.empty:
-        st.caption("Sem período nenhum no grupo ainda pra avaliar pendências.")
-    else:
-        resumo_fmt = resumo_pendencias.assign(Período=resumo_pendencias["Período"].apply(lambda p: p.strftime("%m/%Y")))
-        n_incompletos = (resumo_fmt["Status"].str.startswith("⚠️")).sum()
-        if n_incompletos == 0:
-            st.success("Todos os períodos do grupo com BP e DRE completos nas 6 empresas.")
-        else:
-            st.caption(f"{n_incompletos} período(s) com pelo menos 1 empresa faltando BP e/ou DRE.")
-        st.dataframe(resumo_fmt, hide_index=True, use_container_width=True)
+    st.caption("📋 Pendências de importação (quais períodos/granularidades faltam BP ou DRE) — ver painel na página **Relatório Comentado**.")
 
 
 paginas = [

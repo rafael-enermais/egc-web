@@ -86,7 +86,7 @@ def _patches(periodos_ativos=None, dre_hist=None, indic_df=None):
     indic_df = indic_df if indic_df is not None else _indic_df({PERIODO: INDIC_ROW})
     return [
         patch("dados_relatorio_comentado.db.listar_empresas", return_value=EMPRESAS),
-        patch("dados_relatorio_comentado.db.listar_lancamentos", side_effect=lambda conn, cod, per, tipo, status="ATIVO":
+        patch("dados_relatorio_comentado.db.listar_lancamentos", side_effect=lambda conn, cod, per, tipo, status="ATIVO", granularidade=None:
               BP_PERIODO if tipo == "BP" else DRE_PERIODO),
         patch("dados_relatorio_comentado.db.listar_historico_grupo", side_effect=lambda conn, cod, tipo, status="ATIVO":
               [dict(periodo=PERIODO, **{k: v2 for k, v2 in x.items() if k != "grupo"}, grupo=x["grupo"]) for x in BP_PERIODO] if tipo == "BP"
@@ -181,7 +181,7 @@ def test_sem_csll_irpj_pula_pagina_resultado_e_nao_inventa_campo():
     # (com csll) -- o que importa aqui e' o comportamento quando os 2
     # PROVISAO_* nao existem NO PERIODO buscado por listar_lancamentos.
     with patch("dados_relatorio_comentado.db.listar_empresas", return_value=EMPRESAS), \
-         patch("dados_relatorio_comentado.db.listar_lancamentos", side_effect=lambda conn, cod, per, tipo, status="ATIVO":
+         patch("dados_relatorio_comentado.db.listar_lancamentos", side_effect=lambda conn, cod, per, tipo, status="ATIVO", granularidade=None:
                BP_PERIODO if tipo == "BP" else dre_sem_csll), \
          patch("dados_relatorio_comentado.db.listar_historico_grupo", side_effect=lambda conn, cod, tipo, status="ATIVO":
                [dict(x, periodo=PERIODO) for x in BP_PERIODO] if tipo == "BP" else [dict(x, periodo=PERIODO) for x in dre_sem_csll]), \
@@ -320,7 +320,7 @@ def test_com_periodo_anterior_gera_texto_comparativo():
     ]
     indic_df_2p = _indic_df({PERIODO: INDIC_ROW, PERIODO_ANTERIOR: {**INDIC_ROW, "EBITDA": 500_000.0}})
     with patch("dados_relatorio_comentado.db.listar_empresas", return_value=EMPRESAS), \
-         patch("dados_relatorio_comentado.db.listar_lancamentos", side_effect=lambda conn, cod, per, tipo, status="ATIVO":
+         patch("dados_relatorio_comentado.db.listar_lancamentos", side_effect=lambda conn, cod, per, tipo, status="ATIVO", granularidade=None:
                BP_PERIODO if tipo == "BP" else DRE_PERIODO), \
          patch("dados_relatorio_comentado.db.listar_historico_grupo", side_effect=lambda conn, cod, tipo, status="ATIVO":
                [dict(x, periodo=PERIODO) for x in BP_PERIODO] if tipo == "BP" else dre_hist_2p), \

@@ -372,7 +372,7 @@ def _texto_comparativo(rotulo: str, atual: Optional[float], anterior: Optional[f
     return f"{rotulo}: período anterior com base zero, variação percentual não aplicável."
 
 
-def _consolidar_periodo(conn, empresas_codigos: list, periodo: date, tipo: str) -> list:
+def _consolidar_periodo(conn, empresas_codigos: list, periodo: date, tipo: str, granularidade: str = "") -> list:
     """BP ou DRE consolidado (soma aditiva, sem eliminacao entre
     empresas -- mesma premissa da Visao Grupo, confirmada com o Rafael)
     de N empresas pra 1 UNICO periodo. Formato {grupo, conta, valor},
@@ -381,8 +381,16 @@ def _consolidar_periodo(conn, empresas_codigos: list, periodo: date, tipo: str) 
     atualizado_em, que ninguem le aqui). Reaproveita a mesma infra ja
     testada do Modelo B/Visao Grupo (db.listar_lancamentos_grupo +
     visao_grupo.montar_pivot_grupo, coluna "VALOR CONSOLIDADO") -- soma
-    nao reimplementada de novo."""
-    lancs = db.listar_lancamentos_grupo(conn, periodo, tipo, empresas_codigos)
+    nao reimplementada de novo.
+
+    granularidade (Fase 3, 29/09/2026): SEMPRE passada explicitamente
+    daqui pra baixo (default "" = sem intervalo declarado, o caso comum)
+    -- desde que 2 documentos de abrangencia diferente (ex. trimestral e
+    semestral) podem ficar ATIVOS ao mesmo tempo pro mesmo periodo_fim
+    (ver db.inativar_periodo_existente), o relatorio NUNCA pode buscar
+    "o periodo X" sem dizer qual granularidade, senao misturaria as 2
+    no consolidado sem avisar."""
+    lancs = db.listar_lancamentos_grupo(conn, periodo, tipo, empresas_codigos, granularidade=granularidade)
     pivot = visao_grupo.montar_pivot_grupo(lancs, empresas_codigos)
     return [
         {"grupo": row["grupo"], "conta": row["conta"], "valor": row["VALOR CONSOLIDADO"]}
@@ -444,6 +452,7 @@ def montar_dados_relatorio(
     periodo_extenso: str = "",
     data_geracao: Optional[str] = None,
     admin: Optional[dict] = None,
+    granularidade: str = "",
 ) -> tuple[dict, bool]:
     """Monta (dados, incluir_pagina_resultado) prontos pra
     gerador_relatorio_comentado.gerar_pdf_completo(dados, caminho,
@@ -464,8 +473,17 @@ def montar_dados_relatorio(
     sempre) -- so' o caminho de 2+ e' novo.
 
     periodo_label/periodo_extenso: texto que a contadora digita/confirma
-    na tela (decisao do Rafael 28/09/2026 -- nao ha' coluna confiavel de
-    granularidade no banco pra inferir isso sozinho).
+    na tela (decisao do Rafael 28/09/2026).
+
+    granularidade (Fase 3, 29/09/2026 -- "vamos estruturar e implantar a
+    granularidade... podemos casar toda a estrutura com isso"): "" por
+    padrao (sem intervalo declarado, o caso comum -- BP legado ou import
+    anterior a 24/09/2026). Desde que 2 documentos de abrangencia
+    diferente (trimestral/semestral/anual) podem ficar ATIVOS ao mesmo
+    tempo pro MESMO periodo_fim (ver db.inativar_periodo_existente), a
+    tela SEMPRE deve passar a granularidade exata do periodo escolhido
+    (db.listar_periodos_detalhado) -- sem isso, um periodo_fim com 2
+    granularidades ativas buscaria as 2 misturadas.
 
     admin: dict opcional com nome_administrador/cargo_administrador/
     nome_contador/cargo_contador/email_empresa/site_empresa -- tambem
@@ -484,13 +502,15 @@ def montar_dados_relatorio(
 
     if grupo:
         for cod in codigos:
-            if periodo not in set(db.listar_periodos(conn, cod, status="ATIVO")):
+            ativos_cod = {(d["periodo"], d["granularidade"]) for d in db.listar_periodos_detalhado(conn, cod, status="ATIVO")}
+            if (periodo, granularidade) not in ativos_cod:
                 raise ValueError(
-                    f"{cod} nao tem o periodo {periodo.strftime('%m/%Y')} ativo -- remova essa "
+                    f"{cod} nao tem o periodo {periodo.strftime('%m/%Y')}"
+                    f"{f' ({granularidade})' if granularidade else ''} ativo -- remova essa "
                     "empresa da selecao ou escolha outro periodo pra gerar o consolidado."
                 )
-        bp_periodo = _consolidar_periodo(conn, codigos, periodo, "BP")
-        dre_periodo = _consolidar_periodo(conn, codigos, periodo, "DRE")
+        bp_periodo = _consolidar_periodo(conn, codigos, periodo, "BP", granularidade=granularidade)
+        dre_periodo = _consolidar_periodo(conn, codigos, periodo, "DRE", granularidade=granularidade)
         bp_hist = _consolidar_historico(conn, codigos, "BP")
         dre_hist = _consolidar_historico(conn, codigos, "DRE")
         itens_admin = _consolidar_despesas_admin_itens(conn, codigos, periodo)
@@ -499,8 +519,8 @@ def montar_dados_relatorio(
     else:
         cod_unico = codigos[0]
         empresa = empresas.get(cod_unico, {})
-        bp_periodo = db.listar_lancamentos(conn, cod_unico, periodo, "BP")
-        dre_periodo = db.listar_lancamentos(conn, cod_unico, periodo, "DRE")
+        bp_periodo = db.listar_lancamentos(conn, cod_unico, periodo, "BP", granularidade=granularidade)
+        dre_periodo = db.listar_lancamentos(conn, cod_unico, periodo, "DRE", granularidade=granularidade)
         bp_hist = db.listar_historico_grupo(conn, cod_unico, "BP")
         dre_hist = db.listar_historico_grupo(conn, cod_unico, "DRE")
         itens_admin = db.listar_despesas_admin_itens(conn, cod_unico, periodo)
@@ -728,6 +748,7 @@ def montar_dados_relatorio_comparativo(
     periodo_range_label: str,
     data_geracao: Optional[str] = None,
     admin: Optional[dict] = None,
+    granularidades: Optional[list] = None,
 ) -> dict:
     """Monta o dict pronto pra
     gerador_relatorio_comparativo.gerar_pdf_comparativo(dados, caminho)
@@ -757,6 +778,13 @@ def montar_dados_relatorio_comparativo(
     `admin`: mesmo dict opcional do Modelo A (nome/cargo de
     administrador e contador, e-mail, site).
 
+    `granularidades` (Fase 3, 29/09/2026): list[str] na MESMA ORDEM/
+    tamanho de `periodos` -- uma granularidade por coluna (default: ""
+    em todas, sem intervalo declarado). Mesma razão do Modelo A: 2
+    documentos de abrangência diferente podem coexistir ATIVOS no MESMO
+    periodo_fim, então cada coluna do comparativo precisa dizer qual
+    delas quer, não só a data.
+
     FIX_20260929i: com 2+ empresas, cada período tem que existir (status
     ATIVO) em TODAS elas -- somar um período que 1 empresa não tem daria
     um "consolidado" incompleto sem avisar (`montar_dados_relatorio`
@@ -772,6 +800,10 @@ def montar_dados_relatorio_comparativo(
     if not (2 <= len(periodos) <= 4):
         raise ValueError("comparativo aceita de 2 a 4 períodos (mesmo teto do motor de desenho)")
 
+    granularidades = list(granularidades) if granularidades is not None else [""] * len(periodos)
+    if len(granularidades) != len(periodos):
+        raise ValueError("granularidades e periodos precisam ter o mesmo tamanho")
+
     admin = admin or {}
     data_geracao = data_geracao or date.today().strftime("%d/%m/%Y")
 
@@ -780,10 +812,14 @@ def montar_dados_relatorio_comparativo(
 
     if grupo:
         for cod in empresas_codigos:
-            periodos_da_empresa = set(db.listar_periodos(conn, cod, status="ATIVO"))
-            faltando = [p for p in periodos if p not in periodos_da_empresa]
+            ativos_cod = {(d["periodo"], d["granularidade"]) for d in db.listar_periodos_detalhado(conn, cod, status="ATIVO")}
+            faltando = [
+                (p, g) for p, g in zip(periodos, granularidades) if (p, g) not in ativos_cod
+            ]
             if faltando:
-                faltando_txt = ", ".join(p.strftime("%m/%Y") for p in faltando)
+                faltando_txt = ", ".join(
+                    p.strftime("%m/%Y") + (f" ({g})" if g else "") for p, g in faltando
+                )
                 raise ValueError(
                     f"{cod} não tem período ativo em {faltando_txt} -- remova esse(s) período(s) "
                     f"ou desmarque {cod} da seleção pra gerar o comparativo consolidado."
@@ -793,25 +829,25 @@ def montar_dados_relatorio_comparativo(
 
     dados_por_periodo = []
     bp_por_periodo = []
-    for periodo in periodos:
+    for periodo, granularidade in zip(periodos, granularidades):
         somas = {campo: 0.0 for campo in campos_kpi}
         for cod in empresas_codigos:
             dados_p, _incluir_resultado = montar_dados_relatorio(
-                conn, cod, periodo, periodo_label=str(periodo),
+                conn, cod, periodo, periodo_label=str(periodo), granularidade=granularidade,
             )
             for campo in campos_kpi:
                 somas[campo] += dados_p[campo]
         dados_por_periodo.append(somas)
 
         if grupo:
-            lancs = db.listar_lancamentos_grupo(conn, periodo, "BP", empresas_codigos)
+            lancs = db.listar_lancamentos_grupo(conn, periodo, "BP", empresas_codigos, granularidade=granularidade)
             pivot = visao_grupo.montar_pivot_grupo(lancs, empresas_codigos)
             bp_periodo = [
                 {"grupo": row["grupo"], "conta": row["conta"], "valor": row["VALOR CONSOLIDADO"]}
                 for row in pivot.to_dict("records")
             ]
         else:
-            bp_periodo = db.listar_lancamentos(conn, empresas_codigos[0], periodo, "BP")
+            bp_periodo = db.listar_lancamentos(conn, empresas_codigos[0], periodo, "BP", granularidade=granularidade)
         bp_por_periodo.append(bp_periodo)
 
     def _serie(campo):

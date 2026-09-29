@@ -84,13 +84,17 @@ def _patches(periodos_ativos_por_empresa=None):
     return [
         patch("dados_relatorio_comentado.db.listar_empresas", return_value=EMPRESAS),
         patch("dados_relatorio_comentado.montar_dados_relatorio", side_effect=_montar_dados_relatorio_fake),
-        patch("dados_relatorio_comentado.db.listar_lancamentos", side_effect=lambda conn, cod, per, tipo, status="ATIVO":
+        patch("dados_relatorio_comentado.db.listar_lancamentos", side_effect=lambda conn, cod, per, tipo, status="ATIVO", granularidade=None:
               (BP_2025 if per == P2025 else BP_2026) if tipo == "BP" else []),
         patch("dados_relatorio_comentado.db.listar_lancamentos_grupo",
-              side_effect=lambda conn, per, tipo, cods, status="ATIVO":
+              side_effect=lambda conn, per, tipo, cods, status="ATIVO", granularidade=None:
               (BP_GRUPO_2025 if per == P2025 else BP_GRUPO_2026) if tipo == "BP" else []),
         patch("dados_relatorio_comentado.db.listar_periodos",
               side_effect=lambda conn, cod, status="ATIVO": periodos_ativos_por_empresa.get(cod, [])),
+        patch("dados_relatorio_comentado.db.listar_periodos_detalhado",
+              side_effect=lambda conn, cod, status="ATIVO": [
+                  {"periodo": p, "granularidade": ""} for p in periodos_ativos_por_empresa.get(cod, [])
+              ]),
     ]
 
 
