@@ -277,6 +277,33 @@ def test_anexo_multi_periodo_preserva_ordem_do_primeiro_periodo():
     print("OK: _montar_anexo_multi_periodo — ordem das linhas segue o 1º período que tiver cada uma, novas no fim")
 
 
+def test_anexo_multi_periodo_omite_subconta_mas_conta_pai_mantem_valor_proprio():
+    # FIX_20260929q -- Rafael concordou em cortar só a subconta (opção 1
+    # das 3 avaliadas pra encurtar o Anexo do Comparativo) pra aliviar a
+    # pressão de página, sem mexer no layout clássico de 1 período.
+    bp_com_par = [
+        {"grupo": "ATIVO CIRCULANTE", "conta": "TOTAL CIRCULANTE ATIVO", "valor": 1000.0},
+        {"grupo": "ATIVO CIRCULANTE", "conta": "DISPONIVEL", "valor": 1000.0},
+        {"grupo": "ATIVO CIRCULANTE", "conta": "DEPOSITOS BANCARIOS A VISTA", "valor": 600.0},
+        {"grupo": "ATIVO CIRCULANTE", "conta": "APLICACOES DE LIQUIDEZ IMEDIATA", "valor": 400.0},
+        {"grupo": "TOTAL", "conta": "TOTAL DO ATIVO", "valor": 1000.0},
+    ]
+    linhas_multi = drc._montar_anexo_multi_periodo([bp_com_par, bp_com_par], "ATIVO")
+    tipos_multi = [l[0] for l in linhas_multi]
+    assert "subconta" not in tipos_multi, "Modelo B (multi-coluna) tem que omitir subconta -- pedido explícito do Rafael"
+    por_label = {l[1]: l for l in linhas_multi if l[0] != "grupo"}
+    assert por_label["Disponível"] == ("conta", "Disponível", 1000.0, 1000.0), (
+        "a conta-pai precisa manter o valor PRÓPRIO (vem do SPED, não da soma dos filhos) mesmo sem mostrar os filhos"
+    )
+    assert por_label["TOTAL DO ATIVO"] == ("total", "TOTAL DO ATIVO", 1000.0, 1000.0)
+
+    # Layout clássico (1 período, _montar_anexo chamado direto) continua
+    # com subconta -- nunca precisou cortar nada, não foi tocado.
+    linhas_classico = drc._montar_anexo(bp_com_par, "ATIVO")
+    assert "subconta" in [l[0] for l in linhas_classico], "layout clássico (1 período) não deveria ter mudado"
+    print("OK: Modelo B omite subconta no Anexo (conta-pai mantém valor próprio); layout clássico de 1 período intocado")
+
+
 if __name__ == "__main__":
     testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
     falhas = 0
