@@ -83,13 +83,15 @@ MOCK_LANCS_DRE = [
 
 def _fake_listar_lancamentos_grupo_periodos(conn, periodos, tipo, empresas_codigos, status="ATIVO"):
     base = MOCK_LANCS_BP if tipo == "BP" else MOCK_LANCS_DRE
-    return [r for r in base if r["periodo"] in periodos and r["empresa_codigo"] in empresas_codigos]
+    return [dict(r, granularidade="") for r in base if r["periodo"] in periodos and r["empresa_codigo"] in empresas_codigos]
 
 
 def test_visao_grupo_completo_kpis_multi_periodo_macro_especifica_1_empresa_sem_excecao():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
-         patch.object(db, "listar_periodos_grupo", return_value=[P_JUN, P_MAI]), \
+         patch.object(db, "listar_periodos_grupo_detalhado", return_value=[
+             {"periodo": P_JUN, "granularidade": ""}, {"periodo": P_MAI, "granularidade": ""},
+         ]), \
          patch.object(db, "listar_lancamentos_grupo_periodos", side_effect=_fake_listar_lancamentos_grupo_periodos):
 
         at = AppTest.from_file(PAGE)
@@ -127,6 +129,52 @@ def test_visao_grupo_completo_kpis_multi_periodo_macro_especifica_1_empresa_sem_
         "visao Macro/Especifica, 1 empresa e 1 periodo (sem os minimos antigos), tudo sem excecao "
         "com valor Decimal (regressao do TypeError Decimal+float)"
     )
+
+
+def test_2_granularidades_mesmo_periodo_fim_seletor_de_detalhe_separa():
+    """
+    Fase 3.1 (29/09/2026): trimestral e semestral ATIVOS pra 06/2026 --
+    o seletor "Período de detalhe" tem que oferecer as 2 opções
+    separadas (rótulo com a granularidade) e a tabela de detalhe filtrar
+    só a escolhida, nunca misturar as contas dos 2 documentos.
+    """
+    lancs_trimestral = [
+        {"empresa_codigo": "ENERGIA", "periodo": P_JUN, "grupo": "ATIVO CIRCULANTE", "conta": "CLIENTES",
+         "valor": Decimal("100.00"), "granularidade": "trimestral"},
+    ]
+    lancs_semestral = [
+        {"empresa_codigo": "ENERGIA", "periodo": P_JUN, "grupo": "ATIVO CIRCULANTE", "conta": "CLIENTES",
+         "valor": Decimal("600.00"), "granularidade": "semestral"},
+    ]
+
+    def _lancs_ambiguo(conn, periodos, tipo, empresas_codigos, status="ATIVO"):
+        if tipo != "BP":
+            return []
+        return [r for r in (lancs_trimestral + lancs_semestral) if r["empresa_codigo"] in empresas_codigos]
+
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos_grupo_detalhado", return_value=[
+             {"periodo": P_JUN, "granularidade": "trimestral"}, {"periodo": P_JUN, "granularidade": "semestral"},
+         ]), \
+         patch.object(db, "listar_lancamentos_grupo_periodos", side_effect=_lancs_ambiguo):
+
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        assert not at.exception, f"excecao com 2 granularidades no mesmo periodo_fim: {at.exception}"
+
+        sel_detalhe = at.selectbox(key="grupo_periodo_detalhe_sel")
+        assert len(sel_detalhe.options) == 2, f"esperava 2 opções de período de detalhe (1 por granularidade), veio {len(sel_detalhe.options)}"
+
+        # escolhe explicitamente o trimestral -- tabela de detalhe (BP) so'
+        # pode ter a linha do trimestral (100.00), nunca a do semestral (600.00)
+        sel_detalhe.set_value((P_JUN, "trimestral")).run(timeout=30)
+        assert not at.exception, f"excecao ao escolher trimestral: {at.exception}"
+        tabela_bp = at.dataframe[0].value
+        assert list(tabela_bp["VALOR CONSOLIDADO"]) == ["R$ 100,00"], (
+            f"esperava só a linha do trimestral (R$ 100,00) na tabela de detalhe, veio {list(tabela_bp['VALOR CONSOLIDADO'])}"
+        )
+        print("OK: 2 granularidades no mesmo periodo_fim — seletor de detalhe separa, tabela nunca mistura os 2 documentos")
 
 
 if __name__ == "__main__":

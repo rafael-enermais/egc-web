@@ -90,6 +90,38 @@ COLUNAS_INDICADORES = [
 ]
 
 
+# Fase 3.1 (29/09/2026, "alinha todo o app com esse escopo... os kpis
+# com essa funcao tb"): 2 documentos de abrangencia diferente podem estar
+# ATIVOS ao mesmo tempo pro MESMO periodo_fim (ex. trimestral e semestral
+# fechando 30/06/2026 -- ver db.inativar_periodo_existente). Sem
+# resolucao, o groupby(periodo, conta) de _pivot somava os 2 no mesmo
+# ponto da serie -- indicador errado, sem aviso (limitacao documentada
+# ate' aqui em db.listar_historico_grupo). Desempate: documento mais
+# abrangente/oficial vence (fechamento anual/semestral e' o "definitivo",
+# trimestral e' interino) -- anual > semestral > trimestral > mensal >
+# outra > "" (nao declarada).
+_PRIORIDADE_GRANULARIDADE = {"anual": 4, "semestral": 3, "trimestral": 2, "mensal": 1, "outra": 0, "": -1}
+
+
+def _filtrar_granularidade_vencedora(lancamentos: list[dict]) -> list[dict]:
+    """
+    Mantem so' as linhas da granularidade vencedora de cada periodo_fim
+    (ver criterio acima). Sem coluna 'granularidade' no dado (chamador
+    antigo / mock de teste sem essa coluna) -- no-op, comportamento de
+    sempre intacto.
+    """
+    if not lancamentos or "granularidade" not in lancamentos[0]:
+        return lancamentos
+    vencedora_por_periodo: dict = {}
+    for l in lancamentos:
+        p = l["periodo"]
+        g = l.get("granularidade") or ""
+        atual = vencedora_por_periodo.get(p)
+        if atual is None or _PRIORIDADE_GRANULARIDADE.get(g, -1) > _PRIORIDADE_GRANULARIDADE.get(atual, -1):
+            vencedora_por_periodo[p] = g
+    return [l for l in lancamentos if (l.get("granularidade") or "") == vencedora_por_periodo.get(l["periodo"])]
+
+
 def _pivot(lancamentos: list[dict], contas: list[str]) -> pd.DataFrame:
     """(periodo x conta), valor float, só as contas pedidas. Vazio (sem
     period nenhum) se não tiver dado nenhum bater."""
@@ -116,6 +148,8 @@ def calcular_indicadores(lancamentos_bp: list[dict], lancamentos_dre: list[dict]
     colunas = COLUNAS_INDICADORES. Vazio se nao tiver periodo nenhum em
     BP nem DRE.
     """
+    lancamentos_bp = _filtrar_granularidade_vencedora(lancamentos_bp)
+    lancamentos_dre = _filtrar_granularidade_vencedora(lancamentos_dre)
     bp = _pivot(lancamentos_bp, CONTAS_BP)
     dre = _pivot(lancamentos_dre, CONTAS_DRE)
 

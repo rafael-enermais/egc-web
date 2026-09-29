@@ -48,7 +48,11 @@ TOOLS = [
             "Lista os periodos (mes/ano) com lancamento ATIVO por empresa. Use "
             "ANTES de consultar_bp_dre ou consultar_visao_grupo com um periodo "
             "especifico, pra confirmar que aquele periodo existe de verdade -- "
-            "nunca invente um periodo sem checar aqui primeiro."
+            "nunca invente um periodo sem checar aqui primeiro. Quando a resposta "
+            "trouxer 'periodos_com_mais_de_1_documento', aquele mes/ano tem 2 "
+            "documentos de abrangencia diferente ativos ao mesmo tempo (ex. "
+            "trimestral e semestral fechando na mesma data) -- avise o usuario e "
+            "pergunte qual granularidade ele quer antes de consultar esse periodo."
         ),
         "input_schema": {
             "type": "object",
@@ -74,6 +78,16 @@ TOOLS = [
                 "empresa": {"type": "string", "description": "Codigo da empresa: ENERGIA, SMG, ENG, RENOV, CONST ou SOL."},
                 "tipo": {"type": "string", "enum": ["BP", "DRE"], "description": "BP (Balanco Patrimonial) ou DRE."},
                 "periodo": {"type": "string", "description": "Periodo no formato 'AAAA-MM' (ex. '2026-06') -- opcional, sem isso usa o mais recente."},
+                "granularidade": {
+                    "type": "string",
+                    "enum": ["mensal", "trimestral", "semestral", "anual", "outra"],
+                    "description": (
+                        "So' preencha quando uma chamada anterior devolver 'ambiguo': true "
+                        "(esse periodo tem mais de 1 documento ativo, ex. trimestral e semestral "
+                        "fechando na mesma data) -- pergunte ao usuario qual das opcoes ele quer "
+                        "ANTES de chamar de novo com este parametro. Sem ambiguidade, deixe vazio."
+                    ),
+                },
             },
             "required": ["empresa", "tipo"],
         },
@@ -98,6 +112,16 @@ TOOLS = [
                 },
                 "periodo": {"type": "string", "description": "Periodo 'AAAA-MM' -- opcional, sem isso usa o mais recente entre as empresas escolhidas."},
                 "visao": {"type": "string", "enum": ["macro", "especifica"], "description": "macro (padrao) ou especifica."},
+                "granularidade": {
+                    "type": "string",
+                    "enum": ["mensal", "trimestral", "semestral", "anual", "outra"],
+                    "description": (
+                        "So' preencha quando uma chamada anterior devolver 'ambiguo': true "
+                        "(esse periodo tem mais de 1 documento ativo pra alguma empresa do "
+                        "grupo) -- pergunte ao usuario qual das opcoes ele quer ANTES de "
+                        "chamar de novo com este parametro. Sem ambiguidade, deixe vazio."
+                    ),
+                },
             },
             "required": ["tipo"],
         },
@@ -269,6 +293,12 @@ def montar_system_prompt(
         "consultar_indicadores.\n"
         "- Pergunta sobre o que falta, o que esta incompleto, quais periodos/empresas "
         "sem dado -> consultar_completude.\n"
+        "- Se consultar_periodos, consultar_bp_dre ou consultar_visao_grupo devolver "
+        "'ambiguo': true (aquele mes/ano tem 2 documentos de abrangencia diferente "
+        "ativos, ex. trimestral e semestral fechando na mesma data), NUNCA escolha um "
+        "dos dois sozinho -- mostre as 'opcoes' pro usuario, pergunte qual granularidade "
+        "ele quer, e so' chame de novo (com o parametro 'granularidade' preenchido) "
+        "depois que ele responder.\n"
         "- Pergunta sobre CONFERENCIA DE NOTA FISCAL x SIENGE (fluxo separado do "
         "BP/DRE) -- KPI/evolucao de quantas notas foram conciliadas -> "
         "consultar_notas_fiscais_kpi; lista de notas pendentes/o que falta lancar "
@@ -283,12 +313,14 @@ def executar_ferramenta(conn, nome: str, entrada: dict, empresas_codigos: list[s
         return consultas_chat.consultar_periodos(conn, empresas)
     if nome == "consultar_bp_dre":
         return consultas_chat.consultar_bp_dre(
-            conn, entrada.get("empresa"), entrada.get("tipo"), entrada.get("periodo")
+            conn, entrada.get("empresa"), entrada.get("tipo"), entrada.get("periodo"),
+            entrada.get("granularidade"),
         )
     if nome == "consultar_visao_grupo":
         empresas = entrada.get("empresas") or empresas_codigos
         return consultas_chat.consultar_visao_grupo(
-            conn, entrada.get("tipo"), empresas, entrada.get("periodo"), entrada.get("visao", "macro")
+            conn, entrada.get("tipo"), empresas, entrada.get("periodo"), entrada.get("visao", "macro"),
+            entrada.get("granularidade"),
         )
     if nome == "consultar_indicadores":
         empresas = entrada.get("empresas") or empresas_codigos

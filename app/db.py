@@ -370,6 +370,7 @@ def salvar_correcao_manual(
     empresa_codigo: Optional[str] = None,
     tipo: Optional[str] = None,
     conta: Optional[str] = None,
+    granularidade: Optional[str] = None,
 ) -> int:
     """
     Corrige o valor de UM lancamento (equivalente a SalvarCorrecoesManuais
@@ -382,6 +383,14 @@ def salvar_correcao_manual(
         campo): cria linha nova com grupo='AJUSTE MANUAL', sem pdf_original
         (nao havia PDF original pra essa conta).
     Retorna o id do lancamento afetado (novo ou existente).
+
+    granularidade (Fase 3.1, 29/09/2026): so' usada quando lancamento_id
+    e' None (linha nova) -- amarra a conta adicionada a mao ao MESMO
+    documento (periodo, granularidade) que a contadora estava revisando
+    em 2_Revisao_Correcao.py, em vez de sempre cair em granularidade=''
+    (o que criaria um 3o "documento" fantasma pro mesmo periodo_fim
+    quando ja existem 2 ativos). None/"" -- comportamento de sempre
+    (coluna tem DEFAULT '', ver schema.sql BLOCO 16).
     """
     periodo_str = periodo.strftime("%m/%Y") if hasattr(periodo, "strftime") else str(periodo)
     origem = f"MANUAL {periodo_str}"
@@ -405,11 +414,11 @@ def salvar_correcao_manual(
             cur.execute(
                 """
                 INSERT INTO egc.lancamentos
-                    (empresa_codigo, tipo, periodo, grupo, conta, valor, origem, usuario)
-                VALUES (%s, %s, %s, 'AJUSTE MANUAL', %s, %s, %s, %s)
+                    (empresa_codigo, tipo, periodo, grupo, conta, valor, origem, usuario, granularidade)
+                VALUES (%s, %s, %s, 'AJUSTE MANUAL', %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (empresa_codigo, tipo, periodo, conta, novo_valor, origem, usuario),
+                (empresa_codigo, tipo, periodo, conta, novo_valor, origem, usuario, granularidade or ""),
             )
         row = cur.fetchone()
         return row[0] if row else None
@@ -622,13 +631,16 @@ def listar_historico_grupo(
     ATIVAS ao mesmo tempo (ex. trimestral e semestral, ambos 30/06/2026)
     e quem chama nao passar granularidade, indicadores.calcular_indicadores
     (groupby periodo+conta) SOMA as 2 no mesmo ponto da serie -- indicador
-    errado sem aviso. Series temporais (Inicio, KPI consolidado do grupo)
-    ainda nao filtram por granularidade nesta fase -- ver PROJETO_EGC_v3.0.md/
-    00-handoff.md pra esse item ficar registrado como pendencia conhecida,
-    nao escondido.
+    errado sem aviso -- RESOLVIDO em 29/09/2026 (Fase 3.1, "alinha todo o
+    app com esse escopo... os kpis com essa funcao tb"): a linha ganhou o
+    campo `granularidade` a mais (mesma ideia de
+    listar_lancamentos_grupo_periodos), e indicadores.calcular_indicadores
+    agora resolve a ambiguidade (prioridade: anual > semestral >
+    trimestral > mensal > outra > nao declarada) antes de agrupar, em vez
+    de somar os 2 documentos silenciosamente.
     """
     sql = """
-        SELECT periodo, grupo, conta, valor
+        SELECT periodo, grupo, conta, valor, COALESCE(granularidade, '') AS granularidade
         FROM egc.lancamentos
         WHERE empresa_codigo = %s AND tipo = %s AND status = %s
     """

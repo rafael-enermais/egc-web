@@ -38,31 +38,55 @@ def _p(ano, mes, dia=28):
     return datetime.date(ano, mes, dia)
 
 
+def _det(*periodos_granul):
+    """[(date, granularidade), ...] -> list[dict] (formato listar_periodos_detalhado)."""
+    return [{"periodo": p, "granularidade": g} for p, g in periodos_granul]
+
+
 def test_resolver_periodo_texto_bate():
-    disponiveis = [_p(2026, 5), _p(2026, 6), _p(2026, 7)]
-    r = cc._resolver_periodo(disponiveis, "2026-06")
-    checar(r == _p(2026, 6), "_resolver_periodo -- casa por ano/mes, ignora dia")
+    disponiveis = _det((_p(2026, 5), ""), (_p(2026, 6), ""), (_p(2026, 7), ""))
+    periodo, granul, ambiguo = cc._resolver_periodo_detalhado(disponiveis, "2026-06")
+    checar(periodo == _p(2026, 6) and ambiguo is None, "_resolver_periodo_detalhado -- casa por ano/mes, ignora dia")
 
 
 def test_resolver_periodo_vazio_pega_mais_recente():
-    disponiveis = [_p(2026, 5), _p(2026, 7), _p(2026, 6)]
-    r = cc._resolver_periodo(disponiveis, None)
-    checar(r == _p(2026, 7), "_resolver_periodo -- sem texto, pega o mais recente")
+    disponiveis = _det((_p(2026, 5), ""), (_p(2026, 7), ""), (_p(2026, 6), ""))
+    periodo, granul, ambiguo = cc._resolver_periodo_detalhado(disponiveis, None)
+    checar(periodo == _p(2026, 7) and ambiguo is None, "_resolver_periodo_detalhado -- sem texto, pega o mais recente")
 
 
 def test_resolver_periodo_nao_encontrado():
-    disponiveis = [_p(2026, 5)]
-    r = cc._resolver_periodo(disponiveis, "2026-12")
-    checar(r is None, "_resolver_periodo -- periodo nao existente devolve None")
+    disponiveis = _det((_p(2026, 5), ""))
+    periodo, granul, ambiguo = cc._resolver_periodo_detalhado(disponiveis, "2026-12")
+    checar(periodo is None and ambiguo is None, "_resolver_periodo_detalhado -- periodo nao existente devolve None sem ambiguidade")
 
 
 def test_resolver_periodo_lista_vazia():
-    r = cc._resolver_periodo([], "2026-06")
-    checar(r is None, "_resolver_periodo -- lista vazia devolve None sem quebrar")
+    periodo, granul, ambiguo = cc._resolver_periodo_detalhado([], "2026-06")
+    checar(periodo is None and ambiguo is None, "_resolver_periodo_detalhado -- lista vazia devolve None sem quebrar")
+
+
+def test_resolver_periodo_ambiguo_sem_granularidade_devolve_opcoes():
+    """Fase 3.1 (29/09/2026): mesmo periodo_fim com 2 documentos ativos
+    (trimestral e semestral) -- sem granularidade_texto, NAO escolhe
+    sozinho, devolve as opcoes pro chat perguntar ao usuario."""
+    disponiveis = _det((_p(2026, 6), "trimestral"), (_p(2026, 6), "semestral"))
+    periodo, granul, ambiguo = cc._resolver_periodo_detalhado(disponiveis, "2026-06")
+    checar(periodo is None and granul is None, "resolver ambiguo -- nao escolhe sozinho, periodo/granularidade vem None")
+    checar(ambiguo is not None and ambiguo["ambiguo"] is True, "resolver ambiguo -- sinaliza ambiguo=True")
+    checar({o["granularidade"] for o in ambiguo["opcoes"]} == {"trimestral", "semestral"},
+           "resolver ambiguo -- lista as 2 opcoes reais")
+
+
+def test_resolver_periodo_ambiguo_com_granularidade_resolve():
+    disponiveis = _det((_p(2026, 6), "trimestral"), (_p(2026, 6), "semestral"))
+    periodo, granul, ambiguo = cc._resolver_periodo_detalhado(disponiveis, "2026-06", "semestral")
+    checar(periodo == _p(2026, 6) and granul == "semestral" and ambiguo is None,
+           "resolver ambiguo -- com granularidade_texto certa, resolve pro documento certo")
 
 
 def test_consultar_bp_dre_ok():
-    with patch.object(db, "listar_periodos", return_value=[_p(2026, 6)]), \
+    with patch.object(db, "listar_periodos_detalhado", return_value=_det((_p(2026, 6), ""))), \
          patch.object(db, "listar_lancamentos", return_value=[
              {"id": 1, "grupo": "ATIVO CIRCULANTE", "conta": "CLIENTES", "valor": Decimal("1000.50"),
               "origem": "PDF", "pdf_original": None, "arquivo_pdf": "x.pdf", "atualizado_em": None},
@@ -77,10 +101,33 @@ def test_consultar_bp_dre_ok():
 
 
 def test_consultar_bp_dre_periodo_nao_encontrado():
-    with patch.object(db, "listar_periodos", return_value=[_p(2026, 5)]):
+    with patch.object(db, "listar_periodos_detalhado", return_value=_det((_p(2026, 5), ""))):
         r = cc.consultar_bp_dre(conn=None, empresa_codigo="SMG", tipo="BP", periodo_texto="2026-12")
         checar("erro" in r, "consultar_bp_dre -- periodo texto nao encontrado devolve erro, nao excecao")
         checar(r["periodos_disponiveis"] == ["2026-05"], "consultar_bp_dre -- erro lista os periodos disponiveis de verdade")
+
+
+def test_consultar_bp_dre_ambiguo_pede_granularidade_sem_adivinhar():
+    """Fase 3.1: trimestral e semestral ativos pra 06/2026 -- sem
+    granularidade, consultar_bp_dre NAO deve devolver dado nenhum (REGRA
+    DE OURO/REGRA CRITICA do chat: nunca inventar/adivinhar qual dos 2
+    documentos o usuario quis)."""
+    with patch.object(db, "listar_periodos_detalhado", return_value=_det((_p(2026, 6), "trimestral"), (_p(2026, 6), "semestral"))), \
+         patch.object(db, "listar_lancamentos") as m_lanc:
+        r = cc.consultar_bp_dre(conn=None, empresa_codigo="SMG", tipo="BP", periodo_texto="2026-06")
+        checar(r.get("ambiguo") is True, "consultar_bp_dre ambiguo -- sinaliza ambiguo=True")
+        checar(not m_lanc.called, "consultar_bp_dre ambiguo -- NAO busca lancamento nenhum sem a granularidade resolvida")
+        checar(json.dumps(r), "consultar_bp_dre ambiguo -- saida e' JSON-serializavel")
+
+
+def test_consultar_bp_dre_ambiguo_resolvido_com_granularidade():
+    with patch.object(db, "listar_periodos_detalhado", return_value=_det((_p(2026, 6), "trimestral"), (_p(2026, 6), "semestral"))), \
+         patch.object(db, "listar_lancamentos", return_value=[]) as m_lanc:
+        r = cc.consultar_bp_dre(conn=None, empresa_codigo="SMG", tipo="BP", periodo_texto="2026-06", granularidade="semestral")
+        checar("ambiguo" not in r, "consultar_bp_dre -- com granularidade certa, resolve sem ambiguidade")
+        checar(r["granularidade"] == "semestral", "consultar_bp_dre -- ecoa a granularidade resolvida")
+        checar(m_lanc.call_args.kwargs.get("granularidade") == "semestral",
+               "consultar_bp_dre -- passa a granularidade resolvida pro db.listar_lancamentos")
 
 
 def test_consultar_visao_grupo_macro():
@@ -88,7 +135,7 @@ def test_consultar_visao_grupo_macro():
         {"empresa_codigo": "ENERGIA", "grupo": "ATIVO CIRCULANTE", "conta": "CLIENTES", "valor": Decimal("100000.00")},
         {"empresa_codigo": "SMG", "grupo": "ATIVO CIRCULANTE", "conta": "CLIENTES", "valor": Decimal("50000.00")},
     ]
-    with patch.object(db, "listar_periodos_grupo", return_value=[_p(2026, 6)]), \
+    with patch.object(db, "listar_periodos_grupo_detalhado", return_value=_det((_p(2026, 6), ""))), \
          patch.object(db, "listar_lancamentos_grupo", return_value=lancs):
         r = cc.consultar_visao_grupo(conn=None, tipo="BP", empresas_codigos=["ENERGIA", "SMG"])
         checar("erro" not in r, "consultar_visao_grupo macro -- sem erro")
@@ -103,7 +150,7 @@ def test_consultar_visao_grupo_especifica():
     lancs = [
         {"empresa_codigo": "ENERGIA", "grupo": "ATIVO CIRCULANTE", "conta": "CAIXA", "valor": Decimal("500.00")},
     ]
-    with patch.object(db, "listar_periodos_grupo", return_value=[_p(2026, 6)]), \
+    with patch.object(db, "listar_periodos_grupo_detalhado", return_value=_det((_p(2026, 6), ""))), \
          patch.object(db, "listar_lancamentos_grupo", return_value=lancs):
         r = cc.consultar_visao_grupo(conn=None, tipo="BP", empresas_codigos=["ENERGIA"], visao="especifica")
         checar(r["visao"] == "especifica", "consultar_visao_grupo especifica -- visao respeitada")
@@ -111,11 +158,36 @@ def test_consultar_visao_grupo_especifica():
         checar(json.dumps(r), "consultar_visao_grupo especifica -- saida e' JSON-serializavel")
 
 
+def test_consultar_visao_grupo_ambiguo_pede_granularidade_sem_adivinhar():
+    with patch.object(db, "listar_periodos_grupo_detalhado", return_value=_det((_p(2026, 6), "trimestral"), (_p(2026, 6), "semestral"))), \
+         patch.object(db, "listar_lancamentos_grupo") as m_lanc:
+        r = cc.consultar_visao_grupo(conn=None, tipo="BP", empresas_codigos=["ENERGIA", "SMG"])
+        checar(r.get("ambiguo") is True, "consultar_visao_grupo ambiguo -- sinaliza ambiguo=True")
+        checar(not m_lanc.called, "consultar_visao_grupo ambiguo -- NAO busca lancamento nenhum sem a granularidade resolvida")
+
+
 def test_consultar_periodos():
-    with patch.object(db, "listar_periodos", side_effect=[[_p(2026, 6), _p(2026, 5)], [_p(2026, 6)]]):
+    with patch.object(db, "listar_periodos_detalhado", side_effect=[
+        _det((_p(2026, 6), ""), (_p(2026, 5), "")), _det((_p(2026, 6), "")),
+    ]):
         r = cc.consultar_periodos(conn=None, empresas_codigos=["ENERGIA", "SMG"])
         checar(r["periodos_por_empresa"]["ENERGIA"] == ["2026-06", "2026-05"], "consultar_periodos -- ordenado desc, formato AAAA-MM")
         checar(r["periodos_por_empresa"]["SMG"] == ["2026-06"], "consultar_periodos -- por empresa, independente")
+        checar("periodos_com_mais_de_1_documento" not in r, "consultar_periodos -- sem ambiguidade, chave extra nem aparece")
+
+
+def test_consultar_periodos_marca_periodo_com_mais_de_1_documento():
+    """Fase 3.1: 06/2026 tem trimestral e semestral ativos -- consultar_periodos
+    precisa expor isso explicitamente pro modelo saber que precisa perguntar
+    a granularidade antes de consultar esse periodo."""
+    with patch.object(db, "listar_periodos_detalhado", return_value=_det(
+        (_p(2026, 6), "trimestral"), (_p(2026, 6), "semestral"), (_p(2026, 5), "mensal"),
+    )):
+        r = cc.consultar_periodos(conn=None, empresas_codigos=["ENERGIA"])
+        checar("periodos_com_mais_de_1_documento" in r, "consultar_periodos -- sinaliza periodo com 2 documentos")
+        opcoes = r["periodos_com_mais_de_1_documento"]["ENERGIA"]
+        checar({o["granularidade"] for o in opcoes} == {"trimestral", "semestral"},
+               "consultar_periodos -- so' lista as granularidades do periodo ambiguo, nao o mensal isolado")
 
 
 # ── Erik.AI (23/09/2026) -- consultar_indicadores / consultar_completude ──
@@ -163,12 +235,12 @@ def test_consultar_indicadores_sem_dado_devolve_erro():
 
 def test_consultar_completude():
     empresas = ["ENERGIA", "SMG"]
-    lancs_bp = [{"empresa_codigo": "ENERGIA", "periodo": _p(2026, 6)}]  # so' ENERGIA tem BP -- SMG falta
+    lancs_bp = [{"empresa_codigo": "ENERGIA", "periodo": _p(2026, 6), "granularidade": ""}]  # so' ENERGIA tem BP -- SMG falta
     lancs_dre = [
-        {"empresa_codigo": "ENERGIA", "periodo": _p(2026, 6)},
-        {"empresa_codigo": "SMG", "periodo": _p(2026, 6)},
+        {"empresa_codigo": "ENERGIA", "periodo": _p(2026, 6), "granularidade": ""},
+        {"empresa_codigo": "SMG", "periodo": _p(2026, 6), "granularidade": ""},
     ]
-    with patch.object(db, "listar_periodos_grupo", return_value=[_p(2026, 6)]),          patch.object(db, "listar_lancamentos_grupo_periodos", side_effect=[lancs_bp, lancs_dre]):
+    with patch.object(db, "listar_periodos_grupo_detalhado", return_value=_det((_p(2026, 6), ""))),          patch.object(db, "listar_lancamentos_grupo_periodos", side_effect=[lancs_bp, lancs_dre]):
         r = cc.consultar_completude(conn=None, empresas_codigos=empresas)
         checar(r["empresas_incluidas"] == empresas, "consultar_completude -- ecoa as empresas checadas")
         checar(len(r["completude_por_periodo"]) == 1, "consultar_completude -- 1 periodo no resumo")
@@ -180,29 +252,35 @@ def test_consultar_completude():
 
 
 def test_consultar_completude_sem_periodo_nenhum():
-    with patch.object(db, "listar_periodos_grupo", return_value=[]),          patch.object(db, "listar_lancamentos_grupo_periodos", return_value=[]):
+    with patch.object(db, "listar_periodos_grupo_detalhado", return_value=[]),          patch.object(db, "listar_lancamentos_grupo_periodos", return_value=[]):
         r = cc.consultar_completude(conn=None, empresas_codigos=["ENERGIA"])
         checar(r["completude_por_periodo"] == [], "consultar_completude -- sem período nenhum devolve lista vazia, nao excecao")
 
 
+def test_consultar_completude_2_granularidades_mesmo_periodo_fim_nao_se_misturam():
+    """Fase 3.1: trimestral e semestral ATIVOS pra 06/2026 -- tem que virar
+    2 linhas distintas de completude, cada 1 com seu status, nao 1 so'."""
+    empresas = ["ENERGIA"]
+    lancs_bp = [
+        {"empresa_codigo": "ENERGIA", "periodo": _p(2026, 6), "granularidade": "trimestral"},
+        {"empresa_codigo": "ENERGIA", "periodo": _p(2026, 6), "granularidade": "semestral"},
+    ]
+    lancs_dre = [{"empresa_codigo": "ENERGIA", "periodo": _p(2026, 6), "granularidade": "semestral"}]  # DRE trimestral falta
+    with patch.object(db, "listar_periodos_grupo_detalhado", return_value=_det((_p(2026, 6), "trimestral"), (_p(2026, 6), "semestral"))),          patch.object(db, "listar_lancamentos_grupo_periodos", side_effect=[lancs_bp, lancs_dre]):
+        r = cc.consultar_completude(conn=None, empresas_codigos=empresas)
+        checar(len(r["completude_por_periodo"]) == 2, "consultar_completude -- 2 granularidades viram 2 linhas distintas")
+        por_granul = {l["Granularidade"]: l for l in r["completude_por_periodo"]}
+        checar("Completo" in por_granul["semestral"]["Status"], "consultar_completude -- semestral completo (BP+DRE)")
+        checar("Incompleto" in por_granul["trimestral"]["Status"], "consultar_completude -- trimestral incompleto (so' BP)")
+
+
 if __name__ == "__main__":
-    test_resolver_periodo_texto_bate()
-    test_resolver_periodo_vazio_pega_mais_recente()
-    test_resolver_periodo_nao_encontrado()
-    test_resolver_periodo_lista_vazia()
-    test_consultar_bp_dre_ok()
-    test_consultar_bp_dre_periodo_nao_encontrado()
-    test_consultar_visao_grupo_macro()
-    test_consultar_visao_grupo_especifica()
-    test_consultar_periodos()
-    test_consultar_indicadores_1_empresa_usa_historico_direto()
-    test_consultar_indicadores_multi_empresa_usa_caminho_do_grupo()
-    test_consultar_indicadores_sem_dado_devolve_erro()
-    test_consultar_completude()
-    test_consultar_completude_sem_periodo_nenhum()
+    testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
+    for t in testes:
+        t()
     print()
     if FALHAS:
         print(f"{len(FALHAS)} FALHA(S)")
         sys.exit(1)
-    print("14/14 testes passaram")
+    print(f"{len(testes)}/{len(testes)} testes passaram")
     sys.exit(0)

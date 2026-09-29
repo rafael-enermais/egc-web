@@ -13,6 +13,12 @@ parcial (1 dos 2 periodos falha) -- confirma que NAO propaga excecao pra
 fora (a tela continua de pe', mostra erro pro periodo que falhou) e que
 db.registrar_evento e' chamado com nivel='ERRO' pro periodo que falhou.
 
+Fase 3.1 (29/09/2026): a tela passou a usar db.listar_periodos_detalhado
+(nao mais listar_periodos) e a passar granularidade explicita pra
+arquivar_periodo/recuperar_periodo quando o periodo_fim tem 2+ documentos
+ativos -- mocks atualizados pra esse novo formato de dado, +2 testes
+cobrindo o caso ambiguo (trimestral/semestral no mesmo periodo_fim).
+
 Rodar: python3 tests/test_arquivar_recuperar_app.py
 """
 import sys
@@ -34,11 +40,15 @@ P1 = datetime.date(2026, 5, 31)
 P2 = datetime.date(2026, 6, 30)
 
 
+def _det(*periodos_granul):
+    return [{"periodo": p, "granularidade": g} for p, g in periodos_granul]
+
+
 def test_carrega_sem_excecao_com_periodos_ativos_e_arquivados():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
-         patch.object(db, "listar_periodos", side_effect=lambda conn, cod, status="ATIVO": (
-             [P2, P1] if status == "ATIVO" else [datetime.date(2026, 3, 31)]
+         patch.object(db, "listar_periodos_detalhado", side_effect=lambda conn, cod, status="ATIVO": (
+             _det((P2, ""), (P1, "")) if status == "ATIVO" else _det((datetime.date(2026, 3, 31), ""))
          )):
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
@@ -49,15 +59,15 @@ def test_carrega_sem_excecao_com_periodos_ativos_e_arquivados():
 def test_arquivar_sucesso_nao_registra_erro():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
-         patch.object(db, "listar_periodos", side_effect=lambda conn, cod, status="ATIVO": (
-             [P2, P1] if status == "ATIVO" else []
+         patch.object(db, "listar_periodos_detalhado", side_effect=lambda conn, cod, status="ATIVO": (
+             _det((P2, ""), (P1, "")) if status == "ATIVO" else []
          )), \
          patch.object(db, "arquivar_periodo", return_value=5) as m_arq, \
          patch.object(db, "registrar_evento") as m_log:
 
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
-        at.multiselect(key="arquivar_sel").set_value([P2])
+        at.multiselect(key="arquivar_sel").set_value([(P2, "", False)])
         at.run(timeout=30)
         botao_arquivar = next(b for b in at.button if "Arquivar selecionado" in b.label)
         botao_arquivar.click().run(timeout=30)
@@ -69,28 +79,30 @@ def test_arquivar_sucesso_nao_registra_erro():
         # teste é o comportamento: chamou o banco certo e logou nível INFO.
         assert not at.exception, f"excecao ao arquivar: {at.exception}"
         assert m_arq.call_count == 1, "esperava 1 chamada a db.arquivar_periodo (1 período selecionado)"
+        # sem ambiguidade (1 documento só nesse periodo_fim) -- granularidade=None
+        assert m_arq.call_args.kwargs.get("granularidade") is None, "sem ambiguidade, não filtra por granularidade (None = todas, que já é só 1)"
         assert m_log.call_count == 1, "esperava 1 chamada a registrar_evento (nível INFO, log completo cobre sucesso também)"
         assert m_log.call_args[0][2] == "INFO", f"esperava nivel='INFO' no sucesso, veio {m_log.call_args[0][2]!r}"
         print("OK: Arquivar com sucesso — loga nível INFO (log completo), chama arquivar_periodo certo")
 
 
 def test_arquivar_falha_parcial_loga_erro_e_nao_quebra_pagina():
-    def _arquivar_com_falha(conn, cod, periodo):
+    def _arquivar_com_falha(conn, cod, periodo, granularidade=None):
         if periodo == P1:
             raise Exception("connection reset by peer")
         return 3
 
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
-         patch.object(db, "listar_periodos", side_effect=lambda conn, cod, status="ATIVO": (
-             [P2, P1] if status == "ATIVO" else []
+         patch.object(db, "listar_periodos_detalhado", side_effect=lambda conn, cod, status="ATIVO": (
+             _det((P2, ""), (P1, "")) if status == "ATIVO" else []
          )), \
          patch.object(db, "arquivar_periodo", side_effect=_arquivar_com_falha), \
          patch.object(db, "registrar_evento") as m_log:
 
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
-        at.multiselect(key="arquivar_sel").set_value([P1, P2])
+        at.multiselect(key="arquivar_sel").set_value([(P2, "", False), (P1, "", False)])
         at.run(timeout=30)
         botao_arquivar = next(b for b in at.button if "Arquivar selecionado" in b.label)
         botao_arquivar.click().run(timeout=30)
@@ -108,6 +120,37 @@ def test_arquivar_falha_parcial_loga_erro_e_nao_quebra_pagina():
         # mensagem "flashear", então a checagem de comportamento (não quebrou +
         # logou os 2 níveis certos) é o que garante a cobertura real aqui.
         print("OK: Arquivar com falha parcial — não quebra a página, loga ERRO + INFO (log completo)")
+
+
+def test_arquivar_2_granularidades_mesmo_periodo_fim_so_arquiva_a_escolhida():
+    """
+    Fase 3.1 -- caso real que motivou a Fase 3 inteira: trimestral e
+    semestral ATIVOS pra 30/06/2026. Escolhendo só o trimestral na tela,
+    db.arquivar_periodo tem que ser chamado com granularidade='trimestral'
+    (não None, que arquivaria os 2 juntos).
+    """
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos_detalhado", side_effect=lambda conn, cod, status="ATIVO": (
+             _det((P2, "trimestral"), (P2, "semestral")) if status == "ATIVO" else []
+         )), \
+         patch.object(db, "arquivar_periodo", return_value=2) as m_arq, \
+         patch.object(db, "registrar_evento"):
+
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        at.multiselect(key="arquivar_sel").set_value([(P2, "trimestral", True)])
+        at.run(timeout=30)
+        botao_arquivar = next(b for b in at.button if "Arquivar selecionado" in b.label)
+        botao_arquivar.click().run(timeout=30)
+
+        assert not at.exception, f"excecao ao arquivar periodo ambiguo: {at.exception}"
+        assert m_arq.call_count == 1
+        assert m_arq.call_args.kwargs.get("granularidade") == "trimestral", (
+            f"esperava granularidade='trimestral' (não arquivar o semestral junto), "
+            f"veio {m_arq.call_args.kwargs.get('granularidade')!r}"
+        )
+        print("OK: 2 granularidades no mesmo periodo_fim — arquiva SÓ a escolhida, não as 2 juntas")
 
 
 if __name__ == "__main__":

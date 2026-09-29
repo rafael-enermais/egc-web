@@ -262,7 +262,20 @@ with col_dash:
     cod_empresa, nome_empresa, _cnpj_empresa = EMPRESAS_FIXAS[idx_empresa]
     tipo_sel = st.radio("Tipo", ["BP", "DRE"], key="assistente_tipo_sel", horizontal=True)
 
+    granularidade_rapida = None
     resultado_rapido = consultas_chat.consultar_bp_dre(conn, cod_empresa, tipo_sel)
+    if resultado_rapido.get("ambiguo"):
+        # Fase 3.1 (29/09/2026): esse mes/ano tem 2 documentos ativos (ex.
+        # trimestral e semestral fechando na mesma data) -- essa "Consulta
+        # rápida" nao passa pelo loop de esclarecimento do chat (chama
+        # consultar_bp_dre direto), entao oferece o mesmo desempate aqui
+        # via seletor, em vez de mostrar so' a mensagem de erro sem saida.
+        opcoes_g = [o["granularidade"] for o in resultado_rapido["opcoes"]]
+        granularidade_rapida = st.selectbox(
+            "Este período tem mais de 1 documento ativo — escolha qual", opcoes_g,
+            key="assistente_granularidade_ambigua",
+        )
+        resultado_rapido = consultas_chat.consultar_bp_dre(conn, cod_empresa, tipo_sel, None, granularidade_rapida)
     if "erro" in resultado_rapido:
         st.info(resultado_rapido["erro"])
     else:

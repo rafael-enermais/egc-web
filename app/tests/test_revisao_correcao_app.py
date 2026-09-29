@@ -53,8 +53,8 @@ MOCK_LANCAMENTOS_BP = [
 def test_revisao_correcao_carrega_sem_excecao_com_coluna_corrigido_e_ajuda():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
-         patch.object(db, "listar_periodos", return_value=[datetime.date(2026, 6, 30)]), \
-         patch.object(db, "listar_lancamentos", side_effect=lambda conn, cod, periodo, tipo, status="ATIVO": (
+         patch.object(db, "listar_periodos_detalhado", return_value=[{"periodo": datetime.date(2026, 6, 30), "granularidade": ""}]), \
+         patch.object(db, "listar_lancamentos", side_effect=lambda conn, cod, periodo, tipo, status="ATIVO", granularidade=None: (
              MOCK_LANCAMENTOS_BP if tipo == "BP" else []
          )):
 
@@ -76,8 +76,8 @@ def test_revisao_correcao_carrega_sem_excecao_com_coluna_corrigido_e_ajuda():
 def test_log_de_eventos_sem_eventos_mostra_aviso_e_com_eventos_mostra_tabela():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
-         patch.object(db, "listar_periodos", return_value=[datetime.date(2026, 6, 30)]), \
-         patch.object(db, "listar_lancamentos", side_effect=lambda conn, cod, periodo, tipo, status="ATIVO": (
+         patch.object(db, "listar_periodos_detalhado", return_value=[{"periodo": datetime.date(2026, 6, 30), "granularidade": ""}]), \
+         patch.object(db, "listar_lancamentos", side_effect=lambda conn, cod, periodo, tipo, status="ATIVO", granularidade=None: (
              MOCK_LANCAMENTOS_BP if tipo == "BP" else []
          )), \
          patch.object(db, "listar_eventos_recentes", return_value=[]):
@@ -100,8 +100,8 @@ def test_log_de_eventos_sem_eventos_mostra_aviso_e_com_eventos_mostra_tabela():
     ]
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
-         patch.object(db, "listar_periodos", return_value=[datetime.date(2026, 6, 30)]), \
-         patch.object(db, "listar_lancamentos", side_effect=lambda conn, cod, periodo, tipo, status="ATIVO": (
+         patch.object(db, "listar_periodos_detalhado", return_value=[{"periodo": datetime.date(2026, 6, 30), "granularidade": ""}]), \
+         patch.object(db, "listar_lancamentos", side_effect=lambda conn, cod, periodo, tipo, status="ATIVO", granularidade=None: (
              MOCK_LANCAMENTOS_BP if tipo == "BP" else []
          )), \
          patch.object(db, "listar_eventos_recentes", return_value=eventos_mock):
@@ -125,8 +125,8 @@ def test_busca_manuais_todas_empresas_sem_resultado_e_com_resultado():
     # de empresa(s)/periodo(s) abaixo.
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
-         patch.object(db, "listar_periodos", return_value=[datetime.date(2026, 6, 30)]), \
-         patch.object(db, "listar_lancamentos", side_effect=lambda conn, cod, periodo, tipo, status="ATIVO": (
+         patch.object(db, "listar_periodos_detalhado", return_value=[{"periodo": datetime.date(2026, 6, 30), "granularidade": ""}]), \
+         patch.object(db, "listar_lancamentos", side_effect=lambda conn, cod, periodo, tipo, status="ATIVO", granularidade=None: (
              MOCK_LANCAMENTOS_BP if tipo == "BP" else []
          )), \
          patch.object(db, "buscar_lancamentos_manuais", return_value=[]):
@@ -148,8 +148,8 @@ def test_busca_manuais_todas_empresas_sem_resultado_e_com_resultado():
     ]
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
-         patch.object(db, "listar_periodos", return_value=[datetime.date(2026, 6, 30)]), \
-         patch.object(db, "listar_lancamentos", side_effect=lambda conn, cod, periodo, tipo, status="ATIVO": (
+         patch.object(db, "listar_periodos_detalhado", return_value=[{"periodo": datetime.date(2026, 6, 30), "granularidade": ""}]), \
+         patch.object(db, "listar_lancamentos", side_effect=lambda conn, cod, periodo, tipo, status="ATIVO", granularidade=None: (
              MOCK_LANCAMENTOS_BP if tipo == "BP" else []
          )), \
          patch.object(db, "buscar_lancamentos_manuais", return_value=manuais_mock):
@@ -167,6 +167,61 @@ def test_busca_manuais_todas_empresas_sem_resultado_e_com_resultado():
         assert tabela_busca["Valor atual"].iloc[0] == "R$ 3.200,75"
         assert tabela_busca["Valor do PDF"].iloc[0] == "R$ 3.000,00"
         print("OK: Busca de correções manuais — com resultado, tabela cruzada mostra empresa/período/valores formatados")
+
+
+def test_2_granularidades_mesmo_periodo_fim_viram_2_combinacoes_separadas():
+    """
+    Fase 3.1 (29/09/2026): trimestral e semestral ATIVOS pra 06/2026 --
+    tem que abrir 2 expanders/combinações DISTINTAS (rótulo mostra a
+    granularidade), cada 1 com seu próprio data_editor filtrado só por
+    aquele documento -- nunca misturar as linhas dos 2 numa tabela só.
+    """
+    lancs_trimestral = [
+        {"id": 1, "grupo": "ATIVO CIRCULANTE", "conta": "CLIENTES", "valor": Decimal("100.00"),
+         "origem": "PDF", "pdf_original": None, "arquivo_pdf": "q2.pdf", "atualizado_em": None},
+    ]
+    lancs_semestral = [
+        {"id": 2, "grupo": "ATIVO CIRCULANTE", "conta": "CLIENTES", "valor": Decimal("600.00"),
+         "origem": "PDF", "pdf_original": None, "arquivo_pdf": "s1.pdf", "atualizado_em": None},
+    ]
+
+    def _listar_lancamentos(conn, cod, periodo, tipo, status="ATIVO", granularidade=None):
+        if tipo != "BP":
+            return []
+        if granularidade == "trimestral":
+            return lancs_trimestral
+        if granularidade == "semestral":
+            return lancs_semestral
+        return []
+
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos_detalhado", return_value=[
+             {"periodo": datetime.date(2026, 6, 30), "granularidade": "trimestral"},
+             {"periodo": datetime.date(2026, 6, 30), "granularidade": "semestral"},
+         ]), \
+         patch.object(db, "listar_lancamentos", side_effect=_listar_lancamentos):
+
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        # default so' seleciona o ULTIMO período da lista -- seleciona os 2
+        # explicitamente pra exercitar as 2 combinações no mesmo periodo_fim.
+        at.multiselect(key="revisao_periodos_sel").set_value([
+            (datetime.date(2026, 6, 30), "trimestral"), (datetime.date(2026, 6, 30), "semestral"),
+        ])
+        at.run(timeout=30)
+        assert not at.exception, f"excecao com 2 granularidades ativas no mesmo periodo_fim: {at.exception}"
+        expanders_combo = [e for e in at.expander if "06/2026" in e.label]
+        assert len(expanders_combo) == 2, f"esperava 2 combinações/expanders separados (1 por granularidade), veio {len(expanders_combo)}"
+        rotulos = [e.label for e in expanders_combo]
+        assert any("Trimestral" in r for r in rotulos), f"esperava rótulo com 'Trimestral', veio {rotulos}"
+        assert any("Semestral" in r for r in rotulos), f"esperava rótulo com 'Semestral', veio {rotulos}"
+        # 2 tabelas (1 por combinação), cada 1 com 1 única linha (as 2
+        # granularidades nunca aparecem misturadas na mesma tabela)
+        assert len(at.dataframe) == 2
+        for df_elem in at.dataframe:
+            assert len(df_elem.value) == 1, "cada tabela tem que ter só a linha do seu próprio documento, nunca as 2 juntas"
+        print("OK: 2 granularidades no mesmo periodo_fim — 2 combinações/expanders separados, nunca misturados no mesmo data_editor")
 
 
 if __name__ == "__main__":

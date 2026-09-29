@@ -35,28 +35,57 @@ import visao_grupo
 from conexao import EMPRESAS_FIXAS
 
 
-def _resolver_periodo(periodos_disponiveis: list, periodo_texto: Optional[str]):
+def _resolver_periodo_detalhado(
+    periodos_disponiveis: list[dict], periodo_texto: Optional[str], granularidade_texto: Optional[str] = None,
+):
     """
-    periodo_texto no formato "AAAA-MM" (como o modelo deve mandar, ver
-    SYSTEM_PROMPT) -> date real dentre os disponiveis (casa so' por
-    ano/mes, nao assume dia -- period sempre e' o ultimo dia do mes, mas
-    resolver por comparacao evita depender dessa premissa aqui de novo).
-    Sem periodo_texto (None) -> mais recente. Retorna None se nao achar
-    (deixa quem chama decidir a mensagem de erro).
+    Fase 3.1 (29/09/2026, "alinha todo o app com esse escopo... o chat tb"):
+    substitui a antiga _resolver_periodo (que so' trabalhava com list[date]
+    e nao tinha como saber que um periodo_fim pode ter 2 documentos de
+    abrangencia diferente ATIVOS ao mesmo tempo -- ver
+    db.inativar_periodo_existente). periodos_disponiveis agora e'
+    list[dict] {"periodo","granularidade"} (formato de
+    db.listar_periodos_detalhado/_grupo_detalhado).
+
+    periodo_texto "AAAA-MM" (ou None -> mais recente, casando so' por
+    ano/mes). granularidade_texto opcional -- so' importa quando o
+    periodo casado tem MAIS de 1 documento ativo (raro: caso comum e' 1
+    granularidade so').
+
+    Retorna (periodo, granularidade, ambiguidade):
+      - achou exatamente 1 -> (date, str, None)
+      - nao achou nenhum -> (None, None, None)
+      - achou 2+ e granularidade_texto nao resolveu -> (None, None, dict
+        com "opcoes" pro modelo oferecer escolha ao usuario, REGRA CRITICA
+        do chat: nunca adivinhar qual dos 2 documentos o usuario quis).
     """
     if not periodos_disponiveis:
-        return None
+        return None, None, None
     if not periodo_texto:
-        return max(periodos_disponiveis)
-    try:
-        ano_s, mes_s = periodo_texto.split("-")
-        ano, mes = int(ano_s), int(mes_s)
-    except (ValueError, AttributeError):
-        return None
-    for p in periodos_disponiveis:
-        if p.year == ano and p.month == mes:
-            return p
-    return None
+        periodo_mais_recente = max(d["periodo"] for d in periodos_disponiveis)
+        candidatos = [d for d in periodos_disponiveis if d["periodo"] == periodo_mais_recente]
+    else:
+        try:
+            ano_s, mes_s = periodo_texto.split("-")
+            ano, mes = int(ano_s), int(mes_s)
+        except (ValueError, AttributeError):
+            return None, None, None
+        candidatos = [d for d in periodos_disponiveis if d["periodo"].year == ano and d["periodo"].month == mes]
+    if not candidatos:
+        return None, None, None
+    if len(candidatos) == 1:
+        return candidatos[0]["periodo"], candidatos[0]["granularidade"], None
+    if granularidade_texto:
+        casa = [d for d in candidatos if d["granularidade"] == granularidade_texto]
+        if len(casa) == 1:
+            return casa[0]["periodo"], casa[0]["granularidade"], None
+    return None, None, {
+        "ambiguo": True,
+        "opcoes": [
+            {"periodo": d["periodo"].strftime("%Y-%m"), "granularidade": d["granularidade"] or "não declarada"}
+            for d in sorted(candidatos, key=lambda d: d["granularidade"])
+        ],
+    }
 
 
 def consultar_periodos(conn, empresas_codigos: list[str]) -> dict:
@@ -65,30 +94,72 @@ def consultar_periodos(conn, empresas_codigos: list[str]) -> dict:
     modelo pra saber quais periodos existem de verdade antes de chamar
     consultar_bp_dre/consultar_visao_grupo com um periodo especifico,
     evitando alucinar uma data que nao tem lancamento.
+
+    Fase 3.1 (29/09/2026): quando um periodo_fim tem MAIS de 1 documento
+    ativo (ex. trimestral e semestral fechando na mesma data -- ver
+    db.inativar_periodo_existente), isso agora aparece explicitamente em
+    "periodos_com_mais_de_1_documento" -- sem isso o modelo nao tinha
+    como saber que precisa pedir a granularidade antes de chamar
+    consultar_bp_dre/consultar_visao_grupo com aquele periodo. Caso
+    comum (1 documento por periodo) nao muda nada visivel.
     """
     por_empresa = {}
+    ambiguos_por_empresa = {}
     for cod in empresas_codigos:
-        periodos = db.listar_periodos(conn, cod, status="ATIVO")
-        por_empresa[cod] = [p.strftime("%Y-%m") for p in sorted(periodos, reverse=True)]
-    return {"periodos_por_empresa": por_empresa}
+        detalhados = db.listar_periodos_detalhado(conn, cod, status="ATIVO")
+        por_empresa[cod] = [d["periodo"].strftime("%Y-%m") for d in sorted(detalhados, key=lambda d: d["periodo"], reverse=True)]
+        contagem: dict = {}
+        for d in detalhados:
+            contagem[d["periodo"]] = contagem.get(d["periodo"], 0) + 1
+        ambiguos = [
+            {"periodo": d["periodo"].strftime("%Y-%m"), "granularidade": d["granularidade"] or "não declarada"}
+            for d in sorted(detalhados, key=lambda d: (d["periodo"], d["granularidade"]), reverse=True)
+            if contagem[d["periodo"]] > 1
+        ]
+        if ambiguos:
+            ambiguos_por_empresa[cod] = ambiguos
+    saida = {"periodos_por_empresa": por_empresa}
+    if ambiguos_por_empresa:
+        saida["periodos_com_mais_de_1_documento"] = ambiguos_por_empresa
+    return saida
 
 
-def consultar_bp_dre(conn, empresa_codigo: str, tipo: str, periodo_texto: Optional[str] = None) -> dict:
+def consultar_bp_dre(
+    conn, empresa_codigo: str, tipo: str, periodo_texto: Optional[str] = None,
+    granularidade: Optional[str] = None,
+) -> dict:
     """
     BP ou DRE de 1 empresa num periodo (o mais recente se periodo_texto
     vier vazio). Retorna as contas (grupo, conta, valor) -- mesma fonte
     que a tela Revisao/Correcao usa (db.listar_lancamentos), so' que so'
     leitura (o chat nao corrige lancamento).
+
+    granularidade (Fase 3.1, 29/09/2026): opcional -- so' precisa vir
+    quando o periodo escolhido tiver mais de 1 documento ativo (ver
+    "ambiguo" no retorno de erro); nesse caso o modelo deve perguntar ao
+    usuario qual granularidade (mensal/trimestral/semestral/anual) e
+    chamar de novo, em vez de adivinhar qual dos 2 documentos usar.
     """
-    periodos_disponiveis = db.listar_periodos(conn, empresa_codigo, status="ATIVO")
-    periodo = _resolver_periodo(periodos_disponiveis, periodo_texto)
+    periodos_disponiveis = db.listar_periodos_detalhado(conn, empresa_codigo, status="ATIVO")
+    periodo, granularidade_resolvida, ambiguidade = _resolver_periodo_detalhado(
+        periodos_disponiveis, periodo_texto, granularidade,
+    )
+    if ambiguidade:
+        return {
+            "erro": (
+                f"Esse período tem mais de 1 documento ativo pra {empresa_codigo} (abrangências "
+                "diferentes fechando na mesma data) -- pergunte ao usuário qual granularidade "
+                "(mensal/trimestral/semestral/anual) e chame de novo com esse valor no parâmetro 'granularidade'."
+            ),
+            **ambiguidade,
+        }
     if periodo is None:
         return {
             "erro": f"Nenhum periodo ativo encontrado pra {empresa_codigo}"
             + (f" em {periodo_texto}" if periodo_texto else ""),
-            "periodos_disponiveis": [p.strftime("%Y-%m") for p in sorted(periodos_disponiveis, reverse=True)],
+            "periodos_disponiveis": [d["periodo"].strftime("%Y-%m") for d in sorted(periodos_disponiveis, key=lambda d: d["periodo"], reverse=True)],
         }
-    linhas = db.listar_lancamentos(conn, empresa_codigo, periodo, tipo, status="ATIVO")
+    linhas = db.listar_lancamentos(conn, empresa_codigo, periodo, tipo, status="ATIVO", granularidade=granularidade_resolvida)
     contas = [
         {"grupo": l["grupo"], "conta": l["conta"], "valor": float(l["valor"])}
         for l in linhas
@@ -97,6 +168,7 @@ def consultar_bp_dre(conn, empresa_codigo: str, tipo: str, periodo_texto: Option
         "empresa_codigo": empresa_codigo,
         "tipo": tipo,
         "periodo": periodo.strftime("%Y-%m"),
+        "granularidade": granularidade_resolvida or None,
         "quantidade_contas": len(contas),
         "contas": contas,
     }
@@ -164,10 +236,15 @@ def consultar_completude(conn, empresas_codigos: list[str]) -> dict:
     pratica e' o mesmo sinal (PDF nao importado ou importacao falhou).
     """
     empresas_tuplas = [(cod, nome, cnpj) for cod, nome, cnpj in EMPRESAS_FIXAS if cod in empresas_codigos]
-    periodos = db.listar_periodos_grupo(conn, empresas_codigos, status="ATIVO")
-    lancs_bp = db.listar_lancamentos_grupo_periodos(conn, periodos, "BP", empresas_codigos, status="ATIVO")
-    lancs_dre = db.listar_lancamentos_grupo_periodos(conn, periodos, "DRE", empresas_codigos, status="ATIVO")
-    completude = visao_grupo.calcular_completude_grupo(periodos, lancs_bp, lancs_dre, empresas_tuplas)
+    # Fase 3.1 (29/09/2026): _grupo_detalhado em vez de listar_periodos_grupo
+    # (date-only) -- sem isso, um trimestral e um semestral fechando na
+    # mesma data se misturavam numa unica linha de completude, mesmo bug
+    # ja corrigido no painel de pendencias da tela Relatorio Comentado.
+    periodos_detalhados = db.listar_periodos_grupo_detalhado(conn, empresas_codigos, status="ATIVO")
+    periodos_datas = [d["periodo"] for d in periodos_detalhados]
+    lancs_bp = db.listar_lancamentos_grupo_periodos(conn, periodos_datas, "BP", empresas_codigos, status="ATIVO")
+    lancs_dre = db.listar_lancamentos_grupo_periodos(conn, periodos_datas, "DRE", empresas_codigos, status="ATIVO")
+    completude = visao_grupo.calcular_completude_grupo(periodos_detalhados, lancs_bp, lancs_dre, empresas_tuplas)
     resumo = visao_grupo.resumir_completude_por_periodo(completude)
 
     linhas = resumo.to_dict(orient="records")
@@ -175,6 +252,8 @@ def consultar_completude(conn, empresas_codigos: list[str]) -> dict:
         p = linha.get("Período")
         if hasattr(p, "strftime"):
             linha["Período"] = p.strftime("%Y-%m")
+        if not linha.get("Granularidade"):
+            linha["Granularidade"] = "não declarada"
 
     return {"empresas_incluidas": empresas_codigos, "completude_por_periodo": linhas}
 
@@ -238,6 +317,7 @@ def consultar_visao_grupo(
     empresas_codigos: list[str],
     periodo_texto: Optional[str] = None,
     visao: str = "macro",
+    granularidade: Optional[str] = None,
 ) -> dict:
     """
     Visao consolidada do grupo (Energia x Consolidadoras, ou empresa a
@@ -245,16 +325,33 @@ def consultar_visao_grupo(
     via visao_grupo.py (motivo original da refatoracao dessa manha:
     reusar aqui sem duplicar). periodo_texto vazio -> periodo mais
     recente entre as empresas escolhidas (uniao, igual a tela).
+
+    granularidade (Fase 3.1, 29/09/2026): opcional, mesma regra de
+    consultar_bp_dre -- so' precisa vir quando o periodo escolhido tiver
+    mais de 1 documento ativo pra pelo menos 1 empresa do grupo.
     """
-    periodos_disponiveis = db.listar_periodos_grupo(conn, empresas_codigos, status="ATIVO")
-    periodo = _resolver_periodo(periodos_disponiveis, periodo_texto)
+    periodos_disponiveis = db.listar_periodos_grupo_detalhado(conn, empresas_codigos, status="ATIVO")
+    periodo, granularidade_resolvida, ambiguidade = _resolver_periodo_detalhado(
+        periodos_disponiveis, periodo_texto, granularidade,
+    )
+    if ambiguidade:
+        return {
+            "erro": (
+                "Esse período tem mais de 1 documento ativo no grupo selecionado (abrangências "
+                "diferentes fechando na mesma data) -- pergunte ao usuário qual granularidade "
+                "(mensal/trimestral/semestral/anual) e chame de novo com esse valor no parâmetro 'granularidade'."
+            ),
+            **ambiguidade,
+        }
     if periodo is None:
         return {
             "erro": "Nenhum periodo ativo encontrado pro grupo selecionado"
             + (f" em {periodo_texto}" if periodo_texto else ""),
-            "periodos_disponiveis": [p.strftime("%Y-%m") for p in sorted(periodos_disponiveis, reverse=True)],
+            "periodos_disponiveis": [d["periodo"].strftime("%Y-%m") for d in sorted(periodos_disponiveis, key=lambda d: d["periodo"], reverse=True)],
         }
-    lancamentos = db.listar_lancamentos_grupo(conn, periodo, tipo, empresas_codigos, status="ATIVO")
+    lancamentos = db.listar_lancamentos_grupo(
+        conn, periodo, tipo, empresas_codigos, status="ATIVO", granularidade=granularidade_resolvida,
+    )
     pivot = visao_grupo.montar_pivot_grupo(lancamentos, empresas_codigos)
 
     if visao == "especifica":
@@ -275,6 +372,7 @@ def consultar_visao_grupo(
     return {
         "tipo": tipo,
         "periodo": periodo.strftime("%Y-%m"),
+        "granularidade": granularidade_resolvida or None,
         "visao": visao,
         "empresas_incluidas": empresas_codigos,
         "quantidade_contas": len(linhas),
