@@ -332,7 +332,15 @@ def grafico_evolucao(c, x0, x1, y0_top, metricas, periodos_labels, altura_grupo=
         txt(c, x0, y, metrica["label"], font="bold", size=9.5, color=NAVY)
         y += 13
         for i, v in enumerate(vals):
-            cor = RED_ACCENT if v < 0 else _interp_cor("#C9CCEB", NAVY, i / max(1, n_periodos - 1))
+            # FIX_20260929p (Rafael, pág.3 do Evolução: "esse lilás claro
+            # tá mt ruim" -- o período mais antigo saía em #C9CCEB, que
+            # dá contraste 1.58:1 contra o fundo branco (WCAG AA pede
+            # 4.5:1 pra texto -- essa cor também é usada no VALOR em texto,
+            # não só na barra). #5C62C6 (5.23:1) é o tom mais claro da
+            # escala que ainda passa no mínimo de contraste; a progressão
+            # clara->escura (período antigo->recente) continua a mesma
+            # ideia, só não chega mais perto do branco a ponto de sumir.
+            cor = RED_ACCENT if v < 0 else _interp_cor("#5C62C6", NAVY, i / max(1, n_periodos - 1))
             txt(c, x0, y + altura_barra - 2, periodos_labels[i], font="regular", size=7.5, color=GREY_TEXT)
             bx0 = x0 + col_label_w
             largura = largura_barra_max * (abs(v) / maior_abs)
