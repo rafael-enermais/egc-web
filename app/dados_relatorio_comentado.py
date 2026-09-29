@@ -237,7 +237,7 @@ def _mapa(lancamentos: list) -> dict:
     return {l["conta"]: float(l["valor"]) for l in lancamentos}
 
 
-def _montar_anexo(bp_periodo: list, lado: str) -> list:
+def _montar_anexo(bp_periodo: list, lado: str, incluir_subconta: bool = True) -> list:
     """Monta anexo_ativo ou anexo_passivo no formato tupla-arvore que
     gerador_relatorio_comentado espera: ('grupo', label) |
     ('conta'|'subconta'|'subtotal'|'total', label, valor).
@@ -252,7 +252,21 @@ def _montar_anexo(bp_periodo: list, lado: str) -> list:
     Depositos Bancarios a Vista/Aplicacoes de Liquidez Imediata
     indentados por baixo, tipo 'subconta'). Continua sem inventar
     nada: subgrupo sem lancamento no periodo soh' nao aparece, conta
-    sem par confirmado em _HIERARQUIA_BP fica solta ('conta' simples)."""
+    sem par confirmado em _HIERARQUIA_BP fica solta ('conta' simples).
+
+    `incluir_subconta=False` (FIX_20260929q, Rafael: "detalhamento de
+    conta... de forma q se enquadre em 1 pag ou 2? Veja oq perde" ->
+    concordou em cortar só a subconta, opção 1 das 3 avaliadas) -- omite
+    a linha 'subconta' (o detalhe aninhado embaixo de 7 contas-pai:
+    Disponível, Clientes, Instituições Financeiras, Outros Créditos,
+    Obrigações Tributárias, Obrigações Trabalhistas, Outras Obrigações).
+    A conta-pai continua com seu valor PRÓPRIO (vem direto do SPED, não é
+    somado a partir dos filhos exibidos) -- nenhum total muda, só some a
+    composição interna de 7 contas. Usado só por
+    `_montar_anexo_multi_periodo` (Modelo B, onde Ativo+Passivo empilham
+    em largura cheia e o espaço é mais apertado); o layout clássico
+    (`montar_dados_relatorio`, 1 período) continua com subconta, nunca
+    precisou cortar nada."""
     if lado == "ATIVO":
         grupos, grand_nome, grand_label = _GRUPOS_ATIVO, "TOTAL DO ATIVO", "TOTAL DO ATIVO"
     else:
@@ -279,6 +293,8 @@ def _montar_anexo(bp_periodo: list, lado: str) -> list:
             if nome in filhos_usados:
                 continue  # ja' sai aninhada embaixo do pai, nao solta de novo
             linhas.append(("conta", _label_conta(nome), float(r["valor"])))
+            if not incluir_subconta:
+                continue
             for filho_nome in _HIERARQUIA_BP.get(nome, []):
                 filho_row = mapa_itens.get(filho_nome)
                 if filho_row is not None:
@@ -669,8 +685,15 @@ def _montar_anexo_multi_periodo(bp_por_periodo: list, lado: str) -> list:
     aparecer como 'conta' solta num período e 'subconta' aninhada
     (dependente de _HIERARQUIA_BP) noutro, vira 2 linhas em vez de 1.
     Não tratado aqui por não ter caso real observado ainda; revisar se
-    aparecer."""
-    arvores = [_montar_anexo(bp, lado) for bp in bp_por_periodo]
+    aparecer.
+
+    `incluir_subconta=False` sempre aqui (FIX_20260929q, ver docstring de
+    `_montar_anexo`) -- este é o único caminho que empilha Ativo+Passivo
+    em largura cheia (2+ colunas de valor por linha), o que aperta o
+    espaço vertical; o layout clássico de 1 período (`_montar_anexo`
+    chamado direto em `montar_dados_relatorio`) não usa esta função e
+    continua com subconta, sem mudança."""
+    arvores = [_montar_anexo(bp, lado, incluir_subconta=False) for bp in bp_por_periodo]
     n = len(arvores)
 
     ordem = []
