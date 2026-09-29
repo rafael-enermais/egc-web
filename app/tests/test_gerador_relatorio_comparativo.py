@@ -11,6 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import gerador_relatorio_comparativo as B  # noqa: E402
+import gerador_relatorio_comentado as A  # noqa: E402
 
 PERIODOS = ["2024", "2025", "2026"]
 
@@ -149,6 +150,50 @@ def test_layout_tabela_evolucao_sem_sobreposicao_rotulo_etiqueta_e_colunas():
                     f"({geo['valor_col_w']:.1f}pt), ia colar na coluna vizinha (bug do FIX_20260929f)"
                 )
     print("OK: _layout_tabela_evolucao não deixa etiqueta invadir a 1ª coluna nem valor mais largo que a coluna, em 2/3/4 períodos")
+
+
+def test_anexo_comparativo_grande_nao_perde_conteudo_estourando_pagina():
+    """FIX_20260929o -- mesmo achado real do Modelo A (ver
+    test_gerador_completo.test_anexo_multi_coluna_grande_...), so' que
+    aqui via Modelo B (pagina_anexo e' reaproveitada sem alteracao pelos
+    2 modelos): Evolucao_GRUPO_202312_202606.pdf real (2 empresas x 3
+    periodos) cortava a secao de Patrimonio Liquido no meio do anexo. Este
+    teste usa um anexo grande o bastante pra estourar 1 pagina so' e
+    confere que gerar_pdf_comparativo nao lança excecao e que
+    paginas_extras_anexo prevê corretamente a pagina extra."""
+    def _linhas(prefixo, n, base):
+        out = [("grupo", prefixo)]
+        for i in range(n):
+            out.append(("conta", f"{prefixo} conta {i} com nome razoavelmente longo",
+                         base * (i + 1), base * 1.05 * (i + 1), base * 1.1 * (i + 1)))
+        return out
+
+    anexo_ativo = (
+        _linhas("ATIVO CIRCULANTE", 12, 500.0)
+        + [("total", "TOTAL CIRCULANTE", 30_000.0, 31_000.0, 32_000.0)]
+        + _linhas("ATIVO NAO CIRCULANTE", 12, 800.0)
+        + [("total", "TOTAL DO ATIVO", 90_000.0, 93_000.0, 96_000.0)]
+    )
+    anexo_passivo = (
+        _linhas("PASSIVO CIRCULANTE", 8, 400.0)
+        + [("total", "TOTAL CIRCULANTE PASSIVO", 15_000.0, 15_500.0, 16_000.0)]
+        + _linhas("PATRIMONIO LIQUIDO", 8, 700.0)
+        + [("total", "TOTAL PATRIMONIO LIQUIDO", 60_000.0, 62_000.0, 64_000.0),
+           ("total", "TOTAL DO PASSIVO", 90_000.0, 93_000.0, 96_000.0)]
+    )
+    dados = dict(BASE)
+    dados["anexo_colunas"] = ["2024", "2025", "2026"]
+    dados["anexo_escopo_label"] = "Grupo Enermais (ENERGIA + SMG) · 2024 a 2026"
+    dados["anexo_ativo"] = anexo_ativo
+    dados["anexo_passivo"] = anexo_passivo
+
+    extras = A.paginas_extras_anexo(dados)
+    assert extras > 0, "dataset grande deveria precisar de mais de 1 pagina fisica pro anexo"
+    with tempfile.TemporaryDirectory() as tmp:
+        caminho = os.path.join(tmp, "comparativo_anexo_grande.pdf")
+        B.gerar_pdf_comparativo(dados, caminho)
+        assert os.path.getsize(caminho) > 5000
+    print(f"OK: anexo comparativo grande usa páginas extras em vez de perder conteúdo (paginas_extras_anexo={extras})")
 
 
 if __name__ == "__main__":

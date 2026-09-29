@@ -181,6 +181,66 @@ def test_anexo_multi_coluna_empresas_e_multi_periodo_ano_a_ano():
     print("OK: anexo multi-coluna (2 empresas, depois 3 anos ano a ano) não lança exceção; logo de escopo correto nos 2 casos")
 
 
+def _linhas_anexo_grandes(prefixo, n, base):
+    out = [("grupo", prefixo)]
+    for i in range(n):
+        out.append(("conta", f"{prefixo} conta {i} com nome razoavelmente longo", base * (i + 1), base * 1.05 * (i + 1)))
+    return out
+
+
+def test_anexo_multi_coluna_grande_nao_perde_conteudo_estourando_pagina():
+    """FIX_20260929o (Rafael, revendo Evolucao_GRUPO_202312_202606.pdf
+    real): pagina_anexo em modo multi-coluna (2+ empresas/periodos) NAO
+    tinha quebra de pagina -- com uma tabela grande (achado real: so' 2
+    empresas x 3 periodos ja bastava), a secao de Patrimonio Liquido era
+    desenhada fora da area visivel da pagina e sumia do PDF (contra a
+    REGRA DE OURO -- nunca perder dado real silenciosamente). Este teste
+    usa um anexo grande o bastante pra estourar 1 pagina so' e confere:
+    (1) paginas_extras_anexo prevê corretamente que vai precisar de mais
+    de 1 pagina fisica; (2) gerar_pdf_completo nao lança excecao com esse
+    volume; (3) nenhuma excecao tambem quando cabe numa pagina so'
+    (dataset pequeno, paginas_extras_anexo == 0)."""
+    anexo_ativo = (
+        _linhas_anexo_grandes("ATIVO CIRCULANTE", 12, 500.0)
+        + [("total", "TOTAL CIRCULANTE", 30_000.0, 31_000.0)]
+        + _linhas_anexo_grandes("ATIVO NAO CIRCULANTE", 12, 800.0)
+        + [("total", "TOTAL DO ATIVO", 90_000.0, 93_000.0)]
+    )
+    anexo_passivo = (
+        _linhas_anexo_grandes("PASSIVO CIRCULANTE", 8, 400.0)
+        + [("total", "TOTAL CIRCULANTE PASSIVO", 15_000.0, 15_500.0)]
+        + _linhas_anexo_grandes("PATRIMONIO LIQUIDO", 8, 700.0)
+        + [("total", "TOTAL PATRIMONIO LIQUIDO", 60_000.0, 62_000.0),
+           ("total", "TOTAL DO PASSIVO", 90_000.0, 93_000.0)]
+    )
+    dados_grande = dict(
+        BASE,
+        empresa_nome="Grupo Enermais",
+        empresas_codigos=["ENERGIA", "SMG"],
+        anexo_colunas=["Enermais Energia", "SMG Soluções"],
+        anexo_escopo_label="Grupo Enermais",
+        anexo_ativo=anexo_ativo,
+        anexo_passivo=anexo_passivo,
+    )
+    extras = g.paginas_extras_anexo(dados_grande)
+    assert extras > 0, "dataset grande deveria precisar de mais de 1 pagina fisica pro anexo"
+    with tempfile.TemporaryDirectory() as tmp:
+        caminho = os.path.join(tmp, "anexo_grande.pdf")
+        g.gerar_pdf_completo(dados_grande, caminho)
+        assert os.path.getsize(caminho) > 5000
+
+    # dataset pequeno (caso ja coberto antes) continua cabendo numa so' pagina
+    dados_pequeno = dict(
+        BASE, empresa_nome="Grupo Enermais", empresas_codigos=["ENERGIA", "SMG"],
+        anexo_colunas=["Enermais Energia", "SMG Soluções"], anexo_escopo_label="Grupo Enermais",
+        anexo_ativo=[("grupo", "ATIVO"), ("conta", "Disponível", 100.0, 150.0), ("total", "TOTAL DO ATIVO", 100.0, 150.0)],
+        anexo_passivo=[("grupo", "PASSIVO"), ("conta", "Fornecedores", 100.0, 150.0), ("total", "TOTAL DO PASSIVO", 100.0, 150.0)],
+    )
+    assert g.paginas_extras_anexo(dados_pequeno) == 0
+    print("OK: anexo multi-coluna grande usa páginas extras em vez de perder conteúdo (paginas_extras_anexo="
+          f"{extras}); dataset pequeno continua em 1 página só")
+
+
 if __name__ == "__main__":
     testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
     falhas = 0

@@ -63,6 +63,7 @@ _logo_dados = A._logo_dados
 _linha_identificacao_empresa = A._linha_identificacao_empresa
 _coluna_anexo = A._coluna_anexo
 pagina_anexo = A.pagina_anexo  # pagina inteira reaproveitada sem alteracao
+paginas_extras_anexo = A.paginas_extras_anexo  # FIX_20260929o -- ver Modelo A
 
 
 # ------------------------------------------------------------------ pagina 1
@@ -438,11 +439,19 @@ def gerar_pdf_comparativo(dados: dict, caminho_saida: str) -> str:
     direta, sem repetir narrativa de "leitura" por periodo (que exigiria
     reescrever as 5 funcoes de leitura pra falarem de N periodos ao mesmo
     tempo -- custo maior, valor duvidoso comparado a olhar a tabela)."""
+    # FIX_20260929o: mesmo raciocinio do Modelo A -- pagina_anexo (multi-
+    # coluna) pode precisar de mais de 1 pagina fisica quando o anexo nao
+    # cabe numa so' (achado real: Evolucao_GRUPO_202312_202606.pdf, 2
+    # empresas x 3 periodos, cortava a secao de Patrimonio Liquido). O
+    # total precisa refletir isso desde a 1a pagina (rodape "Pagina X de
+    # Y" de TODAS as paginas usa o mesmo total).
     _registrar_fontes()
     c = canvas.Canvas(caminho_saida, pagesize=(PAGE_W, PAGE_H))
-    total = len(PAGINAS)
-    for i, pagina_fn in enumerate(PAGINAS, start=1):
-        pagina_fn(c, dados, pagina=i, total_paginas=total)
+    total = len(PAGINAS) + paginas_extras_anexo(dados)
+    pagina_atual = 1
+    for pagina_fn in PAGINAS:
+        resultado = pagina_fn(c, dados, pagina=pagina_atual, total_paginas=total)
+        pagina_atual = (resultado if isinstance(resultado, int) else pagina_atual) + 1
         c.showPage()
     c.save()
     return caminho_saida
