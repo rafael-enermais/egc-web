@@ -45,6 +45,16 @@ Rafael, escopo escolhido explicitamente por ele via pergunta de decisao):
   - Tabela de detalhe (macro/especifica) continua existindo embaixo,
     agora mostrando BP e DRE empilhados pro "periodo de detalhe"
     escolhido dentro da selecao de periodos.
+
+Fase 3.1 (29/09/2026, "alinha todo o app com esse escopo... revise a
+estrutura toda"): seletores de periodo eram date-only (db.listar_periodos_grupo).
+O "Resumo do grupo" (KPIs+graficos, via visao_grupo.montar_serie_kpis_grupo)
+ja' resolve sozinho quando 2 granularidades estao ativas no mesmo
+periodo_fim (criterio de desempate documentado la'), entao continua
+recebendo so' as datas. Ja' o "periodo de detalhe" (tabela BP/DRE por
+conta, abaixo) PRECISA saber qual documento mostrar quando ha' ambiguidade
+-- vira selecao de (periodo, granularidade), com a granularidade no
+rotulo so' quando aquele periodo_fim tem mais de 1 documento ativo.
 """
 import sys
 from pathlib import Path
@@ -83,11 +93,17 @@ if not cods_selecionados:
     st.info("Selecione ao menos 1 empresa.")
     st.stop()
 
-periodos_disponiveis = db.listar_periodos_grupo(conn, cods_selecionados, status="ATIVO")
-if not periodos_disponiveis:
+_NOME_GRANULARIDADE = {
+    "mensal": "Mensal", "trimestral": "Trimestral", "semestral": "Semestral",
+    "anual": "Anual", "outra": "Outro intervalo", "": "",
+}
+
+periodos_detalhados = db.listar_periodos_grupo_detalhado(conn, cods_selecionados, status="ATIVO")
+if not periodos_detalhados:
     st.info("Nenhum período ativo entre as empresas selecionadas ainda.")
     st.stop()
 
+periodos_disponiveis = sorted({d["periodo"] for d in periodos_detalhados})
 periodos_sel = st.multiselect(
     "Período(s) — do grupo inteiro em todos os períodos até 1 período de 1 empresa só",
     periodos_disponiveis, default=periodos_disponiveis, format_func=lambda d: d.strftime("%m/%Y"),
@@ -98,14 +114,30 @@ if not periodos_sel:
     st.stop()
 periodos_sel = sorted(periodos_sel)
 
+# (periodo, granularidade) so' dos periodos EFETIVAMENTE selecionados acima
+# -- usado pelo seletor de "periodo de detalhe" (precisa saber qual
+# documento mostrar quando 2 estao ativos no mesmo periodo_fim).
+periodos_pg_sel = sorted(
+    {(d["periodo"], d["granularidade"]) for d in periodos_detalhados if d["periodo"] in periodos_sel}
+)
+_datas_repetidas_detalhe = {d for d, _g in periodos_pg_sel if sum(1 for d2, _g2 in periodos_pg_sel if d2 == d) > 1}
+
+
+def _rotulo_periodo_detalhe(pg):
+    d, g = pg
+    if d in _datas_repetidas_detalhe:
+        return f"{d.strftime('%m/%Y')} — {_NOME_GRANULARIDADE.get(g, g) or 'não declarada'}"
+    return d.strftime("%m/%Y")
+
 # ─────────────────────── Resumo do grupo (KPIs + gráficos) ────────────────
 st.divider()
 st.subheader("Resumo do grupo")
 
-periodo_detalhe = st.selectbox(
-    "Período de detalhe (usado nos KPIs e na tabela abaixo)", list(reversed(periodos_sel)),
-    format_func=lambda d: d.strftime("%m/%Y"), key="grupo_periodo_detalhe_sel",
+periodo_granul_detalhe = st.selectbox(
+    "Período de detalhe (usado nos KPIs e na tabela abaixo)", list(reversed(periodos_pg_sel)),
+    format_func=_rotulo_periodo_detalhe, key="grupo_periodo_detalhe_sel",
 )
+periodo_detalhe, granularidade_detalhe = periodo_granul_detalhe
 periodo_anterior = None
 idx_detalhe = periodos_sel.index(periodo_detalhe)
 if idx_detalhe > 0:
@@ -151,7 +183,7 @@ else:
 
 # ─────────────────────────── Detalhe por conta ─────────────────────────────
 st.divider()
-st.subheader(f"Detalhe por conta — {periodo_detalhe.strftime('%m/%Y')}")
+st.subheader(f"Detalhe por conta — {_rotulo_periodo_detalhe(periodo_granul_detalhe)}")
 
 visao = st.radio(
     "Visão", ["Macro (Energia × Consolidadoras)", "Específica (empresas abertas)"],
@@ -161,7 +193,14 @@ visao = st.radio(
 algum_dado = False
 for tipo_sel in ("BP", "DRE"):
     lancamentos = (lancs_bp_multi if tipo_sel == "BP" else lancs_dre_multi)
-    lancamentos = [r for r in lancamentos if r["periodo"] == periodo_detalhe]
+    # Fase 3.1: filtra tambem por granularidade quando esse periodo_fim
+    # tem 2+ documentos ativos -- sem isso, a tabela de detalhe misturaria
+    # as contas dos 2 documentos como se fossem 1 so'.
+    lancamentos = [
+        r for r in lancamentos
+        if r["periodo"] == periodo_detalhe
+        and (r.get("granularidade", "") == granularidade_detalhe if periodo_detalhe in _datas_repetidas_detalhe else True)
+    ]
     st.markdown(f"**{tipo_sel}**")
     if not lancamentos:
         st.caption(f"Nenhum lançamento de {tipo_sel} em {periodo_detalhe.strftime('%m/%Y')} pras empresas selecionadas.")

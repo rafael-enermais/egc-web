@@ -38,6 +38,32 @@ CODS_CONSOLIDADORAS = ["ENG", "CONST", "RENOV", "SOL", "SMG"]
 CONTAS_KPI_BP = ["TOTAL DO ATIVO", "TOTAL DO PASSIVO"]
 CONTAS_KPI_DRE = ["RECEITA OPERACIONAL LIQUIDA", "LUCRO BRUTO", "LUCRO LIQUIDO DO EXERCICIO"]
 
+# Fase 3.1 (29/09/2026) -- mesmo criterio de desempate de
+# indicadores._PRIORIDADE_GRANULARIDADE (documento mais abrangente/oficial
+# vence quando 2 granularidades estao ATIVAS no mesmo periodo_fim):
+# anual > semestral > trimestral > mensal > outra > "" (nao declarada).
+_PRIORIDADE_GRANULARIDADE = {"anual": 4, "semestral": 3, "trimestral": 2, "mensal": 1, "outra": 0, "": -1}
+
+
+def _filtrar_granularidade_vencedora(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Igual a indicadores._filtrar_granularidade_vencedora, mas em cima de
+    um DataFrame (formato de db.listar_lancamentos_grupo_periodos) --
+    evita que groupby(periodo) some 2 documentos de abrangencia diferente
+    no mesmo ponto da serie temporal. Sem coluna 'granularidade' (dado
+    antigo/mock de teste sem essa coluna) -- no-op.
+    """
+    if df.empty or "granularidade" not in df.columns:
+        return df
+    prioridade = df["granularidade"].fillna("").map(lambda g: _PRIORIDADE_GRANULARIDADE.get(g, -1))
+    vencedora_por_periodo = (
+        df.assign(_prio=prioridade)
+        .sort_values("_prio", ascending=False)
+        .drop_duplicates("periodo")
+        .set_index("periodo")["granularidade"]
+    )
+    return df[df["granularidade"] == df["periodo"].map(vencedora_por_periodo)]
+
 
 def montar_pivot_grupo(lancamentos: list[dict], cods_selecionados: list[str]) -> pd.DataFrame:
     """
@@ -241,6 +267,7 @@ def montar_serie_kpis_grupo(
         df = pd.DataFrame(lancamentos_multi)
         df["valor"] = df["valor"].astype(float)  # Decimal do psycopg2 -- mesma regra de sempre
         df = df[df["empresa_codigo"].isin(cods_selecionados) & df["conta"].isin(contas_kpi)]
+        df = _filtrar_granularidade_vencedora(df)
         agrupado = df.groupby(["periodo", "conta"])["valor"].sum().unstack("conta") if not df.empty else pd.DataFrame()
     else:
         agrupado = pd.DataFrame()

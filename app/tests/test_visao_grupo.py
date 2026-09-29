@@ -165,6 +165,40 @@ def test_montar_serie_kpis_grupo_respeita_so_empresas_selecionadas():
     print("OK: montar_serie_kpis_grupo — soma só as empresas selecionadas, ignora as outras")
 
 
+def test_montar_serie_kpis_grupo_2_granularidades_mesmo_periodo_fim_nao_soma_dobrado():
+    """
+    Fase 3.1 (29/09/2026) -- mesmo cenario real de test_indicadores.py:
+    trimestral (abr-jun) e semestral (jan-jun) ATIVOS ao mesmo tempo pra
+    30/06/2026. Antes do fix, groupby(periodo, conta) somava os 2 no
+    mesmo ponto do gráfico "Evolução de resultado" (Receita 320k + 600k =
+    920k, fantasia). Depois: só o semestral (mais abrangente) entra.
+    """
+    lancs_ambiguo = [
+        {"empresa_codigo": "ENERGIA", "periodo": datetime.date(2026, 6, 30), "grupo": "RESULTADO",
+         "conta": "RECEITA OPERACIONAL LIQUIDA", "valor": Decimal("320000.00"), "granularidade": "trimestral"},
+        {"empresa_codigo": "ENERGIA", "periodo": datetime.date(2026, 6, 30), "grupo": "RESULTADO",
+         "conta": "RECEITA OPERACIONAL LIQUIDA", "valor": Decimal("600000.00"), "granularidade": "semestral"},
+    ]
+    periodos = [datetime.date(2026, 6, 30)]
+    serie = visao_grupo.montar_serie_kpis_grupo(
+        lancs_ambiguo, ["ENERGIA"], visao_grupo.CONTAS_KPI_DRE, periodos,
+    )
+    valor = serie.loc[pd.Timestamp(datetime.date(2026, 6, 30)), "RECEITA OPERACIONAL LIQUIDA"]
+    assert valor == 600000.0, f"esperava 600000.0 (só semestral, vencedor), veio {valor} (provável soma dobrada)"
+    print("OK: montar_serie_kpis_grupo — 2 granularidades no mesmo periodo_fim não somam dobrado, semestral vence")
+
+
+def test_montar_serie_kpis_grupo_sem_coluna_granularidade_regressao():
+    """Dado sem a chave 'granularidade' (formato antigo/mock existente) continua
+    funcionando sem filtro nenhum -- não pode regredir nenhum teste já existente."""
+    periodos = [datetime.date(2026, 5, 31), datetime.date(2026, 6, 30)]
+    serie = visao_grupo.montar_serie_kpis_grupo(
+        MOCK_LANCS_MULTI_PERIODO, ["ENERGIA", "SMG"], visao_grupo.CONTAS_KPI_BP, periodos,
+    )
+    assert not serie.empty
+    print("OK: sem coluna 'granularidade', montar_serie_kpis_grupo não regride")
+
+
 def test_montar_serie_kpis_grupo_lista_vazia_de_periodos_devolve_vazio():
     serie = visao_grupo.montar_serie_kpis_grupo(MOCK_LANCS_MULTI_PERIODO, ["ENERGIA"], visao_grupo.CONTAS_KPI_BP, [])
     assert len(serie) == 0

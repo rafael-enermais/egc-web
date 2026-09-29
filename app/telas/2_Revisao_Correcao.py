@@ -36,6 +36,20 @@ resetava a selecao desta pagina sem o usuario mexer em nada aqui ("esse
 dropdown do lado esquerdo... interfere em tudo", Rafael). Removida
 totalmente a dependencia da sidebar: key explicita + default fixo (1a
 empresa da lista), sem nenhuma leitura do estado de outra pagina.
+
+
+Fase 3.1 (29/09/2026, "alinha todo o app com esse escopo... revise a
+estrutura toda"): gap encontrado na revisao -- o seletor de periodo era
+date-only (db.listar_periodos) e db.listar_lancamentos era chamado sem
+granularidade (None = sem filtro), entao se um periodo_fim tivesse 2
+documentos ATIVOS ao mesmo tempo (ex. trimestral e semestral fechando na
+mesma data), o data_editor dessa combinacao mostraria as linhas dos 2
+MISTURADAS na mesma tabela -- corrigir uma conta ali poderia acabar
+salvando em cima do lancamento errado (id fica certo internamente, mas a
+contadora nao teria como saber visualmente que estava vendo 2 documentos
+de uma vez). Agora usa listar_periodos_detalhado; quando o periodo_fim
+tem 2+ documentos, cada 1 vira uma combinacao/expander SEPARADO (rotulo
+mostra a granularidade) e listar_lancamentos filtra so' aquela.
 """
 import sys
 from pathlib import Path
@@ -108,14 +122,36 @@ if not cods_selecionados:
     st.info("Selecione ao menos 1 empresa.")
     st.stop()
 
-# uniao dos periodos ATIVOS das empresas selecionadas -- cada empresa pode
-# ter um conjunto diferente de periodos importados
-periodos_por_empresa = {cod: db.listar_periodos(conn, cod, status="ATIVO") for cod in cods_selecionados}
-todos_periodos = sorted({p for lst in periodos_por_empresa.values() for p in lst})
-if not todos_periodos:
+_NOME_GRANULARIDADE = {
+    "mensal": "Mensal", "trimestral": "Trimestral", "semestral": "Semestral",
+    "anual": "Anual", "outra": "Outro intervalo", "": "",
+}
+
+# uniao dos (periodo, granularidade) ATIVOS das empresas selecionadas --
+# cada empresa pode ter um conjunto diferente de periodos importados.
+# Fase 3.1 (29/09/2026): listar_periodos_detalhado em vez de listar_periodos
+# -- ver docstring do modulo pro porque (2 documentos de abrangencia
+# diferente podem estar ATIVOS ao mesmo tempo pro MESMO periodo_fim).
+periodos_por_empresa = {
+    cod: [(d["periodo"], d["granularidade"]) for d in db.listar_periodos_detalhado(conn, cod, status="ATIVO")]
+    for cod in cods_selecionados
+}
+todos_periodos_pg = sorted({pg for lst in periodos_por_empresa.values() for pg in lst})
+if not todos_periodos_pg:
     nomes_sel = ", ".join(NOME_POR_COD.get(c, c) for c in cods_selecionados)
     st.info(f"Nenhum período ativo pra {nomes_sel} ainda. Importe um PDF primeiro.")
     st.stop()
+
+_datas_repetidas = {d for d, _g in todos_periodos_pg if sum(1 for d2, _g2 in todos_periodos_pg if d2 == d) > 1}
+
+
+def _rotulo_periodo_pg(pg):
+    d, g = pg
+    if d in _datas_repetidas and g:
+        return f"{d.strftime('%m/%Y')} — {_NOME_GRANULARIDADE.get(g, g)}"
+    if d in _datas_repetidas:
+        return f"{d.strftime('%m/%Y')} — não declarada"
+    return d.strftime("%m/%Y")
 
 # guarda contra o caso de trocar a selecao de empresa(s) e a selecao de
 # periodo(s) anterior (guardada em session_state pela key) ter algum
@@ -132,13 +168,13 @@ if not todos_periodos:
 # distinguir "valor persistido do proprio widget" de "setado via API" aqui.
 if "revisao_periodos_sel" in st.session_state:
     st.session_state["revisao_periodos_sel"] = [
-        p for p in st.session_state["revisao_periodos_sel"] if p in todos_periodos
+        pg for pg in st.session_state["revisao_periodos_sel"] if pg in todos_periodos_pg
     ]
-periodos_sel = st.multiselect(
-    "Período(s)", todos_periodos, default=todos_periodos[-1:], format_func=lambda d: d.strftime("%m/%Y"),
+periodos_sel_pg = st.multiselect(
+    "Período(s)", todos_periodos_pg, default=todos_periodos_pg[-1:], format_func=_rotulo_periodo_pg,
     key="revisao_periodos_sel",
 )
-if not periodos_sel:
+if not periodos_sel_pg:
     st.info("Selecione ao menos 1 período.")
     st.stop()
 
@@ -162,23 +198,32 @@ COLUMN_CONFIG = {
 }
 
 # guarda df original + df editado de CADA combinacao (empresa, periodo,
-# tipo) presente, pra "Salvar correcoes" percorrer tudo de uma vez so' no
-# final, nao importa quantas combinacoes estao abertas na tela
+# granularidade, tipo) presente, pra "Salvar correcoes" percorrer tudo de
+# uma vez so' no final, nao importa quantas combinacoes estao abertas na
+# tela. Fase 3.1: granularidade entra na chave -- 2 documentos do mesmo
+# periodo_fim (ex. trimestral e semestral) agora viram 2 combinacoes/
+# expanders DISTINTOS, nunca misturados no mesmo data_editor.
 secoes = {}
-combinacoes = [(cod, periodo) for cod in cods_selecionados for periodo in periodos_sel
-               if periodo in periodos_por_empresa[cod]]
+combinacoes = [(cod, periodo, granularidade) for cod in cods_selecionados for periodo, granularidade in periodos_sel_pg
+               if (periodo, granularidade) in periodos_por_empresa[cod]]
 
 if not combinacoes:
     st.info("Nenhuma das empresas selecionadas tem os períodos escolhidos ativos.")
     st.stop()
 
 expandir_unica = len(combinacoes) == 1
-for cod, periodo in combinacoes:
+for cod, periodo, granularidade in combinacoes:
     nome = NOME_POR_COD.get(cod, cod)
-    with st.expander(f"{nome} ({cod}) — {periodo.strftime('%m/%Y')}", expanded=expandir_unica):
+    rotulo_periodo = _rotulo_periodo_pg((periodo, granularidade))
+    with st.expander(f"{nome} ({cod}) — {rotulo_periodo}", expanded=expandir_unica):
         teve_algo = False
         for tipo in ("BP", "DRE"):
-            lancamentos = db.listar_lancamentos(conn, cod, periodo, tipo)
+            # Fase 3.1: filtra explicitamente pela granularidade desta
+            # combinacao (nao mais None/sem filtro) -- sem isso, um
+            # periodo_fim com 2 documentos ativos mostraria as linhas dos
+            # 2 misturadas no mesmo data_editor (risco real de corrigir o
+            # lancamento errado sem perceber).
+            lancamentos = db.listar_lancamentos(conn, cod, periodo, tipo, granularidade=granularidade)
             if not lancamentos:
                 continue
             teve_algo = True
@@ -194,9 +239,9 @@ for cod, periodo in combinacoes:
                 column_config=COLUMN_CONFIG,
                 use_container_width=True,
                 hide_index=True,
-                key=f"editor_{cod}_{periodo}_{tipo}_v{st.session_state.get('revisao_editor_versao', 0)}",
+                key=f"editor_{cod}_{periodo}_{granularidade}_{tipo}_v{st.session_state.get('revisao_editor_versao', 0)}",
             )
-            secoes[(cod, periodo, tipo)] = (df, df_edit)
+            secoes[(cod, periodo, granularidade, tipo)] = (df, df_edit)
 
         if not teve_algo:
             st.caption("Sem lançamentos (BP ou DRE) para este período.")
@@ -210,8 +255,9 @@ st.subheader("Adicionar conta ausente")
 st.caption("Use quando o PDF não trouxe uma conta que deveria existir (vira grupo 'AJUSTE MANUAL').")
 c0, c1, c2, c3, c4 = st.columns([2, 1, 1, 2, 1])
 cod_add = c0.selectbox("Empresa", cods_selecionados, format_func=lambda c: f"{NOME_POR_COD.get(c, c)} ({c})")
-periodos_desta_empresa = [p for p in periodos_sel if p in periodos_por_empresa[cod_add]]
-periodo_add = c1.selectbox("Período", periodos_desta_empresa, format_func=lambda d: d.strftime("%m/%Y"))
+periodos_pg_desta_empresa = [pg for pg in periodos_sel_pg if pg in periodos_por_empresa[cod_add]]
+periodo_granul_add = c1.selectbox("Período", periodos_pg_desta_empresa, format_func=_rotulo_periodo_pg)
+periodo_add, granularidade_add = periodo_granul_add if periodo_granul_add else (None, "")
 tipo_add = c2.selectbox("Tipo", ["BP", "DRE"])
 nova_conta = c3.text_input("Nome da conta")
 novo_valor_add = c4.number_input("Valor", value=0.0, step=0.01, format="%.2f")
@@ -230,7 +276,7 @@ def _log_seguro(nivel, mensagem, empresa_codigo=None, periodo=None, detalhe=None
 if st.button("💾 Salvar correções", type="primary"):
     alterados = 0
     erros = []
-    for (cod, periodo, tipo), (df, df_edit) in secoes.items():
+    for (cod, periodo, granularidade, tipo), (df, df_edit) in secoes.items():
         alteracoes_combo = []  # (conta, valor_antigo, valor_novo) só desta combinação, pro log
         for _, row_orig in df.iterrows():
             row_novo = df_edit.loc[df_edit["id"] == row_orig["id"]].iloc[0]
@@ -272,6 +318,7 @@ if adicionar:
             db.salvar_correcao_manual(
                 conn, None, float(novo_valor_add), periodo_add, usuario,
                 empresa_codigo=cod_add, tipo=tipo_add, conta=nova_conta.strip(),
+                granularidade=granularidade_add,
             )
             _log_seguro("INFO", f"Conta ausente adicionada: '{nova_conta.strip()}' ({tipo_add})",
                         empresa_codigo=cod_add, periodo=periodo_add)

@@ -422,7 +422,13 @@ def _consolidar_historico(conn, empresas_codigos: list, tipo: str) -> list:
         return []
     df = pd.DataFrame(lancs)
     df["valor"] = df["valor"].astype(float)
-    agrupado = df.groupby(["periodo", "grupo", "conta"], as_index=False)["valor"].sum()
+    # Fase 3.1 (29/09/2026): mantem 'granularidade' no groupby/saida (em
+    # vez de descartar a coluna) -- sem isso, indicadores.calcular_indicadores
+    # (chamado logo abaixo com bp_hist/dre_hist) nao teria como saber que
+    # 2 documentos de abrangencia diferente estao ATIVOS pro MESMO
+    # periodo_fim, e voltaria a somar os 2 no indicador de tendencia do
+    # relatorio consolidado (mesmo bug ja corrigido nos dashboards).
+    agrupado = df.groupby(["periodo", "grupo", "conta", "granularidade"], as_index=False)["valor"].sum()
     return agrupado.to_dict("records")
 
 

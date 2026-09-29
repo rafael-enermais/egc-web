@@ -84,7 +84,7 @@ def _patches(codigos_com_periodo=("ENERGIA", "SMG")):
 
     def _listar_lancamentos_grupo_periodos(conn, periodos, tipo, cods, status="ATIVO"):
         fonte = BP_GRUPO if tipo == "BP" else DRE_GRUPO
-        return [dict(x, periodo=PERIODO) for x in fonte if x["empresa_codigo"] in cods]
+        return [dict(x, periodo=PERIODO, granularidade="") for x in fonte if x["empresa_codigo"] in cods]
 
     def _listar_lancamentos(conn, cod, periodo, tipo, status="ATIVO", granularidade=None):
         # Caminho de 1 empresa (string) -- mesmo formato de db.listar_lancamentos
@@ -185,6 +185,32 @@ def test_despesas_admin_itens_consolidado_soma_por_nome_de_conta():
     # magnitude positiva -- _montar_despesas_admin_itens inverte o sinal).
     assert round(nomes["Serviços Profissionais"], 2) == 340.0
     print("OK: itens de despesas administrativas somam por nome de conta entre empresas do grupo")
+
+
+def test_consolidar_historico_preserva_granularidade_pra_nao_somar_dobrado():
+    """
+    Fase 3.1 (29/09/2026): _consolidar_historico alimenta
+    indicadores.calcular_indicadores (indicador de tendencia do relatorio
+    consolidado) -- antes descartava a coluna 'granularidade' no groupby,
+    entao se 2 documentos (ex. trimestral e semestral) estivessem ATIVOS
+    pro MESMO periodo_fim, o indicador de tendencia do relatorio somaria
+    os 2 silenciosamente. Agora preserva a coluna e quem consome
+    (indicadores.py) resolve a ambiguidade (documento mais abrangente vence).
+    """
+    lancs_ambiguo = [
+        {"empresa_codigo": "ENERGIA", "periodo": PERIODO, "grupo": "RESULTADO",
+         "conta": "RECEITA OPERACIONAL LIQUIDA", "valor": 320.0, "granularidade": "trimestral"},
+        {"empresa_codigo": "ENERGIA", "periodo": PERIODO, "grupo": "RESULTADO",
+         "conta": "RECEITA OPERACIONAL LIQUIDA", "valor": 600.0, "granularidade": "semestral"},
+    ]
+    with patch("dados_relatorio_comentado.db.listar_periodos_grupo", return_value=[PERIODO]), \
+         patch("dados_relatorio_comentado.db.listar_lancamentos_grupo_periodos", return_value=lancs_ambiguo):
+        registros = drc._consolidar_historico(object(), ["ENERGIA"], "DRE")
+    granularidades = {r["granularidade"] for r in registros}
+    assert granularidades == {"trimestral", "semestral"}, (
+        f"esperava a coluna 'granularidade' preservada (as 2 linhas, sem somar) -- veio {registros}"
+    )
+    print("OK: _consolidar_historico preserva 'granularidade' -- indicadores.py resolve a ambiguidade a jusante, sem somar dobrado")
 
 
 def test_caminho_1_empresa_string_continua_sem_regressao():

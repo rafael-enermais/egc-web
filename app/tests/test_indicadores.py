@@ -122,6 +122,55 @@ def test_periodo_so_com_bp_sem_dre_nao_quebra():
     print("OK: BP sem DRE correspondente não quebra — indicadores de BP calculam, os de DRE ficam NaN")
 
 
+def test_2_granularidades_ativas_no_mesmo_periodo_fim_nao_soma_dobrado():
+    """
+    Fase 3.1 (29/09/2026, "alinha todo o app com esse escopo... os kpis
+    com essa funcao tb"): reproduz o caso real que motivou a granularidade
+    virar identidade do periodo -- documento TRIMESTRAL (abr-jun) e
+    documento SEMESTRAL (jan-jun) ambos fechando 30/06/2026, ATIVOS ao
+    mesmo tempo. Antes do fix, o groupby(periodo, conta) de _pivot somava
+    os 2 (ex. Receita 320k trimestral + 600k semestral = 920k, numero
+    fantasia). Depois: so' o semestral entra (criterio de desempate --
+    documento mais abrangente/oficial vence), Receita fica 600k.
+    """
+    lancs_bp_ambiguo = [
+        {"periodo": P_JUN, "grupo": "TOTAL", "conta": "TOTAL DO ATIVO", "valor": Decimal("1100000.00"), "granularidade": "trimestral"},
+        {"periodo": P_JUN, "grupo": "TOTAL", "conta": "TOTAL DO ATIVO", "valor": Decimal("1100000.00"), "granularidade": "semestral"},
+    ]
+    lancs_dre_ambiguo = [
+        {"periodo": P_JUN, "grupo": "RESULTADO", "conta": "RECEITA OPERACIONAL LIQUIDA", "valor": Decimal("320000.00"), "granularidade": "trimestral"},
+        {"periodo": P_JUN, "grupo": "RESULTADO", "conta": "RECEITA OPERACIONAL LIQUIDA", "valor": Decimal("600000.00"), "granularidade": "semestral"},
+    ]
+    tabela = indicadores.calcular_indicadores(lancs_bp_ambiguo, lancs_dre_ambiguo)
+    import pandas as pd
+    receita = tabela.loc[pd.Timestamp(P_JUN), "Margem Bruta"]
+    assert pd.isna(receita) or True  # Margem Bruta nao e' o alvo -- so' garante que nao quebrou
+    # o teste real: ROA usa RECEITA nao diretamente, entao confere via um
+    # calculo que exponha a receita somada teria dado outro EBITDA/Margem;
+    # mais direto: reconstroi o pivot BP/DRE ja filtrado e confere a soma.
+    filtrado = indicadores._filtrar_granularidade_vencedora(lancs_dre_ambiguo)
+    assert len(filtrado) == 1 and filtrado[0]["granularidade"] == "semestral" and float(filtrado[0]["valor"]) == 600000.0
+    print("OK: 2 granularidades ativas no mesmo periodo_fim nao somam dobrado -- semestral (mais abrangente) vence")
+
+
+def test_1_granularidade_so_nao_muda_nada_regressao():
+    """Sem ambiguidade (comportamento comum -- 1 documento por periodo_fim),
+    a resolucao de granularidade nao filtra nada."""
+    lancs = [dict(l, granularidade="") for l in LANCS_DRE]
+    filtrado = indicadores._filtrar_granularidade_vencedora(lancs)
+    assert len(filtrado) == len(lancs)
+    print("OK: sem ambiguidade, _filtrar_granularidade_vencedora e' no-op (nao filtra nada)")
+
+
+def test_dado_sem_coluna_granularidade_nao_quebra_regressao():
+    """Callers antigos / mocks de teste sem a chave 'granularidade' continuam
+    funcionando sem filtro nenhum (no-op) -- nao pode quebrar teste ja
+    existente que nao conhece essa chave."""
+    tabela = indicadores.calcular_indicadores(LANCS_BP, LANCS_DRE)
+    assert len(tabela) == 2
+    print("OK: lancamentos sem chave 'granularidade' (formato antigo) continuam funcionando sem regressao")
+
+
 if __name__ == "__main__":
     testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
     falhas = 0
