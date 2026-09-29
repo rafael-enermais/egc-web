@@ -80,7 +80,8 @@ def test_carrega_formulario_com_periodo_disponivel():
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
         assert not at.exception, f"excecao carregando formulario: {at.exception}"
-        assert at.text_input(key="relatorio_periodo_label").value == "06/2026"
+        # FIX_20260929m: key agora amarrada ao periodo (ver docstring da tela)
+        assert at.text_input(key=f"relatorio_periodo_label_{PERIODO.isoformat()}").value == "06/2026"
         assert at.selectbox(key="relatorio_contato_sel_ADMINISTRADOR").value == NOVO_SENTINELA
         assert at.text_input(key="relatorio_novo_cargo_ADMINISTRADOR").value == "Administrador"
         assert at.selectbox(key="relatorio_contato_sel_CONTADOR").value == NOVO_SENTINELA
@@ -311,6 +312,39 @@ def test_periodo_unico_1_empresa_continua_enviando_string_sem_regressao():
         assert m_montar.call_args.kwargs["empresa_codigo"] == "ENERGIA"
         assert m_log.call_args.kwargs["empresas_codigos"] == ["ENERGIA"]
         print("OK: Relatório Comentado — período único com 1 empresa (default) continua mandando string, sem regressão")
+
+
+def test_trocar_periodo_no_unico_nao_deixa_rotulo_preso_no_periodo_antigo():
+    # FIX_20260929m: mesmo gotcha do FIX_20260929j (key de text_input por
+    # slot fixo, nao pelo periodo escolhido), so' que no modo "Periodo
+    # unico" -- exatamente o "12/2023" preso que apareceu no print do
+    # Rafael com 31/12/2025 selecionado. Regressao: troca o periodo
+    # selecionado (sem remontar a pagina) e confere que o rotulo default
+    # reflete o periodo NOVO, nao o texto que ficou de quando o periodo
+    # antigo estava selecionado.
+    periodo_extra = datetime.date(2023, 12, 31)
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos", return_value=[PERIODO, periodo_extra]):
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        # _periodos_intersecao ordena crescente -- período mais antigo
+        # (periodo_extra, 2023) vem selecionado por padrão (índice 0).
+        assert at.selectbox(key="relatorio_periodo_sel").value == periodo_extra
+
+        rotulo_inicial = [ti for ti in at.text_input if ti.key and ti.key.startswith("relatorio_periodo_label_")]
+        assert len(rotulo_inicial) == 1
+        assert rotulo_inicial[0].value == "12/2023"
+
+        at.selectbox(key="relatorio_periodo_sel").set_value(PERIODO).run(timeout=30)
+        assert not at.exception, f"excecao trocando periodo no modo unico: {at.exception}"
+
+        rotulo_novo = [ti for ti in at.text_input if ti.key and ti.key.startswith("relatorio_periodo_label_")]
+        assert len(rotulo_novo) == 1
+        assert rotulo_novo[0].value == "06/2026", (
+            f"rótulo ficou preso no período antigo: {rotulo_novo[0].value!r}"
+        )
+        print("OK: Relatório Comentado — trocar o período no modo único não deixa rótulo preso no período antigo")
 
 
 def test_gerar_relatorio_chama_pipeline_e_nao_quebra():

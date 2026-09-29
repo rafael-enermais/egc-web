@@ -164,15 +164,26 @@ if modo == "Período único":
             "Sem coluna confiável de granularidade no banco pra inferir isso sozinho — confirme o texto "
             "que vai aparecer na capa e no cabeçalho do relatório."
         )
+        # FIX_20260929m (achado revendo o mesmo gotcha ja corrigido no modo
+        # Comparativo -- FIX_20260929j -- que nunca tinha sido aplicado aqui:
+        # key fixa ("relatorio_periodo_label") faz o Streamlit reusar o
+        # texto digitado mesmo depois de trocar o periodo selecionado,
+        # porque value= so' e' aplicado na 1a vez que a key existe em
+        # session_state. Rotulo amarrado ao periodo escolhido (mesmo
+        # principio da combo_key do Comparativo) -- trocar o periodo forca
+        # uma key nova e o value= recem-calculado volta a valer.
+        periodo_key_unico = periodo_sel.isoformat()
         col1, col2 = st.columns(2)
         with col1:
             periodo_label = st.text_input(
                 "Rótulo do período (capa/cabeçalho)", value=periodo_sel.strftime("%m/%Y"),
-                key="relatorio_periodo_label", help='Ex.: "1º Semestre 2026", "Junho/2026", "Exercício 2025".',
+                key=f"relatorio_periodo_label_{periodo_key_unico}",
+                help='Ex.: "1º Semestre 2026", "Junho/2026", "Exercício 2025".',
             )
         with col2:
             periodo_extenso = st.text_input(
-                "Período por extenso (texto de apoio)", value="", key="relatorio_periodo_extenso",
+                "Período por extenso (texto de apoio)", value="",
+                key=f"relatorio_periodo_extenso_{periodo_key_unico}",
                 help='Ex.: "janeiro a junho de 2026". Pode deixar em branco.',
             )
 else:
