@@ -349,6 +349,33 @@ def _kpi_grande(c, x0, x1, y0, y1, label, valor, complemento, invertido=False):
               font="regular", size=9, color=cor_comp, leading=12)
 
 
+def _altura_kpi_pequeno(x0, x1, complementos, altura_minima=75.0):
+    """Calcula a altura que a fileira de KPIs pequenos precisa pra caber
+    o complemento MAIS LONGO sem vazar pra fora da caixa (achado real,
+    Rafael revisando pág.2 do 1º PDF do consolidado de 6 empresas:
+    'Despesas Operacionais' tinha complemento de 2 linhas que ultrapassava
+    o fundo cinza da caixa e colava no título 'Leitura Executiva' logo
+    abaixo -- a caixa em si sempre desenhava com altura FIXA de 75pt,
+    calculada só pro caso de complemento em 1 linha só).
+
+    Usa o MESMO card_w/pad de `_kpi_pequeno` (mantidos em sincronia, ver
+    docstring de lá) pra medir a quebra de linha ANTES de desenhar,
+    devolvendo uma altura ÚNICA pra fileira inteira (todos os 4 cards
+    saem com a mesma altura, mesmo padrão visual de sempre -- só cresce
+    quando algum complemento realmente precisar, nunca encolhe abaixo do
+    padrão de 1 linha)."""
+    pad = 12
+    max_linhas = 1
+    for complemento in complementos:
+        linhas = _wrap_text(complemento, FONT["regular"], 8, x1 - x0 - 2 * pad)
+        max_linhas = max(max_linhas, len(linhas))
+    # y0+58 = topo do complemento; leading=10 por linha; +10 de folga
+    # embaixo (mesma folga visual que o caso de 1 linha já tinha: 75-58-10=7,
+    # arredondado pra 10 por segurança).
+    altura_necessaria = 58 + max_linhas * 10 + 10
+    return max(altura_minima, altura_necessaria)
+
+
 def _kpi_pequeno(c, x0, x1, y0, y1, label, valor, complemento, cor_borda):
     rect(c, x0, y0, x0 + 3, y1, fill=cor_borda)
     rect(c, x0 + 3, y0, x1, y1, fill=GREY_BG)
@@ -430,13 +457,19 @@ def pagina_destaques(c, dados, pagina: int, total_paginas: int):
         (f"{'Lucro' if dados['resultado_liquido'] >= 0 else 'Prejuízo'} Líquido",
          f"{moeda_br(abs(dados['resultado_liquido']) / 1_000_000)} MM", f"margem {pct_br(dados['margem_liquida'], forcar_sinal=True)}"),
     ]
+    y0_kpi = 255
+    altura_kpi = _altura_kpi_pequeno(MARGEM, MARGEM + col_w, [comp for _, _, comp in kpis_pequenos])
+    y1_kpi = y0_kpi + altura_kpi
     x = MARGEM
     for (label, valor, comp), cor in zip(kpis_pequenos, cores):
-        _kpi_pequeno(c, x, x + col_w, 255, 330, label, valor, comp, cor)
+        _kpi_pequeno(c, x, x + col_w, y0_kpi, y1_kpi, label, valor, comp, cor)
         x += col_w + 10
 
-    # Leitura Executiva
-    y = 375
+    # Leitura Executiva (achatada pro mesmo tanto que a fileira de KPIs
+    # cresceu -- FIX_20260929n, ver _altura_kpi_pequeno: 330 era o y1 fixo
+    # de antes, 375 já tinha 45pt de folga abaixo dele; preservar essa
+    # MESMA folga em vez de recalcular do zero.)
+    y = y1_kpi + 45
     txt(c, MARGEM, y, "Leitura Executiva", font="heavy", size=13, color=NAVY)
     c.setStrokeColor(HexColor(ORANGE))
     c.setLineWidth(2)
@@ -649,7 +682,7 @@ def grafico_barra_empilhada(c, x0, x1, y_top, altura, segmentos):
 
 # ---------------------------------------------------------- tabela do anexo
 def _linha_anexo(c, x, largura, y_top, tipo, label, valores, altura_linha, primeira=False,
-                  valor_col_w=0.0, gap_col=6.0):
+                  valor_col_w=0.0, gap_col=6.0, desenhar=True):
     """Uma linha da tabela de anexo (pagina 8). `tipo`: grupo / conta /
     subconta / subtotal / total. Devolve o y_top da proxima linha.
 
@@ -662,13 +695,22 @@ def _linha_anexo(c, x, largura, y_top, tipo, label, valores, altura_linha, prime
     Rotulo longo (que colidiria com o valor na mesma linha, achado real
     testando com "Obrig. Trabalhistas e Previdenciárias" e "Obrigações
     Tributárias (Parcelamentos)") quebra em ate 2 linhas -- o valor fica
-    so' na 1a linha, alinhado a direita."""
+    so' na 1a linha, alinhado a direita.
+
+    `desenhar=False` (FIX_20260929o, quebra de pagina do anexo): faz um
+    "dry run" que calcula o y da proxima linha SEM desenhar nada em `c`
+    -- usado pra medir, ANTES de desenhar de verdade, se a linha cabe no
+    resto da pagina atual. Mede exatamente a mesma logica de quebra de
+    texto/altura que o desenho real usa (nunca corre o risco de medir e
+    desenhar divergirem, porque e' a MESMA funcao)."""
     valores = valores or [""]
     n_col = len(valores)
     if valor_col_w <= 0:
         valor_col_w = largura  # 1 coluna full-width -- igual a sempre
 
     def _draw_valores(y_baseline, fonte_v, tamanho_v, cor_v):
+        if not desenhar:
+            return
         for i, v in enumerate(valores):
             if not v:
                 continue
@@ -677,12 +719,14 @@ def _linha_anexo(c, x, largura, y_top, tipo, label, valores, altura_linha, prime
 
     if tipo == "grupo":
         y_top += 0 if primeira else 7  # respiro antes de cada novo grupo (exceto o 1o)
-        txt(c, x, y_top, label.upper(), font="bold", size=9, color=NAVY)
+        if desenhar:
+            txt(c, x, y_top, label.upper(), font="bold", size=9, color=NAVY)
         return y_top + altura_linha + 4
     if tipo == "total":
         y_top += 4
-        rect(c, x, y_top, x + largura, y_top + altura_linha + 6, fill=NAVY)
-        txt(c, x + 8, y_top + altura_linha / 2 + 4, label.upper(), font="bold", size=9.5, color="#FFFFFF")
+        if desenhar:
+            rect(c, x, y_top, x + largura, y_top + altura_linha + 6, fill=NAVY)
+            txt(c, x + 8, y_top + altura_linha / 2 + 4, label.upper(), font="bold", size=9.5, color="#FFFFFF")
         _draw_valores(y_top + altura_linha / 2 + 4, "bold", 9.5, "#FFFFFF")
         return y_top + altura_linha + 10
 
@@ -693,9 +737,10 @@ def _linha_anexo(c, x, largura, y_top, tipo, label, valores, altura_linha, prime
     tamanho = 9 if tipo == "subconta" else 9.5
     if tipo == "subtotal":
         y_top += 3
-        c.setStrokeColor(HexColor(BORDER_LIGHT))
-        c.setLineWidth(0.5)
-        c.line(x, Y(y_top - 2), x + largura, Y(y_top - 2))
+        if desenhar:
+            c.setStrokeColor(HexColor(BORDER_LIGHT))
+            c.setLineWidth(0.5)
+            c.line(x, Y(y_top - 2), x + largura, Y(y_top - 2))
 
     if n_col > 1:
         valores_w_total = n_col * valor_col_w + (n_col - 1) * gap_col
@@ -704,11 +749,13 @@ def _linha_anexo(c, x, largura, y_top, tipo, label, valores, altura_linha, prime
     largura_label = largura - indent - valores_w_total - 8
     linhas_label = _wrap_text(label, FONT[fonte], tamanho, largura_label) if largura_label > 20 else [label]
 
-    txt(c, x + indent, y_top + 9, linhas_label[0], font=fonte, size=tamanho, color=cor)
+    if desenhar:
+        txt(c, x + indent, y_top + 9, linhas_label[0], font=fonte, size=tamanho, color=cor)
     _draw_valores(y_top + 9, fonte, tamanho, cor)
     y_prox = y_top + altura_linha
     for linha_extra in linhas_label[1:]:
-        txt(c, x + indent, y_prox + 9, linha_extra, font=fonte, size=tamanho, color=cor)
+        if desenhar:
+            txt(c, x + indent, y_prox + 9, linha_extra, font=fonte, size=tamanho, color=cor)
         y_prox += altura_linha
     if tipo == "subtotal":
         y_prox += 2
@@ -746,6 +793,124 @@ def _coluna_anexo(c, x, largura, y_top, linhas, altura_linha=13.0, titulos_colun
         y = _linha_anexo(c, x, largura, y, tipo, label, valores, altura_linha,
                           primeira=(i == 0), valor_col_w=valor_col_w, gap_col=gap_col)
     return y
+
+
+# FIX_20260929o (Rafael, revisando Evolucao_GRUPO_202312_202606.pdf real:
+# pag.4 "Anexos" cortava a secao de Patrimonio Liquido no meio -- cabecalho
+# do grupo aparecia, nenhuma conta/total depois, pagina seguinte ja era
+# "Fechamento". Causa: _coluna_anexo (modo "multi", 2+ empresas/periodos,
+# unico caminho ainda sem paginacao) desenhava tudo numa altura de pagina
+# so', sem nenhuma logica de quebra -- linha que passasse do rodape era
+# desenhada fora da area visivel do PDF (dado real perdido silenciosamente,
+# contra a REGRA DE OURO do projeto). Layout classico (1 empresa/periodo,
+# 2 colunas lado a lado) NAO muda -- nunca estourou na pratica e nao vale o
+# risco de mexer num caminho ja validado.
+_ANEXO_Y_INICIO = 162.0
+_ANEXO_Y_LIMITE = 758.0  # abaixo disso reserva espaco pro rodape (~pag+nota)
+
+
+def _paginar_bloco_anexo(c, dados, x, largura, y, pagina_atual, total_paginas,
+                          linhas, titulos_colunas, precisa_titulo, desenhar):
+    """Desenha (ou só mede, se `desenhar=False`) um bloco de linhas do
+    anexo (Ativo OU Passivo) com quebra de página automática -- usa
+    `_linha_anexo(..., desenhar=False)` pra medir a altura real de cada
+    linha ANTES de decidir se ela cabe no resto da página atual (nunca
+    corre risco de medir/desenhar divergir -- é a mesma função dos 2
+    jeitos). Quando não cabe: fecha a página atual (rodapé + showPage,
+    só se `desenhar=True`), abre a próxima com cabeçalho de continuação,
+    redesenha o título das colunas, e só então desenha a linha.
+
+    Devolve (y, pagina_atual, precisa_titulo) pro próximo bloco continuar
+    de onde este parou (Ativo -> Passivo é 1 fluxo contínuo, pode quebrar
+    página no meio de qualquer um dos dois)."""
+    valor_col_w = 0.0
+    gap_col = 6.0
+    n_col = len(titulos_colunas) if titulos_colunas else 1
+    if n_col > 1:
+        label_min = max(largura * 0.30, 90.0)
+        valor_col_w = max((largura - label_min - (n_col - 1) * gap_col) / n_col, 46.0)
+
+    def _quebrar_pagina():
+        nonlocal y, pagina_atual, precisa_titulo
+        if desenhar:
+            _footer(c, pagina_atual, total_paginas)
+            c.showPage()
+            _header(c, dados, "Anexos (continuação)")
+        pagina_atual += 1
+        y = _ANEXO_Y_INICIO
+        precisa_titulo = True
+
+    def _desenhar_titulos():
+        nonlocal y
+        if not (titulos_colunas and n_col > 1):
+            return
+        if desenhar:
+            for i, titulo in enumerate(titulos_colunas):
+                x_direita = x + largura - (n_col - 1 - i) * (valor_col_w + gap_col)
+                txt(c, x_direita, y, titulo.upper(), font="bold", size=7.5, color=GREY_TEXT, align="right")
+            c.setStrokeColor(HexColor(BORDER_LIGHT))
+            c.setLineWidth(0.5)
+            c.line(x, Y(y + 4), x + largura, Y(y + 4))
+        y += 12
+
+    primeiro_do_bloco = True
+    for tipo, label, *resto in linhas:
+        valores = [moeda_br(v) if v not in (None, "") else "" for v in resto] if resto else []
+        if precisa_titulo:
+            _desenhar_titulos()
+            precisa_titulo = False
+        # `primeira` so' controla o respiro extra ANTES de uma linha tipo
+        # "grupo" -- topo de bloco e topo de pagina (logo apos quebra) sao
+        # os 2 casos que devem pular esse respiro (mesma logica).
+        primeira_da_pagina = primeiro_do_bloco
+        y_depois = _linha_anexo(c, x, largura, y, tipo, label, valores, 13.0,
+                                 primeira=primeira_da_pagina, valor_col_w=valor_col_w, gap_col=gap_col,
+                                 desenhar=False)
+        if y_depois > _ANEXO_Y_LIMITE:
+            _quebrar_pagina()
+            _desenhar_titulos()
+            precisa_titulo = False  # ja desenhado agora -- sem isso, a checagem do topo do loop redesenhava de novo na proxima linha
+            primeira_da_pagina = True
+        y = _linha_anexo(c, x, largura, y, tipo, label, valores, 13.0,
+                          primeira=primeira_da_pagina, valor_col_w=valor_col_w, gap_col=gap_col,
+                          desenhar=desenhar)
+        primeiro_do_bloco = False
+    return y, pagina_atual, precisa_titulo
+
+
+def _paginar_anexo_multi(c, dados, pagina_inicial, total_paginas, desenhar=True):
+    """Percorre Ativo + Passivo como 1 fluxo contínuo paginado (modo
+    multi-coluna). Devolve a página final ocupada (== pagina_inicial se
+    coube tudo numa página só)."""
+    d = dados
+    titulos_colunas = d.get("anexo_colunas")
+    y = _ANEXO_Y_INICIO
+    pagina_atual = pagina_inicial
+    precisa_titulo = True
+    for bloco_i, linhas in enumerate([d.get("anexo_ativo", []), d.get("anexo_passivo", [])]):
+        if not linhas:
+            continue
+        if bloco_i == 1:
+            y += 14
+        y, pagina_atual, precisa_titulo = _paginar_bloco_anexo(
+            c, dados, MARGEM, CONTEUDO_W, y, pagina_atual, total_paginas,
+            linhas, titulos_colunas, precisa_titulo, desenhar,
+        )
+    return pagina_atual, y
+
+
+def paginas_extras_anexo(dados) -> int:
+    """Quantas páginas A MAIS (além da 1ª) o anexo vai precisar, calculado
+    ANTES de desenhar qualquer página do PDF -- necessário porque
+    `total_paginas` (impresso no rodapé de TODAS as páginas, inclusive as
+    que vêm antes do anexo) precisa estar certo desde a 1ª chamada de
+    `c.showPage()`. Só se aplica ao modo multi-coluna (2+ empresas/
+    períodos) -- layout clássico sempre cabe numa página só, 0 sempre."""
+    titulos_colunas = dados.get("anexo_colunas")
+    if not (titulos_colunas and len(titulos_colunas) > 1):
+        return 0
+    pagina_final, _y = _paginar_anexo_multi(None, dados, pagina_inicial=1, total_paginas=1, desenhar=False)
+    return pagina_final - 1
 
 
 # ------------------------------------------------------------------ pagina 1
@@ -1262,7 +1427,12 @@ def pagina_anexo(c, dados, pagina: int, total_paginas: int):
     o multi-empresa-periodo, ja deixamos pronto'). Contrato de dados da
     Fase 2: `len(valores) == len(anexo_colunas)` em toda tupla; a camada
     de dados e' quem monta essas listas (BP e' foto — cada coluna usa 1
-    data de referencia; nunca somar BP entre periodos)."""
+    data de referencia; nunca somar BP entre periodos).
+
+    Devolve a ÚLTIMA página física ocupada por este anexo (FIX_20260929o
+    -- modo multi pode precisar de mais de 1 página; quem chama precisa
+    saber quantas pra numerar corretamente a próxima página do relatório).
+    Sempre == `pagina` no modo clássico (1 página, como sempre foi)."""
     d = dados
     _header(c, dados, "Anexos")
 
@@ -1285,9 +1455,16 @@ def pagina_anexo(c, dados, pagina: int, total_paginas: int):
         # rotulo colidia com o valor). Empilha Ativo/Passivo em largura
         # cheia em vez de lado a lado; so' este caminho muda -- o layout
         # classico (1 empresa/periodo) abaixo fica 100% como sempre.
-        y_esq = _coluna_anexo(c, MARGEM, CONTEUDO_W, 162, d.get("anexo_ativo", []), titulos_colunas=titulos_colunas)
-        y_dir = _coluna_anexo(c, MARGEM, CONTEUDO_W, y_esq + 14, d.get("anexo_passivo", []), titulos_colunas=titulos_colunas)
+        #
+        # FIX_20260929o: paginado (_paginar_anexo_multi) em vez de
+        # _coluna_anexo direto -- a tabela pode precisar de mais de 1
+        # pagina fisica (achado real: 2 empresas x 3 periodos ja estoura),
+        # e desenhar direto perdia silenciosamente as linhas que nao
+        # cabiam (contra a REGRA DE OURO).
+        pagina_final, y_fim = _paginar_anexo_multi(c, dados, pagina, total_paginas, desenhar=True)
+        y_esq = y_dir = y_fim
     else:
+        pagina_final = pagina
         col_w = (CONTEUDO_W - 24) / 2
         x_esq, x_dir = MARGEM, MARGEM + col_w + 24
         y_esq = _coluna_anexo(c, x_esq, col_w, 162, d.get("anexo_ativo", []), titulos_colunas=titulos_colunas)
@@ -1313,7 +1490,8 @@ def pagina_anexo(c, dados, pagina: int, total_paginas: int):
         font="regular", size=tamanho_nota, color=GREY_TEXT, leading=tamanho_nota + 3,
     )
 
-    _footer(c, pagina, total_paginas)
+    _footer(c, pagina_final, total_paginas)
+    return pagina_final
 
 
 # ------------------------------------------------------------------ pagina 9
@@ -1398,13 +1576,23 @@ def gerar_pdf_completo(dados: dict, caminho_saida: str, incluir_pagina_resultado
     propria -- colocar 0 ali seria numero fabricado (nao aconteceu "zero
     imposto", so nao tem linha separada), entao a camada de dados pede
     pra pular a pagina em vez de inventar. Paginas renumeradas
-    automaticamente (total_paginas reflete a contagem real, nao fixo em 9)."""
+    automaticamente (total_paginas reflete a contagem real, nao fixo em 9).
+
+    FIX_20260929o: `total_paginas` agora tambem soma as paginas EXTRAS que
+    o anexo (multi-empresa/multi-periodo) precisar -- calculado ANTES do
+    loop (`paginas_extras_anexo`), porque o rodape de TODA pagina (mesmo
+    as anteriores ao anexo) precisa do total certo desde a 1a. O indice de
+    pagina corrente (`pagina_atual`) avanca conforme cada pagina_fn
+    consome (normalmente 1; pagina_anexo pode consumir mais e devolve
+    a ultima pagina fisica que usou)."""
     _registrar_fontes()
     c = canvas.Canvas(caminho_saida, pagesize=(PAGE_W, PAGE_H))
     paginas = PAGINAS if incluir_pagina_resultado else [p for p in PAGINAS if p is not pagina_resultado]
-    total = len(paginas)
-    for i, pagina_fn in enumerate(paginas, start=1):
-        pagina_fn(c, dados, pagina=i, total_paginas=total)
+    total = len(paginas) + paginas_extras_anexo(dados)
+    pagina_atual = 1
+    for pagina_fn in paginas:
+        resultado = pagina_fn(c, dados, pagina=pagina_atual, total_paginas=total)
+        pagina_atual = (resultado if isinstance(resultado, int) else pagina_atual) + 1
         c.showPage()
     c.save()
     return caminho_saida
