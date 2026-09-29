@@ -332,15 +332,25 @@ def grafico_evolucao(c, x0, x1, y0_top, metricas, periodos_labels, altura_grupo=
         txt(c, x0, y, metrica["label"], font="bold", size=9.5, color=NAVY)
         y += 13
         for i, v in enumerate(vals):
-            # FIX_20260929p (Rafael, pág.3 do Evolução: "esse lilás claro
-            # tá mt ruim" -- o período mais antigo saía em #C9CCEB, que
-            # dá contraste 1.58:1 contra o fundo branco (WCAG AA pede
-            # 4.5:1 pra texto -- essa cor também é usada no VALOR em texto,
-            # não só na barra). #5C62C6 (5.23:1) é o tom mais claro da
-            # escala que ainda passa no mínimo de contraste; a progressão
-            # clara->escura (período antigo->recente) continua a mesma
-            # ideia, só não chega mais perto do branco a ponto de sumir.
-            cor = RED_ACCENT if v < 0 else _interp_cor("#5C62C6", NAVY, i / max(1, n_periodos - 1))
+            # FIX_20260929p+r (Rafael: 1º "esse lilás claro tá mt ruim",
+            # depois "a paleta me incomoda... não tem alguma melhor que
+            # combine com a cara da Enermais?"). O 1º fix (#5C62C6) já
+            # resolvia contraste mas era só um azul-arroxeado genérico,
+            # sem relação com a marca. Esta é uma escala ORDINAL (a cor
+            # marca a ORDEM cronológica do período, não a magnitude -- o
+            # comprimento da barra já é a magnitude), então o padrão certo
+            # (skill de dataviz: "Ordinal -- 1 matiz só, degraus de
+            # luminosidade monótonos") é 1 matiz só do fim claro ao
+            # escuro -- aqui, o próprio NAVY da marca. #2A32AC tem o
+            # MESMO matiz de NAVY (~236°) na mesma saturação (~61%), só
+            # mais claro -- lê como "azul Enermais mais claro", não como
+            # uma cor emprestada de outro lugar (#5C62C6 tinha 48% de
+            # saturação -- por isso parecia lavado/genérico mesmo já
+            # passando no contraste). Validado com o script do skill de
+            # dataviz (--ordinal): luminosidade monótona, degrau visível
+            # entre 2/3/4 períodos, ponta clara 9.51:1 contra o fundo (SLA
+            # de texto pede 4.5:1), matiz único confirmado.
+            cor = RED_ACCENT if v < 0 else _interp_cor("#2A32AC", NAVY, i / max(1, n_periodos - 1))
             txt(c, x0, y + altura_barra - 2, periodos_labels[i], font="regular", size=7.5, color=GREY_TEXT)
             bx0 = x0 + col_label_w
             largura = largura_barra_max * (abs(v) / maior_abs)
