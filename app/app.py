@@ -111,7 +111,20 @@ def pagina_inicio():
     try:
         hist_bp = db.listar_historico_grupo(conn, cod_empresa, "BP", status="ATIVO")
         hist_dre = db.listar_historico_grupo(conn, cod_empresa, "DRE", status="ATIVO")
-        tabela_ind = indicadores.calcular_indicadores(hist_bp, hist_dre)
+        # Fase 4 (30/09/2026, "o match de periodo+granularidade e'
+        # OBRIGATORIO em tudo"): todos os numeros abaixo vem de UMA base
+        # (granularidade) -- default = a do periodo mais recente (a mais
+        # abrangente se houver mais de uma); a contadora pode trocar.
+        bases_emp = indicadores.granularidades_disponiveis(hist_bp, hist_dre)
+        base_emp = indicadores.granularidade_padrao(hist_bp, hist_dre)
+        if bases_emp:
+            base_emp = st.selectbox(
+                "Base do período", bases_emp, index=bases_emp.index(base_emp),
+                format_func=indicadores.rotulo_granularidade, key=f"inicio_base_sel_{cod_empresa}",
+                help="Abrangência do documento usado nos indicadores (ex. trimestral x semestral fechando na mesma data). "
+                     "Cada número vem de um único documento -- nunca mistura bases.",
+            )
+        tabela_ind = indicadores.calcular_indicadores(hist_bp, hist_dre, granularidade=base_emp)
     except Exception as exc:
         st.warning(f"Não foi possível calcular os indicadores: {exc}")
         _registrar_evento_seguro(conn, "inicio", "ERRO", "Falha ao calcular indicadores",
@@ -146,8 +159,8 @@ def pagina_inicio():
             delta_txt = formatacao.moeda_br(delta, forcar_sinal=True) if delta is not None else None
         return texto, delta_txt
 
-    st.caption(f"Período de referência: {periodo_ind.strftime('%m/%Y')}"
-               + (f" · comparado a {periodo_ind_anterior.strftime('%m/%Y')}" if periodo_ind_anterior is not None else " · sem período anterior pra comparar ainda"))
+    st.caption(f"Período de referência: {periodo_ind.strftime('%m/%Y')} · Base: {indicadores.rotulo_granularidade(base_emp)}"
+               + (f" · comparado a {periodo_ind_anterior.strftime('%m/%Y')} (mesma base)" if periodo_ind_anterior is not None else " · sem período anterior pra comparar ainda (nessa base)"))
 
     # Redesenho 24/09/2026 (esboço aprovado pelo Rafael): os 9 indicadores
     # agora vem agrupados por tema em vez de 3 filas soltas -- mais facil
@@ -232,7 +245,20 @@ def pagina_inicio():
         periodos_grupo = db.listar_periodos_grupo(conn, cods_todos, status="ATIVO")
         lancs_bp_grupo = db.listar_lancamentos_grupo_periodos(conn, periodos_grupo, "BP", cods_todos, status="ATIVO")
         lancs_dre_grupo = db.listar_lancamentos_grupo_periodos(conn, periodos_grupo, "DRE", cods_todos, status="ATIVO")
-        tabela_ind_grupo = indicadores.calcular_indicadores(lancs_bp_grupo, lancs_dre_grupo)
+        # Fase 4 (30/09/2026): base (granularidade) explicita tambem no
+        # consolidado. Default = base do periodo mais recente em que TODAS
+        # as 6 empresas tem dado (senao cairia, p.ex., num semestral que so'
+        # a Energia tem e o "consolidado das 6" seria so' a Energia).
+        bases_grupo = indicadores.granularidades_disponiveis(lancs_bp_grupo, lancs_dre_grupo)
+        base_grupo = indicadores.granularidade_padrao(lancs_bp_grupo, lancs_dre_grupo, cods_todos)
+        if bases_grupo:
+            base_grupo = st.selectbox(
+                "Base do período (consolidado)", bases_grupo, index=bases_grupo.index(base_grupo),
+                format_func=indicadores.rotulo_granularidade, key="inicio_base_grupo_sel",
+                help="Abrangência do documento usado no consolidado. Cada número vem de um único "
+                     "documento por empresa -- nunca mistura bases.",
+            )
+        tabela_ind_grupo = indicadores.calcular_indicadores(lancs_bp_grupo, lancs_dre_grupo, granularidade=base_grupo)
     except Exception as exc:
         st.warning(f"Não foi possível calcular os indicadores do grupo: {exc}")
         _registrar_evento_seguro(conn, "inicio", "ERRO", "Falha ao calcular indicadores do grupo",
@@ -263,9 +289,21 @@ def pagina_inicio():
 
         st.caption(
             f"Consolidado das 6 empresas · Período de referência: {periodo_grupo.strftime('%m/%Y')}"
-            + (f" · comparado a {periodo_grupo_anterior.strftime('%m/%Y')}" if periodo_grupo_anterior is not None
-               else " · sem período anterior pra comparar ainda")
+            f" · Base: {indicadores.rotulo_granularidade(base_grupo)}"
+            + (f" · comparado a {periodo_grupo_anterior.strftime('%m/%Y')} (mesma base)" if periodo_grupo_anterior is not None
+               else " · sem período anterior pra comparar ainda (nessa base)")
         )
+        _cod_nome = {cod: nome for cod, nome, _cnpj in EMPRESAS_FIXAS}
+        faltando_grupo = indicadores.empresas_faltando(
+            lancs_bp_grupo, lancs_dre_grupo, cods_todos, periodo_grupo.date(), base_grupo,
+        )
+        if faltando_grupo:
+            st.warning(
+                f"Consolidado parcial: nessa base ({indicadores.rotulo_granularidade(base_grupo)}) "
+                f"{periodo_grupo.strftime('%m/%Y')} não tem dado de "
+                + ", ".join(_cod_nome.get(c, c) for c in faltando_grupo)
+                + " — os números somam só as empresas que têm esse documento."
+            )
 
         st.caption(
             "🏢 " + " · ".join(nome for _cod, nome, _cnpj in EMPRESAS_FIXAS)

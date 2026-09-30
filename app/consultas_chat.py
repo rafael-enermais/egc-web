@@ -137,7 +137,7 @@ def consultar_bp_dre(
     granularidade (Fase 3.1, 29/09/2026): opcional -- so' precisa vir
     quando o periodo escolhido tiver mais de 1 documento ativo (ver
     "ambiguo" no retorno de erro); nesse caso o modelo deve perguntar ao
-    usuario qual granularidade (mensal/trimestral/semestral/anual) e
+    usuario qual granularidade (mensal/bimestral/trimestral/semestral/anual) e
     chamar de novo, em vez de adivinhar qual dos 2 documentos usar.
     """
     periodos_disponiveis = db.listar_periodos_detalhado(conn, empresa_codigo, status="ATIVO")
@@ -149,7 +149,7 @@ def consultar_bp_dre(
             "erro": (
                 f"Esse período tem mais de 1 documento ativo pra {empresa_codigo} (abrangências "
                 "diferentes fechando na mesma data) -- pergunte ao usuário qual granularidade "
-                "(mensal/trimestral/semestral/anual) e chame de novo com esse valor no parâmetro 'granularidade'."
+                "(mensal/bimestral/trimestral/semestral/anual) e chame de novo com esse valor no parâmetro 'granularidade'."
             ),
             **ambiguidade,
         }
@@ -174,10 +174,10 @@ def consultar_bp_dre(
     }
 
 
-def consultar_indicadores(conn, empresas_codigos: list[str]) -> dict:
+def consultar_indicadores(conn, empresas_codigos: list[str], granularidade: Optional[str] = None) -> dict:
     """
     Indicadores contabeis (Liquidez Corrente, Capital de Giro, Endividamento
-    Geral, Margem Bruta/Liquida, ROA, ROE) no periodo mais recente
+    Geral, Margem Bruta/Liquida, ROA, ROE, EBITDA) no periodo mais recente
     disponivel -- 1 empresa isolada OU consolidado do grupo (soma das
     empresas em empresas_codigos), dependendo de quantas vierem na lista.
     Erik.AI, 23/09/2026 -- fecha o gap real que apareceu ao vivo (Rafael
@@ -191,17 +191,42 @@ def consultar_indicadores(conn, empresas_codigos: list[str]) -> dict:
     o MESMO caminho do "KPI consolidado do grupo" da Inicio -- soma direta
     sem eliminacao, intercompany ja validado sem transacao material entre
     as 6 empresas (decisao tomada com o Rafael, nao reaberta aqui).
+
+    granularidade (Fase 4, 30/09/2026 -- "o match de periodo+granularidade
+    e' OBRIGATORIO em tudo"): todos os numeros vem de UMA granularidade
+    (nunca mistura trimestral com semestral). Sem o parametro, usa a base
+    padrao (periodo mais recente; se houver mais de uma, a mais
+    abrangente; no grupo, so' considera bases em que TODAS as empresas
+    tem dado). A resposta sempre informa a granularidade usada
+    ("base_do_periodo") e as outras disponiveis.
     """
     if len(empresas_codigos) == 1:
         cod = empresas_codigos[0]
         hist_bp = db.listar_historico_grupo(conn, cod, "BP", status="ATIVO")
         hist_dre = db.listar_historico_grupo(conn, cod, "DRE", status="ATIVO")
+        exigidas = None
     else:
         periodos = db.listar_periodos_grupo(conn, empresas_codigos, status="ATIVO")
         hist_bp = db.listar_lancamentos_grupo_periodos(conn, periodos, "BP", empresas_codigos, status="ATIVO")
         hist_dre = db.listar_lancamentos_grupo_periodos(conn, periodos, "DRE", empresas_codigos, status="ATIVO")
+        exigidas = list(empresas_codigos)
 
-    tabela = indicadores.calcular_indicadores(hist_bp, hist_dre)
+    disponiveis = indicadores.granularidades_disponiveis(hist_bp, hist_dre)
+    if granularidade:
+        if granularidade not in disponiveis:
+            return {
+                "erro": (
+                    f"Nao ha BP/DRE com granularidade '{granularidade}' pra essa(s) empresa(s). "
+                    "Escolha uma das disponiveis (ou omita o parametro pra usar a padrao)."
+                ),
+                "granularidades_disponiveis": [indicadores.rotulo_granularidade(g) for g in disponiveis],
+                "empresas_incluidas": empresas_codigos,
+            }
+        g_usada = granularidade
+    else:
+        g_usada = indicadores.granularidade_padrao(hist_bp, hist_dre, exigidas)
+
+    tabela = indicadores.calcular_indicadores(hist_bp, hist_dre, granularidade=g_usada)
     if tabela.empty:
         return {
             "erro": "Sem BP/DRE suficiente pra calcular indicadores pra essa(s) empresa(s) ainda.",
@@ -212,11 +237,22 @@ def consultar_indicadores(conn, empresas_codigos: list[str]) -> dict:
     linha = tabela.loc[periodo_atual]
     valores = {col: (None if pd.isna(v) else float(v)) for col, v in linha.items()}
 
-    return {
+    saida = {
         "empresas_incluidas": empresas_codigos,
         "periodo": periodo_atual.strftime("%Y-%m"),
+        "granularidade": g_usada or None,
+        "base_do_periodo": indicadores.rotulo_granularidade(g_usada),
+        "granularidades_disponiveis": [indicadores.rotulo_granularidade(g) for g in disponiveis],
         "indicadores": valores,
     }
+    if exigidas:
+        faltando = indicadores.empresas_faltando(hist_bp, hist_dre, exigidas, periodo_atual.date(), g_usada)
+        if faltando:
+            saida["aviso_consolidado_parcial"] = (
+                f"Nessa base ({saida['base_do_periodo']}) falta dado de {', '.join(faltando)} no periodo; "
+                "o consolidado soma so' as empresas que tem."
+            )
+    return saida
 
 
 def consultar_completude(conn, empresas_codigos: list[str]) -> dict:
@@ -339,7 +375,7 @@ def consultar_visao_grupo(
             "erro": (
                 "Esse período tem mais de 1 documento ativo no grupo selecionado (abrangências "
                 "diferentes fechando na mesma data) -- pergunte ao usuário qual granularidade "
-                "(mensal/trimestral/semestral/anual) e chame de novo com esse valor no parâmetro 'granularidade'."
+                "(mensal/bimestral/trimestral/semestral/anual) e chame de novo com esse valor no parâmetro 'granularidade'."
             ),
             **ambiguidade,
         }

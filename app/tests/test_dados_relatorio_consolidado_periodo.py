@@ -98,7 +98,7 @@ def _patches(codigos_com_periodo=("ENERGIA", "SMG")):
         return [{"periodo": PERIODO, "grupo": x["grupo"], "conta": x["conta"], "valor": x["valor"]}
                 for x in fonte if x["empresa_codigo"] == cod]
 
-    def _listar_despesas_admin_itens(conn, cod, periodo):
+    def _listar_despesas_admin_itens(conn, cod, periodo, granularidade=None):
         return ITENS_ADMIN_ENERGIA if cod == "ENERGIA" else ITENS_ADMIN_SMG
 
     indic_vazio = pd.DataFrame()

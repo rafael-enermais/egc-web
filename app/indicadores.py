@@ -56,6 +56,8 @@ Amortizacoes do periodo, que faltava ate 23/09/2026):
 """
 from __future__ import annotations
 
+from typing import Optional
+
 import pandas as pd
 
 CONTAS_BP = [
@@ -95,12 +97,39 @@ COLUNAS_INDICADORES = [
 # ATIVOS ao mesmo tempo pro MESMO periodo_fim (ex. trimestral e semestral
 # fechando 30/06/2026 -- ver db.inativar_periodo_existente). Sem
 # resolucao, o groupby(periodo, conta) de _pivot somava os 2 no mesmo
-# ponto da serie -- indicador errado, sem aviso (limitacao documentada
-# ate' aqui em db.listar_historico_grupo). Desempate: documento mais
-# abrangente/oficial vence (fechamento anual/semestral e' o "definitivo",
-# trimestral e' interino) -- anual > semestral > trimestral > mensal >
-# outra > "" (nao declarada).
-_PRIORIDADE_GRANULARIDADE = {"anual": 4, "semestral": 3, "trimestral": 2, "mensal": 1, "outra": 0, "": -1}
+# ponto da serie -- indicador errado, sem aviso.
+#
+# Fase 4 (30/09/2026, bug real confirmado pelo Rafael -- "o match de
+# periodo+granularidade e' OBRIGATORIO em tudo"): a "vencedora" por
+# periodo_fim (abaixo) IGNORAVA a granularidade que o usuario escolheu
+# pro relatorio -- um relatorio TRIMESTRAL de 06/2026 da Energia mostrava
+# receita do trimestral mas EBITDA/margens do SEMESTRAL. Agora
+# calcular_indicadores(granularidade=...) filtra EXATAMENTE a
+# granularidade pedida (sem vencedora). A vencedora so' continua valendo
+# pra chamador legado que NAO informa granularidade (None).
+#
+# Desempate da "vencedora" (so' modo legado / escolha do DEFAULT de
+# dashboard): documento mais abrangente/oficial vence -- anual >
+# semestral > trimestral > bimestral > mensal > outra > "" (nao
+# declarada).
+_PRIORIDADE_GRANULARIDADE = {
+    "anual": 5, "semestral": 4, "trimestral": 3, "bimestral": 2, "mensal": 1, "outra": 0, "": -1,
+}
+
+NOME_GRANULARIDADE = {
+    "mensal": "Mensal", "bimestral": "Bimestral", "trimestral": "Trimestral",
+    "semestral": "Semestral", "anual": "Anual", "outra": "Outro intervalo", "": "Não declarada",
+}
+
+
+def rotulo_granularidade(g) -> str:
+    """Nome legivel da granularidade ('' -> 'Não declarada')."""
+    g = g or ""
+    return NOME_GRANULARIDADE.get(g, g)
+
+
+def _g(l: dict) -> str:
+    return l.get("granularidade") or ""
 
 
 def _filtrar_granularidade_vencedora(lancamentos: list[dict]) -> list[dict]:
@@ -108,18 +137,78 @@ def _filtrar_granularidade_vencedora(lancamentos: list[dict]) -> list[dict]:
     Mantem so' as linhas da granularidade vencedora de cada periodo_fim
     (ver criterio acima). Sem coluna 'granularidade' no dado (chamador
     antigo / mock de teste sem essa coluna) -- no-op, comportamento de
-    sempre intacto.
+    sempre intacto. MODO LEGADO: so' usado quando calcular_indicadores
+    e' chamado sem granularidade explicita.
     """
     if not lancamentos or "granularidade" not in lancamentos[0]:
         return lancamentos
     vencedora_por_periodo: dict = {}
     for l in lancamentos:
         p = l["periodo"]
-        g = l.get("granularidade") or ""
+        g = _g(l)
         atual = vencedora_por_periodo.get(p)
         if atual is None or _PRIORIDADE_GRANULARIDADE.get(g, -1) > _PRIORIDADE_GRANULARIDADE.get(atual, -1):
             vencedora_por_periodo[p] = g
-    return [l for l in lancamentos if (l.get("granularidade") or "") == vencedora_por_periodo.get(l["periodo"])]
+    return [l for l in lancamentos if _g(l) == vencedora_por_periodo.get(l["periodo"])]
+
+
+def filtrar_granularidade_exata(lancamentos: list[dict], granularidade: str) -> list[dict]:
+    """
+    Mantem SO' as linhas cuja granularidade e' exatamente `granularidade`
+    ('' = nao declarada). Linha sem a chave 'granularidade' (mock antigo)
+    conta como ''. Nunca escolhe "vencedora": e' o match obrigatorio de
+    (periodo, granularidade).
+    """
+    granularidade = granularidade or ""
+    return [l for l in lancamentos if _g(l) == granularidade]
+
+
+def granularidades_disponiveis(*listas_lancamentos: list[dict]) -> list[str]:
+    """Granularidades que existem de fato nas listas (BP e/ou DRE),
+    da mais abrangente pra menos (anual ... mensal, outra, nao declarada)."""
+    achadas = {_g(l) for lista in listas_lancamentos for l in (lista or [])}
+    return sorted(achadas, key=lambda g: _PRIORIDADE_GRANULARIDADE.get(g, -1), reverse=True)
+
+
+def granularidade_padrao(lancs_bp: list[dict], lancs_dre: list[dict], empresas: Optional[list] = None) -> str:
+    """
+    Base de periodo (granularidade) padrao pra um dashboard: a do
+    periodo_fim MAIS RECENTE (se esse periodo_fim tem mais de uma, a mais
+    abrangente). Com `empresas` (consolidado de grupo), so' considera
+    (periodo, granularidade) em que TODAS as empresas tem dado -- senao o
+    default cairia num documento que so' 1 empresa tem (ex. semestral
+    so' da Energia) e o "consolidado das 6" seria enganoso; se nenhum
+    par for completo, cai no mais recente/abrangente mesmo assim. Sem
+    dado nenhum devolve ''.
+    """
+    pares: dict = {}  # (periodo, g) -> set(empresas com linha)
+    for l in list(lancs_bp or []) + list(lancs_dre or []):
+        pares.setdefault((l["periodo"], _g(l)), set()).add(l.get("empresa_codigo"))
+    if not pares:
+        return ""
+    ordem = sorted(
+        pares,
+        key=lambda pg: (pg[0], _PRIORIDADE_GRANULARIDADE.get(pg[1], -1)),
+        reverse=True,
+    )
+    if empresas:
+        exigidas = set(empresas)
+        for pg in ordem:
+            if exigidas <= pares[pg]:
+                return pg[1]
+    return ordem[0][1]
+
+
+def empresas_faltando(lancs_bp: list[dict], lancs_dre: list[dict], empresas: list, periodo, granularidade: str) -> list:
+    """Codigos de `empresas` SEM nenhuma linha (BP ou DRE) em
+    (periodo, granularidade) -- pra avisar consolidado parcial."""
+    granularidade = granularidade or ""
+    presentes = {
+        l.get("empresa_codigo")
+        for l in list(lancs_bp or []) + list(lancs_dre or [])
+        if l["periodo"] == periodo and _g(l) == granularidade
+    }
+    return [e for e in empresas if e not in presentes]
 
 
 def _pivot(lancamentos: list[dict], contas: list[str]) -> pd.DataFrame:
@@ -136,8 +225,16 @@ def _pivot(lancamentos: list[dict], contas: list[str]) -> pd.DataFrame:
     return pivot.reindex(columns=contas)
 
 
-def calcular_indicadores(lancamentos_bp: list[dict], lancamentos_dre: list[dict]) -> pd.DataFrame:
+def calcular_indicadores(
+    lancamentos_bp: list[dict], lancamentos_dre: list[dict], granularidade: Optional[str] = None,
+) -> pd.DataFrame:
     """
+    granularidade (Fase 4, 30/09/2026): quando informada (inclusive ""
+    = nao declarada), usa EXATAMENTE as linhas dessa granularidade --
+    sem "vencedora", sem misturar. None = comportamento legado
+    (vencedora por periodo_fim), so' pra chamador que ainda nao sabe
+    qual granularidade quer.
+
     lancamentos_bp/lancamentos_dre: saida de db.listar_historico_grupo
     (1 empresa, 1 tipo, todos os periodos ATIVO) -- lista de dicts com
     periodo/grupo/conta/valor.
@@ -148,8 +245,12 @@ def calcular_indicadores(lancamentos_bp: list[dict], lancamentos_dre: list[dict]
     colunas = COLUNAS_INDICADORES. Vazio se nao tiver periodo nenhum em
     BP nem DRE.
     """
-    lancamentos_bp = _filtrar_granularidade_vencedora(lancamentos_bp)
-    lancamentos_dre = _filtrar_granularidade_vencedora(lancamentos_dre)
+    if granularidade is None:
+        lancamentos_bp = _filtrar_granularidade_vencedora(lancamentos_bp)
+        lancamentos_dre = _filtrar_granularidade_vencedora(lancamentos_dre)
+    else:
+        lancamentos_bp = filtrar_granularidade_exata(lancamentos_bp, granularidade)
+        lancamentos_dre = filtrar_granularidade_exata(lancamentos_dre, granularidade)
     bp = _pivot(lancamentos_bp, CONTAS_BP)
     dre = _pivot(lancamentos_dre, CONTAS_DRE)
 

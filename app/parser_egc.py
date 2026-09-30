@@ -981,7 +981,7 @@ def parse_duplo(pdf_path: Path, tipo: str, origem: str) -> list:
 def calcular_granularidade(periodo_inicio: str, periodo_fim: str) -> str:
     """
     Classifica o INTERVALO REAL declarado no proprio PDF ("Periodo: X a
-    Y") em mensal/trimestral/semestral/anual -- nunca por calculo/delta
+    Y") em mensal/bimestral/trimestral/semestral/anual -- nunca por calculo/delta
     entre 2 fechamentos diferentes (isso e' estimativa, nao dado real;
     decisao do Rafael 24/09/2026: "sempre com valores reais e corretos").
     String vazia (sem intervalo declarado no PDF, so' 1 data) devolve ""
@@ -999,6 +999,10 @@ def calcular_granularidade(periodo_inicio: str, periodo_fim: str) -> str:
         return ""
     if dias <= 32:
         return "mensal"
+    # bimestral (30/09/2026): 2 meses = 59 a 62 dias; faixa 33-62 (antes
+    # caia em "trimestral"). 63-95 continua trimestral.
+    if dias <= 62:
+        return "bimestral"
     if dias <= 95:
         return "trimestral"
     if dias <= 185:

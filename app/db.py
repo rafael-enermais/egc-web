@@ -225,6 +225,7 @@ def salvar_despesas_admin_itens(
     periodo: date,
     itens: list,
     arquivo_pdf: Optional[str] = None,
+    granularidade: Optional[str] = None,
 ) -> int:
     """
     FIX_20260925b — grava os itens (sub-contas) do grupo "Administrativas"
@@ -234,7 +235,7 @@ def salvar_despesas_admin_itens(
     Tabela DERIVADA/isolada (egc.despesas_admin_itens) sem trilha de
     auditoria — nao passa por Correcao Manual nem Arquivar/Recuperar, nao
     e' lida por indicadores.py/visao_grupo.py. Substitui (delete+insert)
-    os itens do periodo: reimportar o mesmo periodo troca os antigos
+    os itens do documento: reimportar o mesmo periodo troca os antigos
     pelos novos, sem historico (se precisar corrigir, reimporta o PDF).
 
     `itens` no formato de extrair_despesas_admin_itens: [(conta, valor), ...].
@@ -242,42 +243,98 @@ def salvar_despesas_admin_itens(
     (migracao do bloco 12 do schema.sql ainda nao rodou) -- mesmo padrao
     de fallback ja usado em inserir_lancamentos p/ nao travar o resto da
     importacao por causa de uma tabela nova que so' esta Fase 2 usa.
+
+    granularidade (Fase 4, 30/09/2026, bloco 18 do schema.sql): o
+    documento e' identificado por (empresa, periodo_fim, granularidade) --
+    antes, reimportar o SEMESTRAL de 06/2026 apagava os itens do
+    TRIMESTRAL de 06/2026 (delete por empresa+periodo) e o ranking do
+    relatorio trimestral mostrava itens do semestral. Com granularidade
+    informada (inclusive ""), so' troca os itens dessa granularidade. None
+    (chamador legado) mantem o comportamento antigo (empresa+periodo).
+    Se a coluna `granularidade` ainda nao existe (bloco 18 nao rodou),
+    cai no comportamento antigo sem quebrar.
     """
+    def _legado(cur):
+        cur.execute(
+            "DELETE FROM egc.despesas_admin_itens WHERE empresa_codigo = %s AND periodo = %s",
+            (empresa_codigo, periodo),
+        )
+        if itens:
+            cur.executemany(
+                """
+                INSERT INTO egc.despesas_admin_itens
+                    (empresa_codigo, periodo, ordem, conta, valor, arquivo_pdf)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                [(empresa_codigo, periodo, i, conta, valor, arquivo_pdf) for i, (conta, valor) in enumerate(itens)],
+            )
+
     with conn.cursor() as cur:
         try:
-            cur.execute(
-                "DELETE FROM egc.despesas_admin_itens WHERE empresa_codigo = %s AND periodo = %s",
-                (empresa_codigo, periodo),
-            )
-            if itens:
-                registros = [
-                    (empresa_codigo, periodo, i, conta, valor, arquivo_pdf)
-                    for i, (conta, valor) in enumerate(itens)
-                ]
-                cur.executemany(
-                    """
-                    INSERT INTO egc.despesas_admin_itens
-                        (empresa_codigo, periodo, ordem, conta, valor, arquivo_pdf)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    """,
-                    registros,
-                )
+            if granularidade is None:
+                _legado(cur)
+            else:
+                try:
+                    cur.execute(
+                        """
+                        DELETE FROM egc.despesas_admin_itens
+                        WHERE empresa_codigo = %s AND periodo = %s AND COALESCE(granularidade, '') = %s
+                        """,
+                        (empresa_codigo, periodo, granularidade),
+                    )
+                    if itens:
+                        cur.executemany(
+                            """
+                            INSERT INTO egc.despesas_admin_itens
+                                (empresa_codigo, periodo, ordem, conta, valor, arquivo_pdf, granularidade)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            [
+                                (empresa_codigo, periodo, i, conta, valor, arquivo_pdf, granularidade)
+                                for i, (conta, valor) in enumerate(itens)
+                            ],
+                        )
+                except psycopg2.errors.UndefinedColumn:
+                    conn.rollback()
+                    with conn.cursor() as cur2:
+                        _legado(cur2)
         except psycopg2.errors.UndefinedTable:
             conn.rollback()
             return 0
         return len(itens)
 
 
-def listar_despesas_admin_itens(conn, empresa_codigo: str, periodo: date) -> list:
+def listar_despesas_admin_itens(
+    conn, empresa_codigo: str, periodo: date, granularidade: Optional[str] = None,
+) -> list:
     """
     Retorna [(conta, valor_float), ...] na ordem original do PDF. Lista
     vazia (nunca erro) se a tabela nao existir ainda ou se o periodo nao
     tiver itens gravados (ex.: DRE importada antes desta Fase 2, ou
     periodo que nao tem grupo Administrativas) -- o gerador de relatorio
     ja trata despesas_admin_itens=[] de forma segura (degrada sem quebrar).
+
+    granularidade (Fase 4, 30/09/2026, bloco 18): filtro por documento
+    (inclusive "" = nao declarada); None nao filtra (legado). Se a coluna
+    ainda nao existe no banco, devolve os itens de empresa+periodo como
+    antes -- quem consome (dados_relatorio_comentado) valida a soma contra
+    o total ADMINISTRATIVAS do DRE antes de usar.
     """
     with conn.cursor() as cur:
         try:
+            if granularidade is not None:
+                try:
+                    cur.execute(
+                        """
+                        SELECT conta, valor FROM egc.despesas_admin_itens
+                        WHERE empresa_codigo = %s AND periodo = %s AND COALESCE(granularidade, '') = %s
+                        ORDER BY ordem
+                        """,
+                        (empresa_codigo, periodo, granularidade),
+                    )
+                    return [(row[0], float(row[1])) for row in cur.fetchall()]
+                except psycopg2.errors.UndefinedColumn:
+                    conn.rollback()
             cur.execute(
                 """
                 SELECT conta, valor FROM egc.despesas_admin_itens

@@ -22,6 +22,8 @@ batem exatamente entre empresas quando compartilhados, sem colisao.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 import pandas as pd
 
 COD_ENERGIA = "ENERGIA"
@@ -41,8 +43,9 @@ CONTAS_KPI_DRE = ["RECEITA OPERACIONAL LIQUIDA", "LUCRO BRUTO", "LUCRO LIQUIDO D
 # Fase 3.1 (29/09/2026) -- mesmo criterio de desempate de
 # indicadores._PRIORIDADE_GRANULARIDADE (documento mais abrangente/oficial
 # vence quando 2 granularidades estao ATIVAS no mesmo periodo_fim):
-# anual > semestral > trimestral > mensal > outra > "" (nao declarada).
-_PRIORIDADE_GRANULARIDADE = {"anual": 4, "semestral": 3, "trimestral": 2, "mensal": 1, "outra": 0, "": -1}
+# anual > semestral > trimestral > bimestral > mensal > outra > "" (nao
+# declarada). Fonte unica em indicadores.py (Fase 4, 30/09/2026).
+from indicadores import _PRIORIDADE_GRANULARIDADE  # noqa: E402
 
 
 def _filtrar_granularidade_vencedora(df: pd.DataFrame) -> pd.DataFrame:
@@ -239,8 +242,14 @@ def calcular_completude_grupo(
 
 def montar_serie_kpis_grupo(
     lancamentos_multi: list[dict], cods_selecionados: list[str], contas_kpi: list[str], periodos: list,
+    granularidade: Optional[str] = None,
 ) -> pd.DataFrame:
     """
+    granularidade (Fase 4, 30/09/2026): quando informada (inclusive ""),
+    usa EXATAMENTE essa granularidade em todos os periodos (match
+    obrigatorio de periodo+granularidade, sem "vencedora"); None mantem
+    o desempate legado (documento mais abrangente por periodo_fim).
+
     Serie temporal das contas-chave (CONTAS_KPI_BP ou CONTAS_KPI_DRE) somadas
     entre as empresas selecionadas, 1 linha por periodo -- usada no "Resumo
     do grupo" da Visao Grupo "Completo" (KPIs + grafico de evolucao).
@@ -267,7 +276,13 @@ def montar_serie_kpis_grupo(
         df = pd.DataFrame(lancamentos_multi)
         df["valor"] = df["valor"].astype(float)  # Decimal do psycopg2 -- mesma regra de sempre
         df = df[df["empresa_codigo"].isin(cods_selecionados) & df["conta"].isin(contas_kpi)]
-        df = _filtrar_granularidade_vencedora(df)
+        if granularidade is None:
+            df = _filtrar_granularidade_vencedora(df)
+        elif not df.empty:
+            if "granularidade" in df.columns:
+                df = df[df["granularidade"].fillna("") == (granularidade or "")]
+            elif granularidade:  # dado sem a coluna conta como "" -- nao casa com uma granularidade declarada
+                df = df.iloc[0:0]
         agrupado = df.groupby(["periodo", "conta"])["valor"].sum().unstack("conta") if not df.empty else pd.DataFrame()
     else:
         agrupado = pd.DataFrame()

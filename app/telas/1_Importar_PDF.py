@@ -68,7 +68,7 @@ COLUNAS_DRE = ["Conta", "Valor", "Grupo", "Origem"]
 # rotulo usado em 2_Revisao_Correcao.py/3_Arquivar_Recuperar.py/
 # 4_Visao_Grupo.py/8_Relatorio_Comentado.py pra consistencia visual).
 _OPCOES_GRANULARIDADE = {
-    "": "Não declarada", "mensal": "Mensal", "trimestral": "Trimestral",
+    "": "Não declarada", "mensal": "Mensal", "bimestral": "Bimestral", "trimestral": "Trimestral",
     "semestral": "Semestral", "anual": "Anual", "outra": "Outro intervalo",
 }
 
@@ -501,8 +501,12 @@ if resultados:
                                 # derrubar a gravacao do DRE em si -- e' so'
                                 # o ranking auxiliar do relatorio comentado.
                                 try:
+                                    # Fase 4 (30/09/2026): itens ficam amarrados ao
+                                    # documento (periodo + granularidade) -- um
+                                    # semestral nao apaga mais o ranking do trimestral.
                                     db.salvar_despesas_admin_itens(
-                                        conn, cod_g, periodo_date, r["admin_itens"], r["arquivo"]
+                                        conn, cod_g, periodo_date, r["admin_itens"], r["arquivo"],
+                                        granularidade=granularidade_val,
                                     )
                                 except Exception:
                                     pass

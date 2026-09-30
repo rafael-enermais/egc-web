@@ -744,3 +744,33 @@ CREATE INDEX idx_lancamentos_busca
 -- fase (db.py/telas atualizados assumem que a coluna granularidade
 -- existe, NOT NULL, sem fallback UndefinedColumn novo -- so' o antigo
 -- de inserir_lancamentos continua como rede de seguranca residual).
+
+-- =====================================================================
+-- BLOCO 18 — Granularidade na tabela de itens de despesas administrativas
+--
+--   Bug real (30/09/2026, "o match de periodo+granularidade e' OBRIGATORIO
+--   em tudo"): egc.despesas_admin_itens era identificada so' por
+--   (empresa_codigo, periodo). Com trimestral e semestral ATIVOS pro mesmo
+--   periodo_fim (bloco 17), reimportar um apagava/substituia os itens do
+--   outro e o ranking de despesas do relatorio podia vir de OUTRO
+--   documento. Agora o documento = (empresa_codigo, periodo, granularidade).
+--
+--   Linhas ja gravadas ficam com granularidade '' (nao declarada). O
+--   codigo as usa como fallback SO' se a soma dos itens bater com o total
+--   ADMINISTRATIVAS do DRE do documento do relatorio; senao o ranking e'
+--   omitido com aviso ate o DRE daquela granularidade ser reimportado.
+--   O codigo novo funciona mesmo ANTES deste bloco rodar (cai no
+--   comportamento antigo) -- mas so' fica correto depois dele.
+-- =====================================================================
+
+ALTER TABLE egc.despesas_admin_itens
+  ADD COLUMN IF NOT EXISTS granularidade text NOT NULL DEFAULT '';
+
+DROP INDEX IF EXISTS egc.idx_despesas_admin_itens_busca;
+CREATE INDEX IF NOT EXISTS idx_despesas_admin_itens_busca
+  ON egc.despesas_admin_itens (empresa_codigo, periodo, granularidade);
+
+-- Fim do bloco 18. Rodar so' este bloco no SQL Editor do Supabase
+-- (projeto radar-comercial) -- nao precisa rodar o arquivo inteiro de novo.
+-- Bimestral (mesmo pacote): NAO precisa de migracao -- granularidade e'
+-- text livre, sem CHECK constraint em egc.lancamentos.

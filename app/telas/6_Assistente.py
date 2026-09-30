@@ -225,7 +225,12 @@ with col_dash:
                     "Margem Bruta": "pct", "Margem Líquida": "pct", "ROA": "pct", "ROE": "pct",
                     "EBITDA": "R$", "Margem EBITDA": "pct",
                 }
-                st.caption(f"Período: {resultado['periodo']} · Empresas: {', '.join(resultado['empresas_incluidas'])}")
+                st.caption(
+                    f"Período: {resultado['periodo']} · Base do período: {resultado.get('base_do_periodo', '—')} · "
+                    f"Empresas: {', '.join(resultado['empresas_incluidas'])}"
+                )
+                if resultado.get("aviso_consolidado_parcial"):
+                    st.warning(resultado["aviso_consolidado_parcial"])
                 linhas_ind = []
                 for nome_ind, valor in resultado["indicadores"].items():
                     fmt = FORMATO_INDICADOR.get(nome_ind, "R$")

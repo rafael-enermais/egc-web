@@ -80,7 +80,7 @@ TOOLS = [
                 "periodo": {"type": "string", "description": "Periodo no formato 'AAAA-MM' (ex. '2026-06') -- opcional, sem isso usa o mais recente."},
                 "granularidade": {
                     "type": "string",
-                    "enum": ["mensal", "trimestral", "semestral", "anual", "outra"],
+                    "enum": ["mensal", "bimestral", "trimestral", "semestral", "anual", "outra"],
                     "description": (
                         "So' preencha quando uma chamada anterior devolver 'ambiguo': true "
                         "(esse periodo tem mais de 1 documento ativo, ex. trimestral e semestral "
@@ -114,7 +114,7 @@ TOOLS = [
                 "visao": {"type": "string", "enum": ["macro", "especifica"], "description": "macro (padrao) ou especifica."},
                 "granularidade": {
                     "type": "string",
-                    "enum": ["mensal", "trimestral", "semestral", "anual", "outra"],
+                    "enum": ["mensal", "bimestral", "trimestral", "semestral", "anual", "outra"],
                     "description": (
                         "So' preencha quando uma chamada anterior devolver 'ambiguo': true "
                         "(esse periodo tem mais de 1 documento ativo pra alguma empresa do "
@@ -137,7 +137,10 @@ TOOLS = [
             "grupo (soma antes de calcular os indices). Use pra perguntas tipo "
             "'como esta a liquidez da SMG', 'a margem do grupo melhorou ou piorou', "
             "'qual o endividamento geral' -- nao serve pra pegar 1 conta especifica "
-            "(pra isso, consultar_bp_dre)."
+            "(pra isso, consultar_bp_dre). Todos os numeros vem de UMA granularidade "
+            "(nunca mistura trimestral com semestral): a resposta traz 'base_do_periodo' "
+            "(a usada) e 'granularidades_disponiveis' -- SEMPRE diga ao usuario qual base "
+            "foi usada e, se houver outras, ofereca trocar."
         ),
         "input_schema": {
             "type": "object",
@@ -146,6 +149,15 @@ TOOLS = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Codigos das empresas -- vazio/omitido ou 2+ calcula consolidado do grupo; 1 codigo calcula so' dessa empresa.",
+                },
+                "granularidade": {
+                    "type": "string",
+                    "enum": ["mensal", "bimestral", "trimestral", "semestral", "anual", "outra"],
+                    "description": (
+                        "Base do periodo (abrangencia do documento). Omita pra usar a padrao "
+                        "(periodo mais recente; a mais abrangente se houver mais de uma). "
+                        "Preencha quando o usuario pedir uma base especifica, ex. 'so' o trimestral'."
+                    ),
                 },
             },
         },
@@ -290,7 +302,7 @@ def montar_system_prompt(
         "sozinhos).\n"
         "- Pergunta sobre saude financeira/indice (liquidez, endividamento, margem, "
         "ROA, ROE, EBITDA, Margem EBITDA), de 1 empresa ou do grupo consolidado -> "
-        "consultar_indicadores.\n"
+        "consultar_indicadores (informe ao usuario a 'base_do_periodo' usada na resposta).\n"
         "- Pergunta sobre o que falta, o que esta incompleto, quais periodos/empresas "
         "sem dado -> consultar_completude.\n"
         "- Se consultar_periodos, consultar_bp_dre ou consultar_visao_grupo devolver "
@@ -324,7 +336,7 @@ def executar_ferramenta(conn, nome: str, entrada: dict, empresas_codigos: list[s
         )
     if nome == "consultar_indicadores":
         empresas = entrada.get("empresas") or empresas_codigos
-        return consultas_chat.consultar_indicadores(conn, empresas)
+        return consultas_chat.consultar_indicadores(conn, empresas, entrada.get("granularidade") or None)
     if nome == "consultar_completude":
         empresas = entrada.get("empresas") or empresas_codigos
         return consultas_chat.consultar_completude(conn, empresas)

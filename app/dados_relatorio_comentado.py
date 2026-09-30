@@ -398,41 +398,100 @@ def _consolidar_periodo(conn, empresas_codigos: list, periodo: date, tipo: str, 
     ]
 
 
-def _consolidar_historico(conn, empresas_codigos: list, tipo: str) -> list:
+def _consolidar_historico(conn, empresas_codigos: list, tipo: str, granularidade: Optional[str] = None) -> list:
     """Historico consolidado (uniao dos periodos ATIVOS de QUALQUER
     empresa do grupo, nao intersecao) no mesmo formato de
     db.listar_historico_grupo (1 empresa): {periodo, grupo, conta,
-    valor}, somado entre as empresas por (periodo, grupo, conta).
-    Alimenta indicadores.calcular_indicadores sem tocar no motor de
-    formulas (mesma regra de "nao reimplementar" do resto do modulo).
+    valor, granularidade}, somado entre as empresas por (periodo, grupo,
+    conta, granularidade). Alimenta indicadores.calcular_indicadores sem
+    tocar no motor de formulas (mesma regra de "nao reimplementar" do
+    resto do modulo).
 
-    Periodo que falta numa empresa do grupo entra como 0.0 dela pra
-    fins de TENDENCIA (mesma premissa ja aceita e testada em
-    visao_grupo.montar_serie_kpis_grupo pro grafico de evolucao do
-    grupo) -- diferente da checagem ESTRITA feita em
-    montar_dados_relatorio pro periodo PEDIDO (o numero final do
-    relatorio nunca soma 0.0 silencioso de uma empresa ausente; esta
-    funcao so' alimenta indicador de tendencia/comparativo com periodo
-    anterior)."""
+    granularidade (Fase 4, 30/09/2026 -- bug real: o consolidado de um
+    relatorio TRIMESTRAL pegava o documento SEMESTRAL so' da Energia por
+    causa da "vencedora"): quando informada (inclusive ""), devolve SO' as
+    linhas dessa granularidade e SO' dos periodos em que TODAS as
+    empresas do grupo tem dado nela -- um periodo "consolidado" com
+    empresa faltando nunca serve de base pra tendencia/periodo
+    anterior. None = legado (todas as granularidades preservadas, quem
+    consome resolve).
+
+    Sem granularidade (legado), periodo que falta numa empresa do grupo
+    entra como 0.0 dela (mesma premissa de
+    visao_grupo.montar_serie_kpis_grupo); com granularidade, periodo
+    incompleto simplesmente nao entra. A checagem ESTRITA do periodo
+    PEDIDO continua em montar_dados_relatorio."""
     periodos = db.listar_periodos_grupo(conn, empresas_codigos, status="ATIVO")
     if not periodos:
         return []
     lancs = db.listar_lancamentos_grupo_periodos(conn, periodos, tipo, empresas_codigos)
     if not lancs:
         return []
+    if granularidade is not None:
+        lancs = [l for l in lancs if (l.get("granularidade") or "") == granularidade]
+        if lancs and all("empresa_codigo" in l for l in lancs):
+            por_periodo: dict = {}
+            for l in lancs:
+                por_periodo.setdefault(l["periodo"], set()).add(l["empresa_codigo"])
+            exigidas = set(empresas_codigos)
+            completos = {p for p, emps in por_periodo.items() if exigidas <= emps}
+            lancs = [l for l in lancs if l["periodo"] in completos]
+        if not lancs:
+            return []
     df = pd.DataFrame(lancs)
     df["valor"] = df["valor"].astype(float)
     # Fase 3.1 (29/09/2026): mantem 'granularidade' no groupby/saida (em
     # vez de descartar a coluna) -- sem isso, indicadores.calcular_indicadores
-    # (chamado logo abaixo com bp_hist/dre_hist) nao teria como saber que
-    # 2 documentos de abrangencia diferente estao ATIVOS pro MESMO
-    # periodo_fim, e voltaria a somar os 2 no indicador de tendencia do
-    # relatorio consolidado (mesmo bug ja corrigido nos dashboards).
+    # nao teria como separar 2 documentos de abrangencia diferente ATIVOS
+    # pro MESMO periodo_fim.
+    if "granularidade" not in df.columns:
+        df["granularidade"] = ""
+    df["granularidade"] = df["granularidade"].fillna("")
     agrupado = df.groupby(["periodo", "grupo", "conta", "granularidade"], as_index=False)["valor"].sum()
     return agrupado.to_dict("records")
 
 
-def _consolidar_despesas_admin_itens(conn, empresas_codigos: list, periodo: date) -> list:
+def _buscar_itens_admin(conn, cod: str, periodo: date, granularidade: str) -> list:
+    """Itens de despesas administrativas de 1 empresa pro documento
+    (periodo, granularidade) pedido. Primeiro a granularidade exata; se
+    nao houver (linhas gravadas antes do bloco 18 do schema.sql, que nao
+    tinham a coluna e ficam como "" / nao declarada), cai nas linhas
+    sem granularidade -- quem chama valida a coerencia com o total do
+    DRE (_itens_admin_coerentes) antes de usar."""
+    itens = db.listar_despesas_admin_itens(conn, cod, periodo, granularidade=granularidade)
+    if not itens and granularidade:
+        itens = db.listar_despesas_admin_itens(conn, cod, periodo, granularidade="")
+    return itens
+
+
+# Tolerancia da checagem soma(itens) x total "ADMINISTRATIVAS" do DRE.
+# Na extracao real os dois batem exatamente (validado em 4 PDFs, ver
+# parser_egc.extrair_despesas_admin_itens); 2% separa folgadamente
+# arredondamento/item isolado de um ranking que pertence a OUTRO
+# documento do mesmo periodo_fim (ex. semestral x trimestral: ~2x).
+_TOL_ITENS_ADMIN = 0.02
+
+
+def _itens_admin_coerentes(itens: list, despesas_administrativas: float, avisos: list, rotulo: str) -> list:
+    """Devolve `itens` so' se a soma bate com o total ADMINISTRATIVAS do
+    documento usado no relatorio; senao [] + aviso (o ranking de
+    despesas nunca pode vir de outro documento do mesmo periodo_fim --
+    REGRA: match obrigatorio de periodo + granularidade)."""
+    if not itens:
+        return []
+    soma = sum(abs(float(v)) for _n, v in itens)
+    ref = abs(float(despesas_administrativas))
+    if ref == 0 or abs(soma - ref) <= max(1.0, ref * _TOL_ITENS_ADMIN):
+        return itens
+    avisos.append(
+        f"Ranking de despesas administrativas de {rotulo} não incluído: os itens gravados somam "
+        f"R$ {soma:,.2f} e o total ADMINISTRATIVAS do documento é R$ {ref:,.2f} (provavelmente vieram de "
+        "outro PDF do mesmo período). Reimporte o DRE desta granularidade para recompor o ranking."
+    )
+    return []
+
+
+def _consolidar_despesas_admin_itens(conn, empresas_codigos: list, periodo: date, granularidade: str = "") -> list:
     """Soma os itens de despesas administrativas (Fase 2, ranking --
     tabela isolada egc.despesas_admin_itens) das empresas do grupo por
     nome de conta. Ordem: 1a aparicao entre as empresas (a ordenacao
@@ -442,7 +501,7 @@ def _consolidar_despesas_admin_itens(conn, empresas_codigos: list, periodo: date
     somas: dict = {}
     ordem: list = []
     for cod in empresas_codigos:
-        for conta, valor in db.listar_despesas_admin_itens(conn, cod, periodo):
+        for conta, valor in _buscar_itens_admin(conn, cod, periodo, granularidade):
             if conta not in somas:
                 somas[conta] = 0.0
                 ordem.append(conta)
@@ -548,10 +607,9 @@ def montar_dados_relatorio(
                 )
         bp_periodo = _consolidar_periodo(conn, codigos, periodo, "BP", granularidade=granularidade)
         dre_periodo = _consolidar_periodo(conn, codigos, periodo, "DRE", granularidade=granularidade)
-        bp_hist = _consolidar_historico(conn, codigos, "BP")
-        dre_hist = _consolidar_historico(conn, codigos, "DRE")
-        itens_admin = _consolidar_despesas_admin_itens(conn, codigos, periodo)
-        periodos_ativos = db.listar_periodos_grupo(conn, codigos, status="ATIVO")
+        bp_hist = _consolidar_historico(conn, codigos, "BP", granularidade=granularidade)
+        dre_hist = _consolidar_historico(conn, codigos, "DRE", granularidade=granularidade)
+        itens_admin = _consolidar_despesas_admin_itens(conn, codigos, periodo, granularidade=granularidade)
         empresa = {}
     else:
         cod_unico = codigos[0]
@@ -560,8 +618,7 @@ def montar_dados_relatorio(
         dre_periodo = db.listar_lancamentos(conn, cod_unico, periodo, "DRE", granularidade=granularidade)
         bp_hist = db.listar_historico_grupo(conn, cod_unico, "BP")
         dre_hist = db.listar_historico_grupo(conn, cod_unico, "DRE")
-        itens_admin = db.listar_despesas_admin_itens(conn, cod_unico, periodo)
-        periodos_ativos = db.listar_periodos(conn, cod_unico, status="ATIVO")
+        itens_admin = _buscar_itens_admin(conn, cod_unico, periodo, granularidade)
 
     bp_map = _mapa(bp_periodo)
     dre_map = _mapa(dre_periodo)
@@ -595,7 +652,15 @@ def montar_dados_relatorio(
             "grave o DRE (Importar PDF) antes de gerar o relatório."
         )
 
-    indic_df = indicadores.calcular_indicadores(bp_hist, dre_hist)
+    # Fase 4 (30/09/2026, BUG REAL): granularidade SEMPRE explicita -- sem
+    # isso calcular_indicadores escolhia a "vencedora" por periodo_fim e
+    # um relatorio TRIMESTRAL de 06/2026 ganhava EBITDA/margens do
+    # SEMESTRAL (receita do trimestral, EBITDA do semestral no mesmo PDF).
+    # Historico BP/DRE tambem reduzido a esta granularidade, pra o
+    # "periodo anterior" abaixo nunca comparar trimestral com anual.
+    indic_df = indicadores.calcular_indicadores(bp_hist, dre_hist, granularidade=granularidade)
+    dre_hist = indicadores.filtrar_granularidade_exata(dre_hist, granularidade)
+    avisos: list = []
 
     # ---- Receita / Custos (pagina 3) ----
     receita_bruta = dre_map.get("RECEITA OPERACIONAL BRUTA", 0.0) + dre_map.get("RECEITAS OPERACIONAIS DIVERSAS", 0.0)
@@ -615,6 +680,7 @@ def montar_dados_relatorio(
     despesas_tributarias = abs(dre_map.get("DESPESAS TRIBUTARIAS", 0.0))
     resultado_financeiro = -(dre_map.get("DESPESAS FINANCEIRAS", 0.0) + dre_map.get("RECEITAS FINANCEIRAS", 0.0))
     despesas_financeiras = resultado_financeiro  # mesmo numero, 2 paginas diferentes (ver BASE fixture)
+    itens_admin = _itens_admin_coerentes(itens_admin, despesas_administrativas, avisos, f"{nome_alvo} ({periodo_fmt}{granul_fmt})")
     despesas_admin_itens = _montar_despesas_admin_itens(itens_admin, despesas_administrativas)
 
     # ---- Resultado / CSLL-IRPJ (pagina 5, opcional) ----
@@ -648,13 +714,11 @@ def montar_dados_relatorio(
     endividamento_geral = _linha_indicador(indic_df, periodo, "Endividamento Geral") or 0.0
 
     # ---- Comparativos com periodo anterior (textos livres) ----
-    periodos_ordenados = sorted(periodos_ativos)
-    periodo_anterior = None
-    if periodo in periodos_ordenados:
-        idx = periodos_ordenados.index(periodo)
-        if idx > 0:
-            periodo_anterior = periodos_ordenados[idx - 1]
-    receita_anterior = _linha_indicador(indic_df, periodo_anterior, "Margem Bruta") if periodo_anterior else None
+    # Periodo anterior = o periodo imediatamente anterior COM A MESMA
+    # granularidade (indic_df e dre_hist ja so' tem essa granularidade --
+    # Fase 4). Sem ele -> fallback "sem periodo anterior disponivel".
+    anteriores = [d for d in indic_df.index if d < pd.Timestamp(periodo)]
+    periodo_anterior = max(anteriores).date() if anteriores else None
     # Receita liquida nao e' coluna de indic_df -- pega direto do historico DRE.
     receita_liquida_anterior = None
     ebitda_anterior = None
@@ -718,6 +782,11 @@ def montar_dados_relatorio(
         dados["empresas_nomes"] = [empresas.get(cod, {}).get("nome", cod) for cod in codigos]
     if tem_csll_irpj:
         dados["csll_irpj"] = csll_irpj
+    # Fase 4: metadado de auditoria (a UI mostra) -- qual documento
+    # (periodo + granularidade) alimentou TODOS os numeros deste relatorio.
+    dados["granularidade"] = granularidade
+    dados["periodo_anterior"] = periodo_anterior
+    dados["avisos"] = avisos
 
     return dados, tem_csll_irpj
 
