@@ -194,6 +194,61 @@ def test_importar_pdf_bp_nao_tem_selector_de_granularidade():
         print("OK: Importar PDF — BP nao ganha selector de granularidade (so' DRE)")
 
 
+FAKE_RESULT_BP_CNPJ_RESOLVIDO = [
+    {
+        "arquivo": "energia_bp_2trim.pdf",
+        "bp_rows": [("ATIVO CIRCULANTE", "DISPONIVEL", 100.0, "PDF")],
+        "dre_rows": [],
+        "admin_itens": [],
+        "log": [],
+        "meta": [(
+            "Enermais Energia Ltda", "47.040.664/0001-48", "30/06/2026",
+            "energia_bp_2trim.pdf", "BP", "SPED", None, None,
+        )],
+    }
+]
+
+
+def test_importar_pdf_bp_grava_granularidade_vazia_nao_none_fix_20260930b():
+    # BUG REAL em producao (30/09/2026): "Falha ao gravar: null value in
+    # column granularidade... violates not-null constraint" ao gravar um
+    # BP -- rastreado ate' `granularidade_confirmada or None` convertendo
+    # "" (o valor normal de BP, que nunca tem selector) pra None antes de
+    # chamar db.inserir_lancamentos/inativar_periodo_existente. A coluna
+    # e' NOT NULL DEFAULT '' desde o bloco 16 do schema.sql -- None
+    # explicito vira NULL de verdade, nao usa o DEFAULT do banco. Este
+    # teste teria pegado o bug: garante que BP grava granularidade=""
+    # (string vazia), nunca None, nas 2 chamadas.
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_importacoes_recentes", return_value=[]), \
+         patch.object(db, "inativar_periodo_existente", return_value=0) as mock_inativar, \
+         patch.object(db, "inserir_lancamentos", return_value=1) as mock_inserir, \
+         patch.object(db, "registrar_importacao", return_value=None):
+
+        at = AppTest.from_file(PAGE)
+        at.session_state["import_resultados"] = [dict(FAKE_RESULT_BP_CNPJ_RESOLVIDO[0])]
+        at.run(timeout=30)
+        assert not at.exception, f"excecao com BP + CNPJ resolvido: {at.exception}"
+
+        botoes_gravar = [b for b in at.button if "Gravar" in b.label]
+        assert botoes_gravar, "botao de gravar deveria estar disponivel (CNPJ resolvido, tem BP)"
+        botoes_gravar[0].click().run(timeout=30)
+        assert not at.exception, f"excecao ao gravar BP: {at.exception}"
+
+        assert mock_inativar.called, "db.inativar_periodo_existente deveria ter sido chamado"
+        assert mock_inativar.call_args.kwargs.get("granularidade") == "", (
+            f"BP deveria inativar com granularidade='' (nunca None), veio "
+            f"{mock_inativar.call_args.kwargs.get('granularidade')!r}"
+        )
+        assert mock_inserir.called, "db.inserir_lancamentos deveria ter sido chamado"
+        assert mock_inserir.call_args.kwargs.get("granularidade") == "", (
+            f"BP deveria gravar granularidade='' (nunca None -- quebra a constraint NOT NULL), veio "
+            f"{mock_inserir.call_args.kwargs.get('granularidade')!r}"
+        )
+        print("OK: Importar PDF — BP grava granularidade='' (nao None), nao quebra a constraint NOT NULL")
+
+
 def test_importar_pdf_historico_vazio_sem_excecao():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
