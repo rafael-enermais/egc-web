@@ -347,6 +347,76 @@ def test_pipeline_completo_nao_quebra_gerando_pdf_de_verdade():
     print("OK: dados montados a partir do 'banco' (mockado) geram PDF completo sem excecao")
 
 
+def test_sem_bp_gravado_leva_erro_claro_nao_zerodivisionerror():
+    # FIX_20260930: Rafael reportou em producao "Nao foi possivel gerar o
+    # relatorio: division by zero" tentando gerar pra um periodo/empresa
+    # cujo BP nao tinha sido gravado ainda (Construtora, 2o Trimestre
+    # 2026 -- so' o BP nao foi gravado, o resto do lote nem chegou a
+    # subir). Confirma que agora vem um ValueError com mensagem legivel
+    # em vez do ZeroDivisionError cru de pagina_balanco.
+    with patch("dados_relatorio_comentado.db.listar_empresas", return_value=EMPRESAS), \
+         patch("dados_relatorio_comentado.db.listar_lancamentos", side_effect=lambda conn, cod, per, tipo, status="ATIVO", granularidade=None:
+               [] if tipo == "BP" else DRE_PERIODO), \
+         patch("dados_relatorio_comentado.db.listar_historico_grupo", side_effect=lambda conn, cod, tipo, status="ATIVO":
+               [] if tipo == "BP" else [dict(x, periodo=PERIODO) for x in DRE_PERIODO]), \
+         patch("dados_relatorio_comentado.db.listar_despesas_admin_itens", return_value=ITENS_ADMIN), \
+         patch("dados_relatorio_comentado.db.listar_periodos", return_value=[PERIODO]), \
+         patch("dados_relatorio_comentado.indicadores.calcular_indicadores", return_value=_indic_df({PERIODO: INDIC_ROW})):
+        try:
+            drc.montar_dados_relatorio(
+                conn=object(), empresa_codigo="ENERGIA", periodo=PERIODO, periodo_label="1º Semestre 2026",
+            )
+            assert False, "deveria ter levantado ValueError (sem BP gravado)"
+        except ValueError as e:
+            assert "não tem BP gravado" in str(e), f"mensagem nao ficou clara: {e}"
+        except ZeroDivisionError:
+            assert False, "regrediu pro ZeroDivisionError cru -- deveria ser ValueError com mensagem clara"
+    print("OK: sem BP gravado -> ValueError claro, nao ZeroDivisionError")
+
+
+def test_bp_gravado_sem_total_do_ativo_leva_erro_claro():
+    # Variante: BP TEM linhas gravadas mas sem a conta TOTAL DO ATIVO
+    # (import parcial/fallback que nao pegou o total) -- mesmo risco de
+    # ZeroDivisionError, mensagem tem que distinguir esse caso do "sem
+    # BP nenhum" acima.
+    bp_sem_total = [x for x in BP_PERIODO if x["conta"] != "TOTAL DO ATIVO"]
+    with patch("dados_relatorio_comentado.db.listar_empresas", return_value=EMPRESAS), \
+         patch("dados_relatorio_comentado.db.listar_lancamentos", side_effect=lambda conn, cod, per, tipo, status="ATIVO", granularidade=None:
+               bp_sem_total if tipo == "BP" else DRE_PERIODO), \
+         patch("dados_relatorio_comentado.db.listar_historico_grupo", side_effect=lambda conn, cod, tipo, status="ATIVO":
+               [dict(x, periodo=PERIODO) for x in bp_sem_total] if tipo == "BP" else [dict(x, periodo=PERIODO) for x in DRE_PERIODO]), \
+         patch("dados_relatorio_comentado.db.listar_despesas_admin_itens", return_value=ITENS_ADMIN), \
+         patch("dados_relatorio_comentado.db.listar_periodos", return_value=[PERIODO]), \
+         patch("dados_relatorio_comentado.indicadores.calcular_indicadores", return_value=_indic_df({PERIODO: INDIC_ROW})):
+        try:
+            drc.montar_dados_relatorio(
+                conn=object(), empresa_codigo="ENERGIA", periodo=PERIODO, periodo_label="1º Semestre 2026",
+            )
+            assert False, "deveria ter levantado ValueError (BP sem TOTAL DO ATIVO)"
+        except ValueError as e:
+            assert "TOTAL DO ATIVO" in str(e), f"mensagem nao ficou clara: {e}"
+    print("OK: BP sem TOTAL DO ATIVO -> ValueError claro")
+
+
+def test_sem_dre_gravado_tambem_leva_erro_claro():
+    with patch("dados_relatorio_comentado.db.listar_empresas", return_value=EMPRESAS), \
+         patch("dados_relatorio_comentado.db.listar_lancamentos", side_effect=lambda conn, cod, per, tipo, status="ATIVO", granularidade=None:
+               BP_PERIODO if tipo == "BP" else []), \
+         patch("dados_relatorio_comentado.db.listar_historico_grupo", side_effect=lambda conn, cod, tipo, status="ATIVO":
+               [dict(x, periodo=PERIODO) for x in BP_PERIODO] if tipo == "BP" else []), \
+         patch("dados_relatorio_comentado.db.listar_despesas_admin_itens", return_value=ITENS_ADMIN), \
+         patch("dados_relatorio_comentado.db.listar_periodos", return_value=[PERIODO]), \
+         patch("dados_relatorio_comentado.indicadores.calcular_indicadores", return_value=_indic_df({PERIODO: INDIC_ROW})):
+        try:
+            drc.montar_dados_relatorio(
+                conn=object(), empresa_codigo="ENERGIA", periodo=PERIODO, periodo_label="1º Semestre 2026",
+            )
+            assert False, "deveria ter levantado ValueError (sem DRE gravado)"
+        except ValueError as e:
+            assert "não tem DRE gravado" in str(e), f"mensagem nao ficou clara: {e}"
+    print("OK: sem DRE gravado -> ValueError claro")
+
+
 if __name__ == "__main__":
     test_conversao_de_sinal_bate_com_fixture_do_gerador()
     test_despesas_admin_itens_ordenado_e_percentual_correto()
@@ -359,3 +429,6 @@ if __name__ == "__main__":
     test_sem_periodo_anterior_cai_no_fallback_neutro()
     test_com_periodo_anterior_gera_texto_comparativo()
     test_pipeline_completo_nao_quebra_gerando_pdf_de_verdade()
+    test_sem_bp_gravado_leva_erro_claro_nao_zerodivisionerror()
+    test_bp_gravado_sem_total_do_ativo_leva_erro_claro()
+    test_sem_dre_gravado_tambem_leva_erro_claro()

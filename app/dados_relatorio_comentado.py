@@ -534,6 +534,36 @@ def montar_dados_relatorio(
 
     bp_map = _mapa(bp_periodo)
     dre_map = _mapa(dre_periodo)
+
+    # FIX_20260930 (Rafael, produção: "Não foi possível gerar o relatório:
+    # division by zero" ao tentar gerar pra um período/empresa cujo BP
+    # não tinha sido gravado ainda -- crash em pagina_balanco, na divisão
+    # por total_ativo). O painel de pendências avisa quando falta BP/DRE,
+    # mas nada IMPEDIA clicar "Gerar" mesmo assim -- REGRA DE OURO: melhor
+    # travar com mensagem clara do que deixar o traceback cru (ou pior,
+    # gerar PDF com percentuais inventados a partir de 0.0). Cobre tanto
+    # "não tem nenhum lançamento de BP" quanto "tem BP mas sem a conta
+    # TOTAL DO ATIVO" (import parcial/fallback que não pegou o total).
+    nome_alvo = "+".join(codigos) if grupo else empresas.get(codigos[0], {}).get("nome", codigos[0])
+    periodo_fmt = periodo.strftime("%m/%Y")
+    granul_fmt = f" ({granularidade})" if granularidade else ""
+    if not bp_periodo:
+        raise ValueError(
+            f"{nome_alvo} não tem BP gravado pro período {periodo_fmt}{granul_fmt} -- "
+            "grave o BP (Importar PDF) antes de gerar o relatório."
+        )
+    if "TOTAL DO ATIVO" not in bp_map:
+        raise ValueError(
+            f"BP de {nome_alvo} ({periodo_fmt}{granul_fmt}) está gravado mas sem a conta "
+            "TOTAL DO ATIVO -- confira o PDF de origem (import pode ter ficado incompleto) "
+            "antes de gerar o relatório."
+        )
+    if not dre_periodo:
+        raise ValueError(
+            f"{nome_alvo} não tem DRE gravado pro período {periodo_fmt}{granul_fmt} -- "
+            "grave o DRE (Importar PDF) antes de gerar o relatório."
+        )
+
     indic_df = indicadores.calcular_indicadores(bp_hist, dre_hist)
 
     # ---- Receita / Custos (pagina 3) ----
