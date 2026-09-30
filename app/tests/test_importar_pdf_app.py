@@ -249,6 +249,73 @@ def test_importar_pdf_bp_grava_granularidade_vazia_nao_none_fix_20260930b():
         print("OK: Importar PDF — BP grava granularidade='' (nao None), nao quebra a constraint NOT NULL")
 
 
+FAKE_LOTE_BP_DRE_SEPARADOS_MESMO_PERIODO = [
+    {
+        "arquivo": "energia_bp_2trim.pdf",
+        "bp_rows": [("ATIVO CIRCULANTE", "DISPONIVEL", 100.0, "PDF")],
+        "dre_rows": [],
+        "admin_itens": [],
+        "log": [],
+        "meta": [(
+            "Enermais Energia Ltda", "47.040.664/0001-48", "30/06/2026",
+            "energia_bp_2trim.pdf", "BP", "SPED", None, None,
+        )],
+    },
+    {
+        "arquivo": "energia_dre_2trim.pdf",
+        "bp_rows": [],
+        "dre_rows": [("RECEITA BRUTA", 1000.0, "RECEITAS", "PDF")],
+        "admin_itens": [],
+        "log": [],
+        "meta": [(
+            "Enermais Energia Ltda", "47.040.664/0001-48", "30/06/2026",
+            "energia_dre_2trim.pdf", "DRE", "SPED", "01/04/2026", "trimestral",
+        )],
+    },
+]
+
+
+def test_importar_pdf_bp_herda_granularidade_do_dre_irmao_fix_20260930c():
+    # BUG REAL em producao (30/09/2026): Rafael subiu e gravou BP+DRE do
+    # MESMO fechamento (2o Trimestre 2026, 2 arquivos separados) e depois
+    # o Relatorio Comentado nao achava os dados -- o seletor de periodo
+    # mostrava "30/06/2026" e "30/06/2026 — Trimestral" como 2 OPCOES
+    # SEPARADAS pro mesmo fechamento. Causa: BP (sem periodo_inicio
+    # declarado) sempre gravava com granularidade="", enquanto o DRE
+    # irmao (mesma empresa+periodo, mesmo lote) gravava com a
+    # granularidade confirmada ("trimestral") -- iam pra buckets
+    # diferentes na chave ativa. Fix: BP "puro" (arquivo so' com BP)
+    # herda a granularidade confirmada do DRE irmao no MESMO lote.
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_importacoes_recentes", return_value=[]), \
+         patch.object(db, "inativar_periodo_existente", return_value=0) as mock_inativar, \
+         patch.object(db, "inserir_lancamentos", return_value=1) as mock_inserir, \
+         patch.object(db, "registrar_importacao", return_value=None):
+
+        at = AppTest.from_file(PAGE)
+        at.session_state["import_resultados"] = [dict(x) for x in FAKE_LOTE_BP_DRE_SEPARADOS_MESMO_PERIODO]
+        at.run(timeout=30)
+        assert not at.exception, f"excecao com BP+DRE separados do mesmo periodo: {at.exception}"
+
+        # DRE mantem o default detectado (nao mexeu no seletor)
+        sel = at.selectbox(key="granularidade_confirmada_1")  # DRE e' o 2o item (indice 1, ordenado BP antes de DRE)
+        assert sel.value == "trimestral"
+
+        botoes_gravar = [b for b in at.button if "Gravar" in b.label]
+        assert botoes_gravar, "botao de gravar deveria estar disponivel"
+        botoes_gravar[0].click().run(timeout=30)
+        assert not at.exception, f"excecao ao gravar BP+DRE do mesmo periodo: {at.exception}"
+
+        assert mock_inserir.call_count == 2, f"esperava 2 chamadas (BP e DRE), veio {mock_inserir.call_count}"
+        granularidades_gravadas = {c.kwargs.get("granularidade") for c in mock_inserir.call_args_list}
+        assert granularidades_gravadas == {"trimestral"}, (
+            f"BP deveria herdar a granularidade do DRE irmao ('trimestral') -- os 2 tem que gravar "
+            f"com a MESMA granularidade, veio {granularidades_gravadas!r}"
+        )
+        print("OK: Importar PDF — BP herda granularidade do DRE irmão do mesmo período/lote")
+
+
 def test_importar_pdf_historico_vazio_sem_excecao():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
