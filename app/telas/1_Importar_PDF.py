@@ -412,7 +412,18 @@ if resultados:
                     # caso (nao deveria acontecer) de o widget nao ter
                     # rodado pra este item.
                     granularidade_confirmada = r.get("_granularidade_confirmada", granularidade or "")
-                    granularidade_val = granularidade_confirmada or None
+                    # FIX_20260930b (BUG REAL, Rafael em produção: "Falha ao
+                    # gravar: null value in column granularidade... violates
+                    # not-null constraint"): "or None" convertia "" (BP, ou
+                    # DRE sem intervalo declarado) pra None -- e' exatamente
+                    # o caso mais comum. Desde o bloco 16 do schema.sql (já
+                    # rodado em produção), a coluna é NOT NULL DEFAULT '' --
+                    # mas o DEFAULT só vale quando a coluna fica DE FORA do
+                    # INSERT; como db.inserir_lancamentos sempre lista a
+                    # coluna, um None explícito vira NULL de verdade e
+                    # quebra a constraint. "" tem que continuar "" até o
+                    # banco.
+                    granularidade_val = granularidade_confirmada
 
                     for tipo, rows in (("BP", r["bp_rows"]), ("DRE", r["dre_rows"])):
                         if not rows:

@@ -95,9 +95,14 @@ def test_inserir_lancamentos_bp_e_dre_ordem_de_colunas():
     assert (empresa, tipo, grupo, conta, valor, origem) == (
         "ENERGIA", "BP", "ATIVO CIRCULANTE", "CLIENTES", 1094484.54, "PDF 31/12/2023"
     )
-    # periodo_inicio/granularidade (24/09/2026): opcionais, None quando o
-    # chamador nao passa (comportamento antigo preservado).
-    assert (periodo_inicio, granularidade) == (None, None)
+    # periodo_inicio/granularidade (24/09/2026): periodo_inicio fica None
+    # quando o chamador nao passa (coluna aceita NULL). granularidade NAO
+    # -- FIX_20260930b: vira "" mesmo sem o chamador passar nada, porque a
+    # coluna e' NOT NULL DEFAULT '' desde o bloco 16 do schema.sql e este
+    # INSERT sempre lista a coluna (o DEFAULT do banco so' vale quando a
+    # coluna fica de fora do INSERT) -- um None aqui vira NULL de verdade
+    # e quebra a constraint (bug real visto em producao gravando um BP).
+    assert (periodo_inicio, granularidade) == (None, "")
 
     cur2 = FakeCursor()
     conn2 = FakeConn(cur2)
@@ -112,6 +117,30 @@ def test_inserir_lancamentos_bp_e_dre_ordem_de_colunas():
     assert (grupo, conta, valor) == ("RECEITAS", "RECEITA OPERACIONAL LIQUIDA", 500000.00)
     assert (periodo_inicio2, granularidade2) == (datetime.date(2023, 1, 1), "anual")
     print("OK: inserir_lancamentos (BP e DRE com ordem de coluna correta, periodo_inicio/granularidade opcionais)")
+
+
+def test_inserir_lancamentos_granularidade_none_explicito_nunca_vira_null_no_banco():
+    # FIX_20260930b -- BUG REAL em producao: "Falha ao gravar: null value
+    # in column granularidade... violates not-null constraint" ao gravar
+    # um BP (que sempre chega com granularidade="" -- foto de 1 data, sem
+    # intervalo declarado). Rastreado ate' telas/1_Importar_PDF.py, que
+    # fazia `granularidade_confirmada or None` -- convertendo "" pra None
+    # antes de chamar esta funcao. Reproduz aqui passando None
+    # EXPLICITAMENTE (o cenario que quebrava) e confirma que vira "" no
+    # parametro que vai pro banco, nunca None.
+    cur = FakeCursor()
+    conn = FakeConn(cur)
+    bp_rows = [["ATIVO CIRCULANTE", "DISPONIVEL", "100,00", "PDF 30/06/2026"]]
+    db.inserir_lancamentos(
+        conn, "CONST", "BP", datetime.date(2026, 6, 30), bp_rows, "bp.pdf", "maria",
+        periodo_inicio=None, granularidade=None,
+    )
+    _, registros = cur.executed[0]
+    granularidade_gravada = registros[0][-1]
+    assert granularidade_gravada == "", (
+        f"granularidade=None explicito deveria virar '' (coluna e' NOT NULL), veio {granularidade_gravada!r}"
+    )
+    print("OK: inserir_lancamentos — granularidade=None explícito nunca chega como NULL no banco")
 
 
 def test_salvar_correcao_manual_preserva_pdf_original_so_na_1a_edicao():

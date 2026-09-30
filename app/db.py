@@ -162,9 +162,20 @@ def inserir_lancamentos(
     calcular_granularidade). Opcionais e None por padrao -- BP nao tem
     intervalo (e foto de 1 data) e chamadores antigos continuam
     funcionando sem passar nada.
+
+    FIX_20260930b: granularidade NUNCA vai como NULL pro banco, mesmo
+    que o chamador passe None -- a coluna e' NOT NULL DEFAULT '' desde o
+    bloco 16 do schema.sql, mas o DEFAULT so' se aplica quando a coluna
+    fica FORA do INSERT; como este INSERT sempre lista a coluna, um None
+    explicito vira NULL de verdade e quebra a constraint (bug real visto
+    em producao: "null value in column granularidade... violates
+    not-null constraint", gravando um BP sem intervalo declarado, o caso
+    mais comum). Normaliza aqui pra "" -- defesa contra qualquer
+    chamador (presente ou futuro) que passe None.
     """
     from parser_egc import br_to_float
 
+    granularidade = granularidade if granularidade is not None else ""
     registros = []
     for r in rows:
         if tipo == "BP":
