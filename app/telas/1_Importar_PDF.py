@@ -319,6 +319,54 @@ if resultados:
                 st.dataframe(pd.DataFrame(r["dre_rows"], columns=COLUNAS_DRE),
                              use_container_width=True, hide_index=True)
 
+    # FIX_20260930c (BUG REAL, Rafael em produção: relatório dá "não tem
+    # BP/DRE gravado" mesmo depois de subir e gravar os 2 juntos -- o
+    # seletor de período mostrava 2 opções pro MESMO PDF/fechamento --
+    # ex. "30/06/2026" e "30/06/2026 — Trimestral" separados). Causa
+    # raiz: BP nunca tem periodo_inicio declarado (é foto de 1 data), e
+    # o código sempre fixava a granularidade confirmada do BP em "" --
+    # mas quando o DRE do MESMO fechamento (mesma empresa+período, no
+    # MESMO lote) tem uma granularidade != "" confirmada, BP e DRE do
+    # mesmo pacote iam pra buckets DIFERENTES na chave ativa (empresa+
+    # tipo+periodo+granularidade) -- nenhum relatório consegue achar os
+    # 2 juntos porque, pro banco, viram 2 "documentos" desencontrados.
+    # BP tem que HERDAR a granularidade confirmada do DRE irmão (mesma
+    # empresa+período neste lote) -- são o mesmo fechamento. So' NAO
+    # propaga se houver mais de 1 granularidade DIFERENTE confirmada pro
+    # mesmo par empresa+período no lote (caso ambíguo de verdade -- ex.
+    # 2 DREs de abrangência diferente pro mesmo fechamento -- nesse caso
+    # avisa em vez de adivinhar).
+    granularidades_por_periodo: dict = {}
+    ambiguos_periodo = set()
+    for r in resultados:
+        if not r.get("meta") or not r.get("dre_rows"):
+            continue
+        _e, _c, periodo_str, _n, _t, _f, _pi, _g = r["meta"][0]
+        chave = (r.get("_cod"), periodo_str)
+        g_conf = r.get("_granularidade_confirmada", "")
+        if not g_conf:
+            continue
+        existente = granularidades_por_periodo.get(chave)
+        if existente is not None and existente != g_conf:
+            ambiguos_periodo.add(chave)
+        else:
+            granularidades_por_periodo[chave] = g_conf
+    for r in resultados:
+        if not r.get("meta") or not r.get("bp_rows") or r.get("dre_rows"):
+            continue  # so' propaga pra BP "puro" (arquivo so' com BP)
+        _e, _c, periodo_str, _n, _t, _f, _pi, _g = r["meta"][0]
+        chave = (r.get("_cod"), periodo_str)
+        if chave in ambiguos_periodo:
+            st.warning(
+                f"⚠️ {r['arquivo']}: há mais de 1 DRE com granularidade diferente pra "
+                f"{periodo_str} nesse lote -- não consigo decidir sozinho qual o BP "
+                "acompanha. Confira manualmente antes de gravar (pode gerar período "
+                "'órfão' sem relatório)."
+            )
+            continue
+        if chave in granularidades_por_periodo and not r.get("_granularidade_confirmada"):
+            r["_granularidade_confirmada"] = granularidades_por_periodo[chave]
+
     if algum_erro:
         st.error("Há erros de leitura em pelo menos um PDF — corrija/confira antes de gravar.")
 
@@ -490,6 +538,19 @@ st.caption(
     "Histórico de gravações (todas as sessões, não só a atual). \"Desfazer\" arquiva "
     "(não apaga) o período inteiro — reative depois em Arquivar/Recuperar se precisar."
 )
+# FIX_20260930d (Rafael: "tentei desfazer, o desfazer não acontece nada
+# la"): 2 causas reais. (1) st.success() seguido de st.rerun() na mesma
+# execucao -- a mensagem e' substituida antes da pessoa conseguir ler
+# (gotcha classico do Streamlit). Guarda o resultado no session_state e
+# mostra ele aqui, ANTES do loop, sobrevivendo ao rerun. (2) esta lista
+# vem de egc.importacoes (log de auditoria IMUTAVEL -- nunca muda depois
+# que grava), entao a linha do historico continua igualzinha depois do
+# Desfazer -- nao e' bug, mas sem indicacao nenhuma parecia que nada
+# tinha acontecido. Por isso cada linha agora mostra a situacao ATUAL
+# (Ativo/Arquivado) cruzando com egc.lancamentos de verdade.
+if st.session_state.get("_desfazer_msg"):
+    nivel, msg = st.session_state.pop("_desfazer_msg")
+    (st.success if nivel == "ok" else st.warning)(msg)
 try:
     conn = get_conn()
     brutos = db.listar_importacoes_recentes(conn, limite=50)
@@ -510,12 +571,34 @@ except Exception as exc:
 if not eventos:
     st.caption("Nenhuma importação registrada ainda.")
 else:
+    # situacao ATUAL (nao o log estatico) -- 1 consulta por empresa que
+    # aparece na lista, reaproveitada em todas as linhas dela.
+    periodos_ativos_por_empresa: dict = {}
+    status_indisponivel = False
+    for ev in eventos:
+        cod_ev = ev["empresa_codigo"]
+        if cod_ev not in periodos_ativos_por_empresa:
+            try:
+                periodos_ativos_por_empresa[cod_ev] = {
+                    d["periodo"] for d in db.listar_periodos_detalhado(conn, cod_ev, status="ATIVO")
+                }
+            except Exception:
+                # nao trava a lista inteira por isso -- so' deixa de
+                # mostrar a situacao atual (fica "?" mais abaixo).
+                periodos_ativos_por_empresa[cod_ev] = None
+                status_indisponivel = True
+    if status_indisponivel:
+        st.caption("⚠️ Não consegui verificar a situação atual de todas as linhas agora.")
+
     for ev in eventos:
         cod_ev = ev["empresa_codigo"]
         periodo_ev = ev["periodo"]
         nome_ev = NOME_POR_COD.get(cod_ev, cod_ev)
         quando = formatacao.hora_br(ev["criado_em"], vazio="?")
         tipos_label = ", ".join(t for t, _msg in ev["tipos"]) or "?"
+        _periodos_empresa = periodos_ativos_por_empresa.get(cod_ev)
+        situacao_desconhecida = _periodos_empresa is None
+        ainda_ativo = (not situacao_desconhecida) and (periodo_ev in _periodos_empresa)
         col_a, col_b = st.columns([4, 1])
         col_a.write(
             f"**{nome_ev}** — {periodo_ev.strftime('%m/%Y')} · {tipos_label} · "
@@ -530,8 +613,26 @@ else:
         # so' nao aparecia aqui -- ver docstring de agrupar_historico_importacoes).
         if ev.get("arquivos"):
             col_a.caption("📄 " + ", ".join(ev["arquivos"]))
-        if col_b.button("↩️ Desfazer", key=f"hist_desfazer_{cod_ev}_{periodo_ev}"):
-            conn = get_conn()
-            total = db.arquivar_periodo(conn, cod_ev, periodo_ev)
-            st.success(f"{total} lançamento(s) de {nome_ev} ({periodo_ev.strftime('%m/%Y')}) arquivado(s).")
-            st.rerun()
+        if situacao_desconhecida:
+            col_a.caption("❓ Situação atual indisponível agora")
+        else:
+            col_a.caption("🟢 Ativo" if ainda_ativo else "🗄️ Já arquivado (sem lançamentos ativos pra este período)")
+        if ainda_ativo or situacao_desconhecida:
+            if col_b.button("↩️ Desfazer", key=f"hist_desfazer_{cod_ev}_{periodo_ev}"):
+                conn = get_conn()
+                total = db.arquivar_periodo(conn, cod_ev, periodo_ev)
+                if total:
+                    st.session_state["_desfazer_msg"] = (
+                        "ok",
+                        f"✅ {total} lançamento(s) de {nome_ev} ({periodo_ev.strftime('%m/%Y')}) arquivado(s). "
+                        "Reative em Arquivar/Recuperar se precisar.",
+                    )
+                else:
+                    st.session_state["_desfazer_msg"] = (
+                        "warn",
+                        f"⚠️ Nenhum lançamento ATIVO encontrado pra {nome_ev} ({periodo_ev.strftime('%m/%Y')}) "
+                        "-- pode já ter sido arquivado em outra sessão/aba nesse meio tempo.",
+                    )
+                st.rerun()
+        else:
+            col_b.caption("—")
