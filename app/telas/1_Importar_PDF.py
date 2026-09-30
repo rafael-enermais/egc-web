@@ -182,6 +182,11 @@ if resultados:
             # agora fica disponivel em QUALQUER arquivo, com erro
             # detectado ou nao -- a contadora decide, o sistema nao
             # precisa "adivinhar" que aquele arquivo especifico e' ruim.
+            r["_i"] = i  # FIX_20260930: guarda o indice original -- usado
+            # pra gerar keys unicas pros controles espelhados na secao 3
+            # (Confirmar gravacao), pedido do Rafael: "queria q as funções
+            # ficassem ali com o gravar tb, podendo remover ou alguma
+            # forma de apagar por la tb".
             col_incl, col_rem = st.columns([3, 1])
             incluir = col_incl.checkbox(
                 "Incluir nesta gravação", value=True, key=f"incluir_{i}",
@@ -352,8 +357,33 @@ if resultados:
 
     for cod_g, grupo in grupos.items():
         with st.container(border=True):
-            arquivos_nomes = ", ".join(x["arquivo"] for x in grupo["itens"])
-            st.markdown(f"**{grupo['nome']}** ({cod_g}) — {len(grupo['itens'])} arquivo(s): {arquivos_nomes}")
+            st.markdown(f"**{grupo['nome']}** ({cod_g}) — {len(grupo['itens'])} arquivo(s)")
+            # FIX_20260930: incluir/remover espelhados aqui (pedido do
+            # Rafael: "queria q as funções ficassem ali com o gravar tb") --
+            # mesma acao dos controles la em cima (secao 2), so' que sem
+            # precisar rolar a pagina. Key usa r["_i"] (indice original,
+            # gravado na secao 2) pra nao colidir com os checkboxes/botoes
+            # de la -- os 2 conjuntos de controles ficam sincronizados via
+            # r["_incluir"]/remocao por identidade, valendo a partir do
+            # proximo rerun (mesmo comportamento ja existente dos de cima).
+            remover_agora = None
+            for x in grupo["itens"]:
+                idx = x.get("_i")
+                col_nome, col_incl2, col_rem2 = st.columns([3, 1, 1])
+                col_nome.caption(x["arquivo"])
+                incluir2 = col_incl2.checkbox(
+                    "Incluir", value=x.get("_incluir", True), key=f"incluir_grav_{idx}",
+                )
+                x["_incluir"] = incluir2
+                if col_rem2.button("🗑️ Remover", key=f"remover_grav_{idx}"):
+                    remover_agora = x
+            if remover_agora is not None:
+                st.session_state["import_resultados"] = [
+                    y for y in st.session_state["import_resultados"] if y is not remover_agora
+                ]
+                if not st.session_state["import_resultados"]:
+                    del st.session_state["import_resultados"]
+                st.rerun()
             if st.button(f"✅ Gravar {grupo['nome']}", key=f"gravar_{cod_g}", type="primary", disabled=algum_erro):
                 conn = get_conn()
                 total_gravado = 0
