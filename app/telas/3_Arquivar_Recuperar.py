@@ -43,7 +43,7 @@ from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS  # noqa: E402
 import db  # noqa: E402
 
 _NOME_GRANULARIDADE = {
-    "mensal": "Mensal", "trimestral": "Trimestral", "semestral": "Semestral",
+    "mensal": "Mensal", "bimestral": "Bimestral", "trimestral": "Trimestral", "semestral": "Semestral",
     "anual": "Anual", "outra": "Outro intervalo", "": "",
 }
 

@@ -50,6 +50,14 @@ chama montar_dados_relatorio(empresa_codigo=<lista>), que consolida
 Comparativo (Modelo B, que é uma EVOLUÇÃO entre 2-4 períodos e não faz
 sentido com 1 período só) -- decisão tomada com o Rafael: o consolidado
 de 1 período usa o Modelo A (narrativo completo), não o B.
+
+FIX_20260930b (Rafael, v0.39.0): (1) os 2 botoes por variante viraram UM
+seletor de tipo de relatorio (radio horizontal: Demonstrativo Comentado /
+Gerencial / Fornecedor "em breve" / Comparativo-Evolucao) + UM botao
+"Gerar relatorio"; (2) o match de periodo + granularidade e' obrigatorio
+em toda a cadeia de calculo (ver dados_relatorio_comentado e
+indicadores.calcular_indicadores(granularidade=)) e a tela mostra, apos
+gerar, qual documento (periodo + base) alimentou os numeros.
 """
 import sys
 from pathlib import Path
@@ -66,6 +74,7 @@ import gerador_relatorio_comentado as g  # noqa: E402
 import gerador_relatorio_comparativo as gc  # noqa: E402
 import formatacao  # noqa: E402
 import visao_grupo  # noqa: E402
+import indicadores  # noqa: E402
 
 NOME_POR_COD = {cod: nome for cod, nome, _cnpj in EMPRESAS_FIXAS}
 
@@ -81,7 +90,7 @@ st.caption(
 )
 
 _NOME_GRANULARIDADE = {
-    "mensal": "Mensal", "trimestral": "Trimestral", "semestral": "Semestral",
+    "mensal": "Mensal", "bimestral": "Bimestral", "trimestral": "Trimestral", "semestral": "Semestral",
     "anual": "Anual", "outra": "Outro intervalo", "": "",
 }
 
@@ -193,10 +202,26 @@ st.divider()
 # tb"): liga o Modelo B (gerador_relatorio_comparativo.py + a nova
 # montar_dados_relatorio_comparativo, prontos desde 26-29/09 mas sem UI)
 # na tela. Modo "Período único" é o fluxo de sempre, inalterado.
-modo = st.radio(
-    "Tipo de relatório", ["Período único", "Comparativo (evolução entre períodos)"],
-    key="relatorio_modo", horizontal=True,
+# FIX_20260930b (Rafael: "trocar os 2 botoes por UM seletor de tipo de
+# relatorio + um unico botao Gerar"): um radio horizontal escolhe o tipo;
+# os campos abaixo se adaptam (periodos multiplos so' no Comparativo). O
+# tipo "Fornecedor" esta' reservado (NAO construido): aparece rotulado
+# "em breve" e desabilita o botao.
+TIPO_PADRAO = "Demonstrativo Comentado"
+TIPO_GERENCIAL = "Demonstrativo Comentado Gerencial"
+TIPO_FORNECEDOR = "Demonstrativo Comentado Fornecedor (em breve)"
+TIPO_COMPARATIVO = "Comparativo / Evolução"
+tipo_relatorio = st.radio(
+    "Tipo de relatório", [TIPO_PADRAO, TIPO_GERENCIAL, TIPO_FORNECEDOR, TIPO_COMPARATIVO],
+    key="relatorio_tipo", horizontal=True,
 )
+# "modo" (Periodo unico x Comparativo) continua sendo o eixo dos campos
+# abaixo; "variante" (padrao/gerencial) so' vale no Periodo unico.
+modo = "Comparativo" if tipo_relatorio == TIPO_COMPARATIVO else "Período único"
+variante_selecionada = "gerencial" if tipo_relatorio == TIPO_GERENCIAL else "padrao"
+tipo_em_breve = tipo_relatorio == TIPO_FORNECEDOR
+if tipo_em_breve:
+    st.info("O Demonstrativo Comentado Fornecedor ainda não foi construído — disponível em breve.")
 
 periodo_sel = None
 periodo_label = ""
@@ -442,27 +467,8 @@ pode_gerar = (
     or (modo != "Período único" and 2 <= len(periodos_multi) <= 4 and bool(empresas_multi))
 )
 
-# FIX_20260930 (Rafael, variante "Demonstrativo Comentado Gerencial" --
-# a página "Composição das Despesas Administrativas" sai do relatório
-# padrão e só existe nesta variante nova, pág. 3 explicada em
-# dados_relatorio_comentado._VARIANTE_TITULOS). Só o modo "Período único"
-# (Modelo A) tem essa página pra começo de conversa -- o Comparativo
-# (Modelo B, "Evolução Financeira") continua com 1 botão só, sem
-# variante (fora de escopo desta rodada).
-variante_selecionada = "padrao"
-if modo == "Período único":
-    col_btn_padrao, col_btn_gerencial = st.columns(2)
-    clique_padrao = col_btn_padrao.button(
-        "Gerar relatório", type="primary", key="relatorio_gerar_btn", disabled=not pode_gerar,
-    )
-    clique_gerencial = col_btn_gerencial.button(
-        "Gerar Demonstrativo Comentado Gerencial", key="relatorio_gerar_gerencial_btn", disabled=not pode_gerar,
-    )
-    if clique_gerencial:
-        variante_selecionada = "gerencial"
-    clicou_gerar = clique_padrao or clique_gerencial
-else:
-    clicou_gerar = st.button("Gerar relatório", type="primary", key="relatorio_gerar_btn", disabled=not pode_gerar)
+pode_gerar = pode_gerar and not tipo_em_breve
+clicou_gerar = st.button("Gerar relatório", type="primary", key="relatorio_gerar_btn", disabled=not pode_gerar)
 
 if clicou_gerar:
     admin = dict(
@@ -482,8 +488,9 @@ if clicou_gerar:
                     granularidade=granularidade_sel, variante=variante_selecionada,
                 )
                 sufixo_variante = "" if variante_selecionada == "padrao" else "_GERENCIAL"
+                sufixo_granul = f"_{granularidade_sel}" if granularidade_sel else ""
                 nome_arquivo = (
-                    f"Demonstrativo_{sufixo_empresas_unico}_{periodo_sel.strftime('%Y%m%d')}{sufixo_variante}.pdf"
+                    f"Demonstrativo_{sufixo_empresas_unico}_{periodo_sel.strftime('%Y%m%d')}{sufixo_granul}{sufixo_variante}.pdf"
                 )
                 caminho = f"/tmp/{nome_arquivo}"
                 g.gerar_pdf_completo(dados, caminho, incluir_pagina_resultado=incluir_pagina_resultado)
@@ -500,6 +507,18 @@ if clicou_gerar:
                 f"{' (variante Gerencial)' if variante_selecionada == 'gerencial' else ''}"
                 f"{f', {len(empresas_unico_multi)} empresas consolidadas' if len(empresas_unico_multi) > 1 else ''})."
             )
+            # Fase 4 (30/09/2026): deixa explicito qual documento alimentou
+            # TODOS os numeros (periodo + granularidade) e o periodo anterior
+            # usado nos textos de comparacao (sempre da mesma granularidade).
+            _ant = dados.get("periodo_anterior")
+            st.caption(
+                f"Base usada: {periodo_sel.strftime('%m/%Y')} · {indicadores.rotulo_granularidade(granularidade_sel)} — "
+                "todos os valores (DRE, BP, EBITDA, margens) vêm deste mesmo documento. "
+                + (f"Comparação com o período anterior: {_ant.strftime('%m/%Y')} (mesma base)." if _ant
+                   else "Sem período anterior nessa base para comparação.")
+            )
+            for _aviso in dados.get("avisos", []):
+                st.warning(_aviso)
             if not incluir_pagina_resultado:
                 st.caption(
                     "Página 'Formação do Resultado' não incluída — este período não tem CSLL/IRPJ "
@@ -517,6 +536,13 @@ if clicou_gerar:
                     granularidades=granularidades_multi,
                 )
                 sufixo_empresas = "GRUPO" if len(empresas_multi) > 1 else empresas_multi[0]
+                st.caption(
+                    "Base de cada coluna: "
+                    + " · ".join(
+                        f"{lbl.strip() or p.strftime('%m/%Y')} = {p.strftime('%m/%Y')} {indicadores.rotulo_granularidade(gr)}"
+                        for lbl, p, gr in zip(periodos_labels_multi, periodos_multi, granularidades_multi)
+                    )
+                )
                 nome_arquivo = (
                     f"Evolucao_{sufixo_empresas}_{periodos_multi[0].strftime('%Y%m')}"
                     f"_{periodos_multi[-1].strftime('%Y%m')}.pdf"

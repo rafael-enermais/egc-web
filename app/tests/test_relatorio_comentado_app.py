@@ -192,7 +192,7 @@ def test_gerar_relatorio_comparativo_chama_pipeline_e_nao_quebra():
          patch.object(db, "registrar_relatorio_gerado") as m_log:
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
-        at.radio(key="relatorio_modo").set_value("Comparativo (evolução entre períodos)").run(timeout=30)
+        at.radio(key="relatorio_tipo").set_value("Comparativo / Evolução").run(timeout=30)
         at.multiselect(key="relatorio_periodos_multi").set_value([_pg(p) for p in PERIODOS_COMPARATIVO]).run(timeout=30)
         botao = next(b for b in at.button if b.label == "Gerar relatório")
         assert not botao.disabled, "botão Gerar não pode ficar desabilitado com 2 períodos escolhidos"
@@ -224,7 +224,7 @@ def test_comparativo_com_varias_empresas_passa_lista_pro_backend_e_nome_grupo():
          patch.object(db, "registrar_relatorio_gerado") as m_log:
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
-        at.radio(key="relatorio_modo").set_value("Comparativo (evolução entre períodos)").run(timeout=30)
+        at.radio(key="relatorio_tipo").set_value("Comparativo / Evolução").run(timeout=30)
         at.multiselect(key="relatorio_empresas_multi").set_value(["ENERGIA", "SMG"]).run(timeout=30)
         at.multiselect(key="relatorio_periodos_multi").set_value([_pg(p) for p in PERIODOS_COMPARATIVO]).run(timeout=30)
         botao = next(b for b in at.button if b.label == "Gerar relatório")
@@ -254,7 +254,7 @@ def test_trocar_selecao_de_periodos_nao_deixa_rotulo_preso_no_slot_antigo():
          patch.object(db, "listar_periodos_detalhado", return_value=_det(periodos_disponiveis)):
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
-        at.radio(key="relatorio_modo").set_value("Comparativo (evolução entre períodos)").run(timeout=30)
+        at.radio(key="relatorio_tipo").set_value("Comparativo / Evolução").run(timeout=30)
         at.multiselect(key="relatorio_periodos_multi").set_value([_pg(p) for p in PERIODOS_COMPARATIVO]).run(timeout=30)
 
         rotulos = [ti for ti in at.text_input if ti.key and ti.key.startswith("relatorio_periodo_multi_label_")]
@@ -291,7 +291,7 @@ def test_botao_gerar_desabilitado_com_menos_de_2_periodos_no_comparativo():
          patch.object(db, "listar_periodos_detalhado", return_value=_det(PERIODOS_COMPARATIVO)):
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
-        at.radio(key="relatorio_modo").set_value("Comparativo (evolução entre períodos)").run(timeout=30)
+        at.radio(key="relatorio_tipo").set_value("Comparativo / Evolução").run(timeout=30)
         at.multiselect(key="relatorio_periodos_multi").set_value([_pg(PERIODOS_COMPARATIVO[0])]).run(timeout=30)
         botao = next(b for b in at.button if b.label == "Gerar relatório")
         assert botao.disabled, "botão Gerar deveria ficar desabilitado com só 1 período no modo comparativo"
@@ -397,7 +397,7 @@ def test_gerar_relatorio_chama_pipeline_e_nao_quebra():
 # FIX_20260930 (Rafael, variante "Demonstrativo Comentado Gerencial" --
 # 2º botão ao lado do "Gerar relatório" de sempre, só no modo "Período
 # único").
-def test_botao_gerencial_chama_pipeline_com_variante_gerencial_e_nome_de_arquivo_diferente():
+def test_tipo_gerencial_chama_pipeline_com_variante_gerencial_e_nome_de_arquivo_diferente():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=[PERIODO]), \
@@ -406,8 +406,9 @@ def test_botao_gerencial_chama_pipeline_com_variante_gerencial_e_nome_de_arquivo
          patch.object(db, "registrar_relatorio_gerado") as m_log:
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
-        botoes = [b for b in at.button if b.label == "Gerar Demonstrativo Comentado Gerencial"]
-        assert len(botoes) == 1, "botão 'Gerar Demonstrativo Comentado Gerencial' não encontrado (modo Período único)"
+        at.radio(key="relatorio_tipo").set_value("Demonstrativo Comentado Gerencial").run(timeout=30)
+        botoes = [b for b in at.button if b.label == "Gerar relatório"]
+        assert len(botoes) == 1, "esperava UM único botão 'Gerar relatório' (seletor de tipo unificado)"
         botoes[0].click().run(timeout=30)
         assert not at.exception, f"excecao gerando relatorio gerencial: {at.exception}"
         assert m_montar.called
@@ -421,7 +422,7 @@ def test_botao_gerencial_chama_pipeline_com_variante_gerencial_e_nome_de_arquivo
         # é conferida diretamente na string montada em 8_Relatorio_Comentado.py,
         # não dá pra inspecionar aqui sem reimplementar a lógica da tela.
         assert any(b.key == "relatorio_download_btn" for b in at.download_button)
-        print("OK: Relatório Comentado — botão 'Gerar Demonstrativo Comentado Gerencial' passa variante='gerencial'")
+        print("OK: Relatório Comentado — tipo 'Demonstrativo Comentado Gerencial' + botão único passa variante='gerencial'")
 
 
 def test_botao_padrao_continua_passando_variante_padrao_sem_regressao():
@@ -442,18 +443,62 @@ def test_botao_padrao_continua_passando_variante_padrao_sem_regressao():
         print("OK: Relatório Comentado — botão padrão ('Gerar relatório') continua passando variante='padrao'")
 
 
-def test_modo_comparativo_nao_tem_botao_gerencial():
+def test_seletor_de_tipo_tem_4_opcoes_e_um_unico_botao_gerar():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=PERIODOS_COMPARATIVO), \
          patch.object(db, "listar_periodos_detalhado", return_value=_det(PERIODOS_COMPARATIVO)):
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
-        at.radio(key="relatorio_modo").set_value("Comparativo (evolução entre períodos)").run(timeout=30)
-        assert not any(b.label == "Gerar Demonstrativo Comentado Gerencial" for b in at.button), (
-            "modo Comparativo não deveria mostrar o botão da variante Gerencial (só existe pro Período único)"
-        )
-        print("OK: Relatório Comentado — modo Comparativo não mostra o botão da variante Gerencial")
+        assert at.radio(key="relatorio_tipo").options == [
+            "Demonstrativo Comentado", "Demonstrativo Comentado Gerencial",
+            "Demonstrativo Comentado Fornecedor (em breve)", "Comparativo / Evolução",
+        ]
+        assert at.radio(key="relatorio_tipo").value == "Demonstrativo Comentado", "padrão = período único"
+        for tipo in at.radio(key="relatorio_tipo").options:
+            at.radio(key="relatorio_tipo").set_value(tipo).run(timeout=30)
+            assert not at.exception
+            assert len([b for b in at.button if b.label == "Gerar relatório"]) == 1, tipo
+            assert not any("Gerencial" in b.label for b in at.button), "botões antigos por variante não existem mais"
+        print("OK: Relatório Comentado — seletor de 4 tipos e um único botão 'Gerar relatório' em todos")
+
+
+def test_tipo_fornecedor_em_breve_desabilita_botao_e_avisa():
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos", return_value=[PERIODO]), \
+         patch.object(db, "listar_periodos_detalhado", return_value=_det([PERIODO])), \
+         patch.object(drc, "montar_dados_relatorio") as m_montar:
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        at.radio(key="relatorio_tipo").set_value("Demonstrativo Comentado Fornecedor (em breve)").run(timeout=30)
+        assert not at.exception
+        botao = next(b for b in at.button if b.label == "Gerar relatório")
+        assert botao.disabled, "tipo Fornecedor (em breve) não pode gerar nada"
+        assert any("em breve" in i.value for i in at.info)
+        assert not m_montar.called
+        print("OK: Relatório Comentado — tipo Fornecedor rotulado 'em breve', botão desabilitado, nada é gerado")
+
+
+def test_periodo_com_2_granularidades_passa_a_escolhida_e_mostra_a_base_usada():
+    """Bug real (30/09/2026): mesmo periodo_fim com trimestral e semestral
+    ativos -- a granularidade escolhida na tela tem que chegar exatamente
+    ao montar_dados_relatorio (match obrigatorio de periodo+granularidade)."""
+    det = [{"periodo": PERIODO, "granularidade": "trimestral"}, {"periodo": PERIODO, "granularidade": "semestral"}]
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos", return_value=[PERIODO]), \
+         patch.object(db, "listar_periodos_detalhado", return_value=det), \
+         patch.object(drc, "montar_dados_relatorio", return_value=(dict(DADOS_FIXTURE, periodo_anterior=None, avisos=[]), True)) as m_montar, \
+         patch.object(db, "registrar_relatorio_gerado"):
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        at.selectbox(key="relatorio_periodo_sel").set_value((PERIODO, "trimestral")).run(timeout=30)
+        next(b for b in at.button if b.label == "Gerar relatório").click().run(timeout=30)
+        assert not at.exception, at.exception
+        assert m_montar.call_args.kwargs.get("granularidade") == "trimestral"
+        assert any("Base usada: 06/2026 · Trimestral" in c.value for c in at.caption)
+        print("OK: Relatório Comentado — granularidade escolhida chega ao backend e a base usada aparece na tela")
 
 
 if __name__ == "__main__":
@@ -473,3 +518,6 @@ if __name__ == "__main__":
     test_botao_gerar_desabilitado_com_menos_de_2_periodos_no_comparativo()
     test_comparativo_com_varias_empresas_passa_lista_pro_backend_e_nome_grupo()
     test_trocar_selecao_de_periodos_nao_deixa_rotulo_preso_no_slot_antigo()
+    test_seletor_de_tipo_tem_4_opcoes_e_um_unico_botao_gerar()
+    test_tipo_fornecedor_em_breve_desabilita_botao_e_avisa()
+    test_periodo_com_2_granularidades_passa_a_escolhida_e_mostra_a_base_usada()

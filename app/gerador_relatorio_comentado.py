@@ -905,28 +905,65 @@ def _paginar_bloco_anexo(c, dados, x, largura, y, pagina_atual, total_paginas,
             c.line(x, Y(y + 4), x + largura, Y(y + 4))
         y += 12
 
+    def _valores_linha(resto):
+        return [moeda_br(v) if v not in (None, "") else "" for v in resto] if resto else []
+
+    def _medir_secao(y_ini, secao, primeira_no_inicio):
+        """y final de uma secao inteira desenhada a partir de y_ini (dry
+        run, mesma funcao que desenha -- nunca diverge)."""
+        yy = y_ini
+        for k, (t, lb, *rs) in enumerate(secao):
+            yy = _linha_anexo(c, x, largura, yy, t, lb, _valores_linha(rs), ALTURA_LINHA_ANEXO,
+                               primeira=(primeira_no_inicio and k == 0),
+                               valor_col_w=valor_col_w, gap_col=gap_col, desenhar=False)
+        return yy
+
+    # FIX_20260930b (Rafael: "nunca quebrar uma seção -- cabeçalho 'ATIVO
+    # CIRCULANTE' + suas contas + total -- no meio entre páginas: se a
+    # seção inteira não couber no resto da página, começa na próxima, com
+    # o cabeçalho do anexo repetido"). Secao = linha "grupo" + tudo até o
+    # próximo "grupo" (subtotal incluso; o "total" final do Ativo/Passivo
+    # fica colado na última seção). Seção maior que uma página inteira
+    # (não cabe nem no topo de uma página vazia) quebra normalmente, linha
+    # a linha, pela checagem abaixo.
+    secoes: list = []
+    for linha in linhas:
+        if linha[0] == "grupo" or not secoes:
+            secoes.append([])
+        secoes[-1].append(linha)
+
+    topo_y_pagina = _ANEXO_Y_INICIO + (12 if (titulos_colunas and n_col > 1) else 0)
     primeiro_do_bloco = True
-    for tipo, label, *resto in linhas:
-        valores = [moeda_br(v) if v not in (None, "") else "" for v in resto] if resto else []
+    for secao in secoes:
         if precisa_titulo:
             _desenhar_titulos()
             precisa_titulo = False
-        # `primeira` so' controla o respiro extra ANTES de uma linha tipo
-        # "grupo" -- topo de bloco e topo de pagina (logo apos quebra) sao
-        # os 2 casos que devem pular esse respiro (mesma logica).
-        primeira_da_pagina = primeiro_do_bloco
-        y_depois = _linha_anexo(c, x, largura, y, tipo, label, valores, ALTURA_LINHA_ANEXO,
-                                 primeira=primeira_da_pagina, valor_col_w=valor_col_w, gap_col=gap_col,
-                                 desenhar=False)
-        if y_depois > _ANEXO_Y_LIMITE:
-            _quebrar_pagina()
-            _desenhar_titulos()
-            precisa_titulo = False  # ja desenhado agora -- sem isso, a checagem do topo do loop redesenhava de novo na proxima linha
-            primeira_da_pagina = True
-        y = _linha_anexo(c, x, largura, y, tipo, label, valores, ALTURA_LINHA_ANEXO,
-                          primeira=primeira_da_pagina, valor_col_w=valor_col_w, gap_col=gap_col,
-                          desenhar=desenhar)
-        primeiro_do_bloco = False
+        no_topo = abs(y - topo_y_pagina) < 0.5
+        if not no_topo:
+            y_fim_aqui = _medir_secao(y, secao, primeiro_do_bloco)
+            if y_fim_aqui > _ANEXO_Y_LIMITE and _medir_secao(topo_y_pagina, secao, True) <= _ANEXO_Y_LIMITE:
+                _quebrar_pagina()
+                _desenhar_titulos()
+                precisa_titulo = False
+                primeiro_do_bloco = True
+        for tipo, label, *resto in secao:
+            valores = _valores_linha(resto)
+            # `primeira` so' controla o respiro extra ANTES de uma linha tipo
+            # "grupo" -- topo de bloco e topo de pagina (logo apos quebra) sao
+            # os 2 casos que devem pular esse respiro (mesma logica).
+            primeira_da_pagina = primeiro_do_bloco
+            y_depois = _linha_anexo(c, x, largura, y, tipo, label, valores, ALTURA_LINHA_ANEXO,
+                                     primeira=primeira_da_pagina, valor_col_w=valor_col_w, gap_col=gap_col,
+                                     desenhar=False)
+            if y_depois > _ANEXO_Y_LIMITE:
+                _quebrar_pagina()
+                _desenhar_titulos()
+                precisa_titulo = False  # ja desenhado agora -- sem isso, a checagem do topo do loop redesenhava de novo na proxima linha
+                primeira_da_pagina = True
+            y = _linha_anexo(c, x, largura, y, tipo, label, valores, ALTURA_LINHA_ANEXO,
+                              primeira=primeira_da_pagina, valor_col_w=valor_col_w, gap_col=gap_col,
+                              desenhar=desenhar)
+            primeiro_do_bloco = False
     return y, pagina_atual, precisa_titulo
 
 
@@ -963,6 +1000,30 @@ def paginas_extras_anexo(dados) -> int:
         return 0
     pagina_final, _y = _paginar_anexo_multi(None, dados, pagina_inicial=1, total_paginas=1, desenhar=False)
     return pagina_final - 1
+
+
+def desenhar_bloco_empresa_capa(c, dados) -> float:
+    """Bloco "quem e' o cliente" da capa (Modelo A e Modelo B): devolve o
+    deslocamento (pt) que a pilula do periodo precisa descer pra nunca
+    sobrepor o bloco.
+
+    1 empresa: nome (12pt cinza) + linha de CNPJ -- comportamento de
+    sempre. Multi-CNPJ (FIX_20260930b, Rafael: "Grupo Enermais maior, em
+    destaque, e logo abaixo a lista dos nomes das empresas em fonte
+    menor, como subtitulo do grupo"): o nome do grupo vira subtitulo
+    grande (20pt, bold, navy) e a lista de empresas fica logo abaixo em
+    fonte menor (9.5pt), uma por linha, mesma ordem de `empresas_codigos`."""
+    nomes_grupo = _nomes_empresas_grupo(dados)
+    if not nomes_grupo:
+        txt(c, MARGEM, 380, dados["empresa_nome"], font="regular", size=12, color=GREY_TEXT)
+        txt(c, MARGEM, 398, _linha_identificacao_empresa(dados), font="regular", size=12, color=GREY_TEXT)
+        return 0.0
+    txt(c, MARGEM, 388, dados["empresa_nome"], font="bold", size=20, color=NAVY)
+    y_lista0, passo = 409.0, 12.5
+    for i, nome in enumerate(nomes_grupo):
+        txt(c, MARGEM, y_lista0 + i * passo, nome, font="regular", size=9.5, color=GREY_TEXT)
+    y_ultimo = y_lista0 + (len(nomes_grupo) - 1) * passo
+    return max(0.0, (y_ultimo + 22.0) - 428.0)
 
 
 # ------------------------------------------------------------------ pagina 1
@@ -1057,22 +1118,9 @@ def pagina_capa(c, dados, pagina: int, total_paginas: int):
         rect(c, x_selo0, 322, x_selo0 + largura_selo, 344, fill=ORANGE, radius=8)
         txt(c, x_selo0 + largura_selo / 2, 337, "GERENCIAL", font="bold", size=9, color="#FFFFFF", align="center")
 
-    txt(c, MARGEM, 380, dados["empresa_nome"], font="regular", size=12, color=GREY_TEXT)
-
-    # FIX_20260930 (Rafael, relatório multi-empresa: "quero a LISTA dos
-    # nomes das empresas, uma por linha" em vez de só a contagem "N
-    # empresas do grupo"). `_nomes_empresas_grupo` devolve None pra
-    # relatório de 1 empresa (comportamento de sempre, 1 linha de CNPJ);
-    # com 2+ empresas, 1 linha por nome -- a pílula do período abaixo
-    # desce proporcionalmente pra nunca sobrepor a lista.
-    nomes_grupo = _nomes_empresas_grupo(dados)
-    if nomes_grupo:
-        for i, nome in enumerate(nomes_grupo):
-            txt(c, MARGEM, 398 + i * 14, nome, font="regular", size=12, color=GREY_TEXT)
-        deslocamento_pilula = (len(nomes_grupo) - 1) * 14
-    else:
-        txt(c, MARGEM, 398, _linha_identificacao_empresa(dados), font="regular", size=12, color=GREY_TEXT)
-        deslocamento_pilula = 0
+    # FIX_20260930b: bloco da empresa/grupo (ver desenhar_bloco_empresa_capa)
+    # -- multi-CNPJ: "Grupo Enermais" em destaque + lista de nomes menor.
+    deslocamento_pilula = desenhar_bloco_empresa_capa(c, dados)
 
     # FIX_20260928 (Rafael, revisando PDF real): periodo_extenso ja era
     # usado nas paginas Destaques/Fechamento mas nunca aparecia na capa --

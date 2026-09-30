@@ -61,7 +61,15 @@ DRE_PERIODO = [
     _lanc("DESPESAS", "DEPRECIACOES", -691_527.25),
 ]
 
-ITENS_ADMIN = [("Serviços Profissionais", -11_401_300.0), ("Salários e Ordenados", -4_060_000.0)]
+# Fase 4 (30/09/2026): a soma dos itens agora TEM que bater com o total
+# ADMINISTRATIVAS do DRE (29_339_591.64) -- senao o ranking e' descartado
+# (itens de outro documento do mesmo periodo_fim). Resto do total dividido
+# em 4 itens menores (4 x 3_469_572.91) pra nao mudar a ordem dos 2 maiores.
+ITENS_ADMIN = [
+    ("Serviços Profissionais", -11_401_300.0), ("Salários e Ordenados", -4_060_000.0),
+    ("Aluguéis", -3_469_572.91), ("Softwares", -3_469_572.91),
+    ("Viagens", -3_469_572.91), ("Seguros", -3_469_572.91),
+]
 
 INDIC_ROW = {
     "Liquidez Corrente": 0.99, "Alavancagem": 5.40, "Endividamento Geral": 0.844,

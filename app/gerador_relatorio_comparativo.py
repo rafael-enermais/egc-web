@@ -111,22 +111,10 @@ def pagina_capa_comparativa(c, dados, pagina: int, total_paginas: int):
     c.line(MARGEM, Y(268), MARGEM + 46, Y(268))
     txt(c, MARGEM, 310, "Evolução", font="heavy", size=30, color=NAVY)
     txt(c, MARGEM, 345, "Financeira", font="heavy", size=30, color=NAVY)
-    txt(c, MARGEM, 380, d["empresa_nome"], font="regular", size=12, color=GREY_TEXT)
-
-    # FIX_20260930 (Rafael, capa do relatório multi-empresa: "quero a
-    # LISTA dos nomes, uma por linha" em vez de só "N empresas do grupo"
-    # -- mesmo pedido já aplicado na capa do Modelo A, ver
-    # `_nomes_empresas_grupo`). A pílula do período (largura fixa aqui,
-    # diferente da pílula dinâmica do Modelo A) desce proporcionalmente
-    # pra nunca sobrepor a lista de nomes.
-    nomes_grupo = _nomes_empresas_grupo(d)
-    if nomes_grupo:
-        for i, nome in enumerate(nomes_grupo):
-            txt(c, MARGEM, 398 + i * 14, nome, font="regular", size=12, color=GREY_TEXT)
-        deslocamento_pilula = (len(nomes_grupo) - 1) * 14
-    else:
-        txt(c, MARGEM, 398, _linha_identificacao_empresa(d), font="regular", size=12, color=GREY_TEXT)
-        deslocamento_pilula = 0
+    # FIX_20260930b: mesmo bloco de empresa/grupo da capa do Modelo A
+    # (multi-CNPJ: "Grupo Enermais" em destaque + lista menor embaixo); a
+    # pilula desce o necessario pra nunca sobrepor a lista.
+    deslocamento_pilula = A.desenhar_bloco_empresa_capa(c, d)
 
     y_pilula0 = 428 + deslocamento_pilula
     y_pilula1 = 458 + deslocamento_pilula
@@ -328,23 +316,51 @@ def pagina_resumo_evolucao(c, dados, pagina: int, total_paginas: int):
 
 
 # ------------------------------------------------------------------ pagina 3
-# Cor inicial da escala ordinal de período -- mesmo matiz/saturação de
-# NAVY (~236°/61%), luminosidade ~60% (ver FIX_20260930 em `_cor_periodo`).
-_COR_PERIODO_CLARA = "#5A63D8"
+# FIX_20260930b (Rafael: "achou feia a escala de azuis -- #5A63D8 -> NAVY
+# e' um azul-violeta saturado demais"). Nova paleta alinhada a marca
+# (NAVY #171C60 / ORANGE #EA9527), 2 opcoes:
+#   "A" (padrao): periodos ANTERIORES em tons de navy dessaturados, do
+#       claro (mais antigo) ao escuro; o periodo MAIS RECENTE em ORANGE
+#       (destaque -- mesmo padrao do grafico de composicao das despesas).
+#   "B": todos em tons de navy; o MAIS RECENTE = NAVY pleno, os anteriores
+#       dessaturados e progressivamente mais claros; sem laranja.
+# Negativo continua RED_ACCENT nas 2. O texto do valor NAO usa a cor da
+# barra (tom claro ficaria ilegivel sobre o branco): ver `_cor_texto_valor`.
+_NAVY_DESSAT_CLARO = "#C4C8DC"
+_NAVY_DESSAT_ESCURO_A = "#4A5088"   # anteriores, opcao A
+_NAVY_DESSAT_ESCURO_B = "#6B7199"   # anteriores, opcao B (sobra contraste pro NAVY pleno)
+PALETA_EVOLUCAO_PADRAO = "A"
 
 
-def _cor_periodo(i: int, n_periodos: int, v: float) -> str:
+def _cor_periodo(i: int, n_periodos: int, v: float, paleta: str = None) -> str:
     """Cor da barra do período `i` (0 = mais antigo) num grupo de
     `n_periodos`, pro grafico de evolucao. Extraída em função pura (mesmo
     padrão de `_layout_tabela_evolucao` neste módulo) pra virar
     regressão testável sem gerar PDF -- ver
-    test_grafico_evolucao_cores_periodos_positivos_sao_distintas."""
+    test_grafico_evolucao_cores_periodos_positivos_sao_distintas.
+    `paleta`: "A" (anteriores em navy dessaturado + mais recente em
+    ORANGE) ou "B" (tudo navy, mais recente = NAVY); None = padrao."""
     if v < 0:
         return RED_ACCENT
-    return _interp_cor(_COR_PERIODO_CLARA, NAVY, i / max(1, n_periodos - 1))
+    paleta = (paleta or PALETA_EVOLUCAO_PADRAO).upper()
+    n_anteriores = max(0, n_periodos - 1)
+    eh_mais_recente = (i == n_periodos - 1)
+    if eh_mais_recente:
+        return ORANGE if paleta == "A" else NAVY
+    escuro = _NAVY_DESSAT_ESCURO_A if paleta == "A" else _NAVY_DESSAT_ESCURO_B
+    # 1 unico periodo anterior (n=2): tom medio-escuro em vez do mais claro
+    # (um tom palido sozinho ao lado do destaque parece "apagado").
+    t = 0.6 if n_anteriores == 1 else i / (n_anteriores - 1)
+    return _interp_cor(_NAVY_DESSAT_CLARO, escuro, t)
 
 
-def grafico_evolucao(c, x0, x1, y0_top, metricas, periodos_labels, altura_grupo=58.0):
+def _cor_texto_valor(v: float) -> str:
+    """Cor do numero ao lado da barra -- sempre escura o bastante pra ler
+    sobre o fundo branco, independente do tom (claro) da barra."""
+    return "#9C4A61" if v < 0 else NAVY
+
+
+def grafico_evolucao(c, x0, x1, y0_top, metricas, periodos_labels, altura_grupo=58.0, paleta=None):
     """Mini-barras horizontais por periodo, 1 grupo por metrica, escala
     PROPRIA por metrica (nao dá pra comparar Receita e EBITDA na mesma
     escala sem achatar o EBITDA a nada) -- mesma logica de pequenos
@@ -376,13 +392,13 @@ def grafico_evolucao(c, x0, x1, y0_top, metricas, periodos_labels, altura_grupo=
             # raciocínio completo (escala ordinal, matiz único, faixa de
             # luminosidade) e o teste de regressão
             # test_grafico_evolucao_cores_periodos_positivos_sao_distintas.
-            cor = _cor_periodo(i, n_periodos, v)
+            cor = _cor_periodo(i, n_periodos, v, paleta)
             txt(c, x0, y + altura_barra - 2, periodos_labels[i], font="regular", size=7.5, color=GREY_TEXT)
             bx0 = x0 + col_label_w
             largura = largura_barra_max * (abs(v) / maior_abs)
             rect(c, bx0, y, bx0 + max(largura, 2), y + altura_barra, fill=cor)
             txt(c, bx0 + largura_barra_max + 8, y + altura_barra - 2, moeda_br(v, forcar_sinal=(v < 0)),
-                font="bold", size=8.5, color=cor, align="left")
+                font="bold", size=8.5, color=_cor_texto_valor(v), align="left")
             y += altura_barra + espaco_barra
         y += 10
     return y
@@ -398,12 +414,18 @@ def pagina_grafico_evolucao(c, dados, pagina: int, total_paginas: int):
     txt(c, MARGEM, 134, f"{d.get('anexo_escopo_label', d['empresa_nome'])} · valores em R$",
         font="regular", size=9, color=GREY_TEXT)
 
+    paleta = (d.get("paleta_evolucao") or PALETA_EVOLUCAO_PADRAO).upper()
     y_fim = grafico_evolucao(c, MARGEM, PAGE_W - MARGEM, 168, d.get("grafico_evolucao_metricas", []),
-                              d["periodos_labels"])
+                              d["periodos_labels"], paleta=paleta)
 
+    if paleta == "A":
+        legenda_cor = ("O período mais recente aparece em laranja; os anteriores, em tons de azul do mais claro "
+                       "(mais antigo) ao mais escuro.")
+    else:
+        legenda_cor = "Barras em tom mais escuro representam os períodos mais recentes."
     paragrafo(
         c, MARGEM, y_fim + 10,
-        "Barras em tom mais escuro representam os períodos mais recentes. Valores negativos aparecem em "
+        f"{legenda_cor} Valores negativos aparecem em "
         "vermelho, independentemente do período — a cor marca o sinal do número, o texto não usa adjetivo.",
         CONTEUDO_W, font="regular", size=8, color=GREY_TEXT, leading=11,
     )

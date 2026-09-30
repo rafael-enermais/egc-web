@@ -123,7 +123,7 @@ if not cods_selecionados:
     st.stop()
 
 _NOME_GRANULARIDADE = {
-    "mensal": "Mensal", "trimestral": "Trimestral", "semestral": "Semestral",
+    "mensal": "Mensal", "bimestral": "Bimestral", "trimestral": "Trimestral", "semestral": "Semestral",
     "anual": "Anual", "outra": "Outro intervalo", "": "",
 }
 

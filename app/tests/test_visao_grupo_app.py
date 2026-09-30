@@ -163,18 +163,23 @@ def test_2_granularidades_mesmo_periodo_fim_seletor_de_detalhe_separa():
         at.run(timeout=30)
         assert not at.exception, f"excecao com 2 granularidades no mesmo periodo_fim: {at.exception}"
 
-        sel_detalhe = at.selectbox(key="grupo_periodo_detalhe_sel")
-        assert len(sel_detalhe.options) == 2, f"esperava 2 opções de período de detalhe (1 por granularidade), veio {len(sel_detalhe.options)}"
+        # Fase 4 (30/09/2026): "Base do período" explicita -- as 2 granularidades
+        # viram opcoes do seletor de base (nao mais 2 periodos de detalhe), e a
+        # tabela/KPIs so' usam a base escolhida.
+        sel_base = at.selectbox(key="grupo_base_sel")
+        assert len(sel_base.options) == 2, f"esperava 2 bases (trimestral e semestral), veio {len(sel_base.options)}"
+        assert sel_base.value == "semestral", "default = base mais abrangente do periodo mais recente (so' ENERGIA selecionada aqui tem as 2)"
 
-        # escolhe explicitamente o trimestral -- tabela de detalhe (BP) so'
-        # pode ter a linha do trimestral (100.00), nunca a do semestral (600.00)
-        sel_detalhe.set_value((P_JUN, "trimestral")).run(timeout=30)
+        sel_base.set_value("trimestral").run(timeout=30)
         assert not at.exception, f"excecao ao escolher trimestral: {at.exception}"
         tabela_bp = at.dataframe[0].value
         assert list(tabela_bp["VALOR CONSOLIDADO"]) == ["R$ 100,00"], (
             f"esperava só a linha do trimestral (R$ 100,00) na tabela de detalhe, veio {list(tabela_bp['VALOR CONSOLIDADO'])}"
         )
-        print("OK: 2 granularidades no mesmo periodo_fim — seletor de detalhe separa, tabela nunca mistura os 2 documentos")
+        sel_base.set_value("semestral").run(timeout=30)
+        tabela_bp = at.dataframe[0].value
+        assert list(tabela_bp["VALOR CONSOLIDADO"]) == ["R$ 600,00"], "semestral tem que mostrar so' a linha do semestral"
+        print("OK: 2 granularidades no mesmo periodo_fim — seletor de base separa, tabela nunca mistura os 2 documentos")
 
 
 if __name__ == "__main__":

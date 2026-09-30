@@ -67,6 +67,7 @@ from auth import usuario_atual  # noqa: E402
 from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS  # noqa: E402
 import db  # noqa: E402
 import visao_grupo  # noqa: E402
+import indicadores  # noqa: E402
 import formatacao  # noqa: E402
 
 NOME_POR_COD = {cod: nome for cod, nome, _cnpj in EMPRESAS_FIXAS}
@@ -93,20 +94,43 @@ if not cods_selecionados:
     st.info("Selecione ao menos 1 empresa.")
     st.stop()
 
-_NOME_GRANULARIDADE = {
-    "mensal": "Mensal", "trimestral": "Trimestral", "semestral": "Semestral",
-    "anual": "Anual", "outra": "Outro intervalo", "": "",
-}
-
 periodos_detalhados = db.listar_periodos_grupo_detalhado(conn, cods_selecionados, status="ATIVO")
 if not periodos_detalhados:
     st.info("Nenhum período ativo entre as empresas selecionadas ainda.")
     st.stop()
 
-periodos_disponiveis = sorted({d["periodo"] for d in periodos_detalhados})
+# Fase 4 (30/09/2026, "o match de periodo+granularidade e' OBRIGATORIO em
+# tudo"): "Base do período" (granularidade) explicita. Todos os KPIs,
+# graficos e a tabela de detalhe vem de UMA base -- nunca mistura, por
+# exemplo, o trimestral de um periodo com o semestral de outro na mesma
+# serie. Default = base do periodo mais recente em que TODAS as empresas
+# selecionadas tem dado (a mais abrangente se houver mais de uma).
+_datas_todas = sorted({d["periodo"] for d in periodos_detalhados})
+_lancs_bp_todos = db.listar_lancamentos_grupo_periodos(conn, _datas_todas, "BP", cods_selecionados, status="ATIVO")
+_lancs_dre_todos = db.listar_lancamentos_grupo_periodos(conn, _datas_todas, "DRE", cods_selecionados, status="ATIVO")
+bases_disponiveis = sorted(
+    {d["granularidade"] for d in periodos_detalhados},
+    key=lambda g: indicadores._PRIORIDADE_GRANULARIDADE.get(g, -1), reverse=True,
+)
+base_padrao = indicadores.granularidade_padrao(_lancs_bp_todos, _lancs_dre_todos, cods_selecionados)
+if base_padrao not in bases_disponiveis:
+    base_padrao = bases_disponiveis[0]
+base_sel = st.selectbox(
+    "Base do período", bases_disponiveis, index=bases_disponiveis.index(base_padrao),
+    format_func=indicadores.rotulo_granularidade, key="grupo_base_sel",
+    help="Abrangência do documento (ex. trimestral x semestral fechando na mesma data). "
+         "KPIs, gráficos e tabela abaixo usam só esta base.",
+)
+
+periodos_disponiveis = sorted({d["periodo"] for d in periodos_detalhados if d["granularidade"] == base_sel})
+# Trocar a base muda quais periodos existem -- zera a selecao pra "todos da
+# nova base" (evita um valor guardado que nao esta nas opcoes novas).
+if "grupo_periodos_sel" not in st.session_state or st.session_state.get("_grupo_base_anterior", base_sel) != base_sel:
+    st.session_state["grupo_periodos_sel"] = list(periodos_disponiveis)
+st.session_state["_grupo_base_anterior"] = base_sel
 periodos_sel = st.multiselect(
     "Período(s) — do grupo inteiro em todos os períodos até 1 período de 1 empresa só",
-    periodos_disponiveis, default=periodos_disponiveis, format_func=lambda d: d.strftime("%m/%Y"),
+    periodos_disponiveis, format_func=lambda d: d.strftime("%m/%Y"),
     key="grupo_periodos_sel",
 )
 if not periodos_sel:
@@ -114,40 +138,49 @@ if not periodos_sel:
     st.stop()
 periodos_sel = sorted(periodos_sel)
 
-# (periodo, granularidade) so' dos periodos EFETIVAMENTE selecionados acima
-# -- usado pelo seletor de "periodo de detalhe" (precisa saber qual
-# documento mostrar quando 2 estao ativos no mesmo periodo_fim).
-periodos_pg_sel = sorted(
-    {(d["periodo"], d["granularidade"]) for d in periodos_detalhados if d["periodo"] in periodos_sel}
-)
-_datas_repetidas_detalhe = {d for d, _g in periodos_pg_sel if sum(1 for d2, _g2 in periodos_pg_sel if d2 == d) > 1}
-
-
-def _rotulo_periodo_detalhe(pg):
-    d, g = pg
-    if d in _datas_repetidas_detalhe:
-        return f"{d.strftime('%m/%Y')} — {_NOME_GRANULARIDADE.get(g, g) or 'não declarada'}"
-    return d.strftime("%m/%Y")
-
 # ─────────────────────── Resumo do grupo (KPIs + gráficos) ────────────────
 st.divider()
 st.subheader("Resumo do grupo")
-
-periodo_granul_detalhe = st.selectbox(
-    "Período de detalhe (usado nos KPIs e na tabela abaixo)", list(reversed(periodos_pg_sel)),
-    format_func=_rotulo_periodo_detalhe, key="grupo_periodo_detalhe_sel",
+st.caption(
+    f"Base do período: **{indicadores.rotulo_granularidade(base_sel)}** — cada número vem de um único "
+    "documento (período + granularidade); períodos de outras bases não entram nas contas nem nos deltas."
 )
-periodo_detalhe, granularidade_detalhe = periodo_granul_detalhe
+
+periodo_detalhe = st.selectbox(
+    "Período de detalhe (usado nos KPIs e na tabela abaixo)", list(reversed(periodos_sel)),
+    format_func=lambda d: d.strftime("%m/%Y"), key="grupo_periodo_detalhe_sel",
+)
+granularidade_detalhe = base_sel
 periodo_anterior = None
 idx_detalhe = periodos_sel.index(periodo_detalhe)
 if idx_detalhe > 0:
     periodo_anterior = periodos_sel[idx_detalhe - 1]
 
-lancs_bp_multi = db.listar_lancamentos_grupo_periodos(conn, periodos_sel, "BP", cods_selecionados, status="ATIVO")
-lancs_dre_multi = db.listar_lancamentos_grupo_periodos(conn, periodos_sel, "DRE", cods_selecionados, status="ATIVO")
 
-serie_bp = visao_grupo.montar_serie_kpis_grupo(lancs_bp_multi, cods_selecionados, visao_grupo.CONTAS_KPI_BP, periodos_sel)
-serie_dre = visao_grupo.montar_serie_kpis_grupo(lancs_dre_multi, cods_selecionados, visao_grupo.CONTAS_KPI_DRE, periodos_sel)
+def _so_base(lancs):
+    return [r for r in lancs if r["periodo"] in periodos_sel and (r.get("granularidade") or "") == base_sel]
+
+
+lancs_bp_multi = _so_base(_lancs_bp_todos)
+lancs_dre_multi = _so_base(_lancs_dre_todos)
+
+serie_bp = visao_grupo.montar_serie_kpis_grupo(
+    lancs_bp_multi, cods_selecionados, visao_grupo.CONTAS_KPI_BP, periodos_sel, granularidade=base_sel,
+)
+serie_dre = visao_grupo.montar_serie_kpis_grupo(
+    lancs_dre_multi, cods_selecionados, visao_grupo.CONTAS_KPI_DRE, periodos_sel, granularidade=base_sel,
+)
+
+_faltando_detalhe = indicadores.empresas_faltando(
+    lancs_bp_multi, lancs_dre_multi, cods_selecionados, periodo_detalhe, base_sel,
+)
+if _faltando_detalhe:
+    st.warning(
+        f"Consolidado parcial: nesta base ({indicadores.rotulo_granularidade(base_sel)}) "
+        f"{periodo_detalhe.strftime('%m/%Y')} não tem dado de "
+        + ", ".join(NOME_POR_COD.get(c, c) for c in _faltando_detalhe)
+        + " — os números somam só as empresas que têm esse documento."
+    )
 
 
 def _metric(col, serie, conta, label, periodo, periodo_ant):
@@ -183,7 +216,7 @@ else:
 
 # ─────────────────────────── Detalhe por conta ─────────────────────────────
 st.divider()
-st.subheader(f"Detalhe por conta — {_rotulo_periodo_detalhe(periodo_granul_detalhe)}")
+st.subheader(f"Detalhe por conta — {periodo_detalhe.strftime('%m/%Y')} · {indicadores.rotulo_granularidade(base_sel)}")
 
 visao = st.radio(
     "Visão", ["Macro (Energia × Consolidadoras)", "Específica (empresas abertas)"],
@@ -192,15 +225,9 @@ visao = st.radio(
 
 algum_dado = False
 for tipo_sel in ("BP", "DRE"):
-    lancamentos = (lancs_bp_multi if tipo_sel == "BP" else lancs_dre_multi)
-    # Fase 3.1: filtra tambem por granularidade quando esse periodo_fim
-    # tem 2+ documentos ativos -- sem isso, a tabela de detalhe misturaria
-    # as contas dos 2 documentos como se fossem 1 so'.
-    lancamentos = [
-        r for r in lancamentos
-        if r["periodo"] == periodo_detalhe
-        and (r.get("granularidade", "") == granularidade_detalhe if periodo_detalhe in _datas_repetidas_detalhe else True)
-    ]
+    # Fase 4: lancs_*_multi ja' so' tem a base escolhida (match obrigatorio
+    # de periodo + granularidade); aqui filtra so' o periodo de detalhe.
+    lancamentos = [r for r in (lancs_bp_multi if tipo_sel == "BP" else lancs_dre_multi) if r["periodo"] == periodo_detalhe]
     st.markdown(f"**{tipo_sel}**")
     if not lancamentos:
         st.caption(f"Nenhum lançamento de {tipo_sel} em {periodo_detalhe.strftime('%m/%Y')} pras empresas selecionadas.")
