@@ -32,6 +32,7 @@ nunca geracao livre por IA. Ver `_leitura_executiva()`.
 """
 from __future__ import annotations
 
+import functools
 import os
 from typing import Optional
 
@@ -275,6 +276,28 @@ def _linha_identificacao_empresa(dados):
     if codigos and len(codigos) > 1:
         return f"{len(codigos)} empresas do grupo"
     return f"CNPJ {dados.get('cnpj', '')}"
+
+
+def _nomes_empresas_grupo(dados):
+    """FIX_20260930 (Rafael, capa do relatório multi-empresa: "quero a
+    LISTA dos nomes, uma por linha" em vez de só "N empresas do grupo").
+    Devolve list[str] (1 nome por linha, MESMA ORDEM de `empresas_codigos`)
+    quando o relatório é de grupo (2+ empresas); None quando é de 1
+    empresa só (a capa continua usando `_linha_identificacao_empresa`
+    nesse caso -- comportamento de sempre, 100% retrocompatível).
+
+    Usa `dados['empresas_nomes']` quando a camada de dados já resolveu os
+    nomes (Fase 2/3, `montar_dados_relatorio`/`montar_dados_relatorio_
+    comparativo`); se ausente (dict montado à mão, ex. testes antigos),
+    cai pros próprios códigos em vez de travar a capa por um campo
+    opcional faltando -- nunca inventa um nome que não veio do dado."""
+    codigos = dados.get("empresas_codigos")
+    if not codigos or len(codigos) <= 1:
+        return None
+    nomes = dados.get("empresas_nomes")
+    if nomes and len(nomes) == len(codigos):
+        return list(nomes)
+    return list(codigos)
 
 
 def _header(c, dados, subtitulo_pagina):
@@ -607,7 +630,12 @@ def grafico_ranking_horizontal(c, x0, x1, y0_top, altura_linha, itens):
     Devolve o y_top final (apos a ultima barra)."""
     n = len(itens)
     col_label_w = 168
-    col_valor_w = 64
+    # FIX_20260930 (Rafael: "adicionar o valor em R$ ao lado do percentual" --
+    # antes so' "46,2%", ~40pt; agora "R$ 8.256.954,68 · 46,2%", ~113pt no
+    # maior caso real -- col_valor_w sobe de 64 pra 120 pra caber sem
+    # estourar a margem direita (rotulo_valor e' desenhado align="left" a
+    # partir do fim da barra, sem clip).
+    col_valor_w = 120
     largura_barra_max = (x1 - x0) - col_label_w - col_valor_w - 10
     pct_max = max(it["pct"] for it in itens) or 1.0
 
@@ -681,6 +709,21 @@ def grafico_barra_empilhada(c, x0, x1, y_top, altura, segmentos):
 
 
 # ---------------------------------------------------------- tabela do anexo
+# FIX_20260930 (Rafael, revisando PDF real: "os títulos ficaram muito
+# perto dos outros dados"/"nomes muito próximos" na tabela de Anexo --
+# cabeçalho de seção "ATIVO CIRCULANTE" colado na 1ª conta abaixo, linhas
+# de conta consecutivas apertadas). Era 13.0; ~15% a mais de respiro
+# entre linhas -- usado tanto pelo caminho classico (`_coluna_anexo`)
+# quanto pelo multi-coluna (`_paginar_bloco_anexo`), pra nao ter 2
+# valores divergentes do mesmo respiro. O respiro extra especifico entre
+# cabecalho de grupo e a 1a conta mora em `_linha_anexo` (tipo=="grupo").
+# Mesmo motor usado pro Anexo de BP (e de DRE, se algum dia existir) --
+# o fix vale pros dois automaticamente. Nao muda `_ANEXO_Y_LIMITE`/a
+# logica de quebra de pagina (`_paginar_bloco_anexo` mede com a MESMA
+# funcao que desenha, entao a paginacao se ajusta sozinha).
+ALTURA_LINHA_ANEXO = 15.0
+
+
 def _linha_anexo(c, x, largura, y_top, tipo, label, valores, altura_linha, primeira=False,
                   valor_col_w=0.0, gap_col=6.0, desenhar=True):
     """Uma linha da tabela de anexo (pagina 8). `tipo`: grupo / conta /
@@ -721,7 +764,16 @@ def _linha_anexo(c, x, largura, y_top, tipo, label, valores, altura_linha, prime
         y_top += 0 if primeira else 7  # respiro antes de cada novo grupo (exceto o 1o)
         if desenhar:
             txt(c, x, y_top, label.upper(), font="bold", size=9, color=NAVY)
-        return y_top + altura_linha + 4
+        # FIX_20260930 (Rafael, revisando PDF real: "os títulos ficaram
+        # muito perto dos outros dados" -- cabeçalho de seção "ATIVO
+        # CIRCULANTE" colado na 1ª conta abaixo). Era +4 fixo; sobe pra +7
+        # (~75% a mais SÓ neste respiro específico, além do aumento geral
+        # de `altura_linha` que já se aplica a toda linha de conta -- ver
+        # _coluna_anexo/_paginar_bloco_anexo) pra separar visualmente o
+        # cabeçalho do 1º item sem estourar a paginação (a quebra de
+        # página em _paginar_bloco_anexo mede essa MESMA função, então
+        # ajusta sozinha).
+        return y_top + altura_linha + 7
     if tipo == "total":
         y_top += 4
         if desenhar:
@@ -762,7 +814,7 @@ def _linha_anexo(c, x, largura, y_top, tipo, label, valores, altura_linha, prime
     return y_prox
 
 
-def _coluna_anexo(c, x, largura, y_top, linhas, altura_linha=13.0, titulos_colunas=None):
+def _coluna_anexo(c, x, largura, y_top, linhas, altura_linha=ALTURA_LINHA_ANEXO, titulos_colunas=None):
     """`linhas`: tuplas (tipo, label, *valores_num) -- 1 valor numerico por
     empresa/periodo do escopo do relatorio (1 valor = layout classico,
     2+ = multi-coluna). `titulos_colunas`: lista de titulos (nome da
@@ -863,7 +915,7 @@ def _paginar_bloco_anexo(c, dados, x, largura, y, pagina_atual, total_paginas,
         # "grupo" -- topo de bloco e topo de pagina (logo apos quebra) sao
         # os 2 casos que devem pular esse respiro (mesma logica).
         primeira_da_pagina = primeiro_do_bloco
-        y_depois = _linha_anexo(c, x, largura, y, tipo, label, valores, 13.0,
+        y_depois = _linha_anexo(c, x, largura, y, tipo, label, valores, ALTURA_LINHA_ANEXO,
                                  primeira=primeira_da_pagina, valor_col_w=valor_col_w, gap_col=gap_col,
                                  desenhar=False)
         if y_depois > _ANEXO_Y_LIMITE:
@@ -871,7 +923,7 @@ def _paginar_bloco_anexo(c, dados, x, largura, y, pagina_atual, total_paginas,
             _desenhar_titulos()
             precisa_titulo = False  # ja desenhado agora -- sem isso, a checagem do topo do loop redesenhava de novo na proxima linha
             primeira_da_pagina = True
-        y = _linha_anexo(c, x, largura, y, tipo, label, valores, 13.0,
+        y = _linha_anexo(c, x, largura, y, tipo, label, valores, ALTURA_LINHA_ANEXO,
                           primeira=primeira_da_pagina, valor_col_w=valor_col_w, gap_col=gap_col,
                           desenhar=desenhar)
         primeiro_do_bloco = False
@@ -986,8 +1038,41 @@ def pagina_capa(c, dados, pagina: int, total_paginas: int):
 
     txt(c, MARGEM, 310, "Demonstrativo", font="heavy", size=30, color=NAVY)
     txt(c, MARGEM, 345, "Comentado", font="heavy", size=30, color=NAVY)
+
+    # FIX_20260930 (variante "Gerencial" -- Rafael: pág. de Composição das
+    # Despesas Administrativas sai do "Demonstrativo Comentado" padrão e
+    # só existe nesta variante; capa/nome do arquivo precisam deixar isso
+    # explícito). Selo pequeno ao lado do título em vez de 3ª linha no
+    # mesmo tamanho -- "Comentado Gerencial" em heavy 30pt não cabe com
+    # folga antes do painel diagonal navy (conferido: stringWidth de
+    # "Comentado" já usa ~184pt dos ~355pt disponíveis até a borda do
+    # painel nesta altura). `dados.get("variante", "padrao")` -- só a
+    # capa/nome de arquivo mudam por variante; o restante do conteúdo
+    # (Destaques/Receita-Custos/Resultado/EBITDA/Balanço/Anexo/Fechamento)
+    # e' o MESMO dado, so' a pagina de Despesas que soma/some (ver
+    # `gerar_pdf_completo`).
+    if dados.get("variante") == "gerencial":
+        x_selo0 = MARGEM + stringWidth("Comentado", FONT["heavy"], 30) + 14
+        largura_selo = stringWidth("GERENCIAL", FONT["bold"], 9) + 20
+        rect(c, x_selo0, 322, x_selo0 + largura_selo, 344, fill=ORANGE, radius=8)
+        txt(c, x_selo0 + largura_selo / 2, 337, "GERENCIAL", font="bold", size=9, color="#FFFFFF", align="center")
+
     txt(c, MARGEM, 380, dados["empresa_nome"], font="regular", size=12, color=GREY_TEXT)
-    txt(c, MARGEM, 398, _linha_identificacao_empresa(dados), font="regular", size=12, color=GREY_TEXT)
+
+    # FIX_20260930 (Rafael, relatório multi-empresa: "quero a LISTA dos
+    # nomes das empresas, uma por linha" em vez de só a contagem "N
+    # empresas do grupo"). `_nomes_empresas_grupo` devolve None pra
+    # relatório de 1 empresa (comportamento de sempre, 1 linha de CNPJ);
+    # com 2+ empresas, 1 linha por nome -- a pílula do período abaixo
+    # desce proporcionalmente pra nunca sobrepor a lista.
+    nomes_grupo = _nomes_empresas_grupo(dados)
+    if nomes_grupo:
+        for i, nome in enumerate(nomes_grupo):
+            txt(c, MARGEM, 398 + i * 14, nome, font="regular", size=12, color=GREY_TEXT)
+        deslocamento_pilula = (len(nomes_grupo) - 1) * 14
+    else:
+        txt(c, MARGEM, 398, _linha_identificacao_empresa(dados), font="regular", size=12, color=GREY_TEXT)
+        deslocamento_pilula = 0
 
     # FIX_20260928 (Rafael, revisando PDF real): periodo_extenso ja era
     # usado nas paginas Destaques/Fechamento mas nunca aparecia na capa --
@@ -1010,8 +1095,10 @@ def pagina_capa(c, dados, pagina: int, total_paginas: int):
         tamanho_periodo = max(7.0, tamanho_periodo * (CONTEUDO_W - 40) / largura_texto)
         largura_texto = stringWidth(rotulo_periodo, FONT["bold"], tamanho_periodo)
     largura_pilula = min(CONTEUDO_W, 40 + largura_texto)
-    rect(c, MARGEM, 428, MARGEM + largura_pilula, 458, fill=ORANGE, radius=15)
-    txt(c, MARGEM + 20, 447, rotulo_periodo, font="bold", size=tamanho_periodo, color="#FFFFFF")
+    y_pilula0 = 428 + deslocamento_pilula
+    y_pilula1 = 458 + deslocamento_pilula
+    rect(c, MARGEM, y_pilula0, MARGEM + largura_pilula, y_pilula1, fill=ORANGE, radius=15)
+    txt(c, MARGEM + 20, y_pilula1 - 11, rotulo_periodo, font="bold", size=tamanho_periodo, color="#FFFFFF")
 
 
 # ------------------------------------------------------------------ pagina 3
@@ -1106,8 +1193,13 @@ def pagina_despesas(c, dados, pagina: int, total_paginas: int):
         f"{pct_br(d['despesas_administrativas'] / d['despesas_operacionais'])} das despesas operacionais do período",
         font="regular", size=10, color=GREY_TEXT)
 
+    # FIX_20260930 (Rafael: "adicionar o valor em R$ ao lado do percentual
+    # em cada item da composição" -- ex. "Serviços Profissionais — R$
+    # 8.256.954,68 · 46,2%"). O valor absoluto de cada conta ja vinha em
+    # `despesas_admin_itens` (usado pra CALCULAR o pct, nunca desenhado) --
+    # so' precisa formatar com moeda_br e desenhar junto.
     itens_ranking = [
-        dict(label=nome, pct=pct, rotulo_valor=pct_br(pct / 100))
+        dict(label=nome, pct=pct, rotulo_valor=f"{moeda_br(valor)} · {pct_br(pct / 100)}")
         for nome, valor, pct in d.get("despesas_admin_itens", [])
     ]
     y_fim = grafico_ranking_horizontal(c, MARGEM, MARGEM + CONTEUDO_W, 148, 26, itens_ranking) if itens_ranking else 148
@@ -1323,7 +1415,7 @@ def pagina_ebitda(c, dados, pagina: int, total_paginas: int):
 
 
 # ------------------------------------------------------------------ pagina 7
-def _leitura_balanco(dados, pagina: int, total_paginas: int) -> list[str]:
+def _leitura_balanco(dados, pagina: int, total_paginas: int, tem_pagina_resultado: Optional[bool] = None) -> list[str]:
     """FIX_20260928e (Rafael, "a página 7 do relatório (DRE)... alterou
     bastante" -- achado revisando o texto desta página, não um problema
     de cor/layout): esta função citava "página 5" (Resultado) e "página 8"
@@ -1337,13 +1429,28 @@ def _leitura_balanco(dados, pagina: int, total_paginas: int) -> list[str]:
     números errados sem avisar, ficando com "escrita" claramente estranha
     pra quem conhece o relatório. Anexo está sempre 1 página depois do
     Balanço nos 2 layouts (`pagina + 1`); a citação ao Resultado só entra
-    quando essa página de fato existe no total_paginas desta geração."""
+    quando essa página de fato existe no total_paginas desta geração.
+
+    FIX_20260930 (variante "Gerencial", pág. Despesas agora opcional --
+    ver `gerar_pdf_completo`): a heurística antiga (`tem_pagina_resultado
+    = pagina == 7`) parte de UM layout fixo de 9 páginas e QUEBRA com uma
+    2ª página opcional no meio (despesas) -- 2 combinações diferentes
+    ("com despesas, sem Resultado" e "sem despesas, com Resultado")
+    colidem no MESMO número de página pro Balanço (6), uma com
+    tem_pagina_resultado=False e outra True -- adivinhar pelo número de
+    página sozinho fica ambíguo e citaria a página errada (ou nenhuma)
+    silenciosamente. `tem_pagina_resultado` agora é parâmetro explícito
+    (quem monta o PDF SABE se incluiu a página, não precisa adivinhar);
+    None (chamada antiga/testes existentes) cai na heurística de sempre,
+    só válida no layout de 2 combinações original (com/sem despesas fixo,
+    só Resultado variando) -- 100% retrocompatível."""
     d = dados
     pagina_anexo_num = pagina + 1
-    # PAGINAS (lista fixa no modulo) so' tem 1 pagina opcional antes do
-    # Balanco (pagina_resultado) -- por isso o proprio numero da pagina do
-    # Balanco ja diz se ela existiu nesta geracao: 7 com Resultado, 6 sem.
-    tem_pagina_resultado = pagina == 7
+    if tem_pagina_resultado is None:
+        # PAGINAS (lista fixa no modulo) so' tinha 1 pagina opcional antes
+        # do Balanco (pagina_resultado) -- por isso o proprio numero da
+        # pagina do Balanco dizia se ela existiu: 7 com Resultado, 6 sem.
+        tem_pagina_resultado = pagina == 7
     p1 = (
         f"O Patrimônio Líquido de {moeda_br(d['patrimonio_liquido'])} representa "
         f"{pct_br(d['patrimonio_liquido'] / d['total_ativo'])} do total do passivo. O endividamento geral "
@@ -1362,7 +1469,7 @@ def _leitura_balanco(dados, pagina: int, total_paginas: int) -> list[str]:
     return [p1, p2]
 
 
-def pagina_balanco(c, dados, pagina: int, total_paginas: int):
+def pagina_balanco(c, dados, pagina: int, total_paginas: int, tem_pagina_resultado: Optional[bool] = None):
     d = dados
     _fundo_marca_dagua(c)
     _header(c, dados, "Balanço Patrimonial")
@@ -1410,7 +1517,7 @@ def pagina_balanco(c, dados, pagina: int, total_paginas: int):
     c.setStrokeColor(HexColor(ORANGE)); c.setLineWidth(2)
     c.line(MARGEM, Y(y + 6), MARGEM + 34, Y(y + 6))
     y += 28
-    for par in _leitura_balanco(d, pagina, total_paginas):
+    for par in _leitura_balanco(d, pagina, total_paginas, tem_pagina_resultado=tem_pagina_resultado):
         y = paragrafo(c, MARGEM, y, par, CONTEUDO_W, size=10.5, leading=15) + 10
 
     _footer(c, pagina, total_paginas)
@@ -1563,10 +1670,11 @@ PAGINAS = [
 
 def gerar_pdf_completo(dados: dict, caminho_saida: str, incluir_pagina_resultado: bool = True) -> str:
     """Gera o PDF completo (9 paginas, ou 8 se incluir_pagina_resultado=False
-    -- 25/09/2026, apos aceite do Rafael da pagina 2/Destaques). Mesma
-    funcao serve qualquer empresa/periodo -- todo o conteudo vem de
-    `dados`, nenhuma conta e' hardcoded aqui (so' na fixture de teste, que
-    usa os valores reais do PDF-modelo pra comparacao).
+    -- 25/09/2026, apos aceite do Rafael da pagina 2/Destaques; ou 1 a
+    menos ainda no `variante="padrao"`, ver abaixo). Mesma funcao serve
+    qualquer empresa/periodo -- todo o conteudo vem de `dados`, nenhuma
+    conta e' hardcoded aqui (so' na fixture de teste, que usa os valores
+    reais do PDF-modelo pra comparacao).
 
     incluir_pagina_resultado=False (25/09/2026, Fase 2/dado real, pedido
     do Rafael): pula pagina_resultado (Formacao do Resultado) -- essa
@@ -1578,6 +1686,22 @@ def gerar_pdf_completo(dados: dict, caminho_saida: str, incluir_pagina_resultado
     pra pular a pagina em vez de inventar. Paginas renumeradas
     automaticamente (total_paginas reflete a contagem real, nao fixo em 9).
 
+    `dados['variante']` (FIX_20260930, pedido do Rafael: "Composição das
+    Despesas Administrativas" -- Serviços Profissionais/Salários/etc. em
+    barras horizontais + os 3 cards Administrativas/Financeiras/
+    Tributárias -- só deve existir na variante "Demonstrativo Comentado
+    Gerencial", NAO no "Demonstrativo Comentado" padrão que a contadora
+    já usa hoje): "padrao" (default, também o comportamento quando o
+    campo está ausente -- 100% retrocompatível com todo dado montado
+    antes desta rodada) pula `pagina_despesas`; "gerencial" inclui, igual
+    a sempre. Extensível de propósito (string, não bool) -- uma 3ª
+    variante ("fornecedor", cogitada mas explicitamente adiada pelo
+    Rafael) pode entrar depois sem reabrir esta assinatura; até lá,
+    qualquer variante desconhecida cai no mesmo caminho de "gerencial"
+    (inclui a página) -- a validação de qual variante é válida acontece
+    na camada de dados (`montar_dados_relatorio`), que é quem decide o
+    que o usuário pode pedir; este módulo só desenha o que `dados` manda.
+
     FIX_20260929o: `total_paginas` agora tambem soma as paginas EXTRAS que
     o anexo (multi-empresa/multi-periodo) precisar -- calculado ANTES do
     loop (`paginas_extras_anexo`), porque o rodape de TODA pagina (mesmo
@@ -1588,6 +1712,20 @@ def gerar_pdf_completo(dados: dict, caminho_saida: str, incluir_pagina_resultado
     _registrar_fontes()
     c = canvas.Canvas(caminho_saida, pagesize=(PAGE_W, PAGE_H))
     paginas = PAGINAS if incluir_pagina_resultado else [p for p in PAGINAS if p is not pagina_resultado]
+    if dados.get("variante", "padrao") == "padrao":
+        paginas = [p for p in paginas if p is not pagina_despesas]
+    # FIX_20260930: `pagina_balanco`/`_leitura_balanco` nao podem mais
+    # adivinhar "tem pagina_resultado?" pelo NUMERO absoluto da pagina do
+    # Balanco (ver docstring de `_leitura_balanco`) -- com a pagina de
+    # Despesas agora tambem opcional, 2 combinacoes diferentes podem cair
+    # no mesmo numero de pagina. Quem monta o PDF ja SABE
+    # `incluir_pagina_resultado` -- passa explicito via partial em vez de
+    # deixar a funcao reconstruir isso por adivinhacao.
+    paginas = [
+        functools.partial(pagina_balanco, tem_pagina_resultado=incluir_pagina_resultado)
+        if p is pagina_balanco else p
+        for p in paginas
+    ]
     total = len(paginas) + paginas_extras_anexo(dados)
     pagina_atual = 1
     for pagina_fn in paginas:

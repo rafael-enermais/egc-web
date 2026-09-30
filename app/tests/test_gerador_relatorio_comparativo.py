@@ -196,6 +196,59 @@ def test_anexo_comparativo_grande_nao_perde_conteudo_estourando_pagina():
     print(f"OK: anexo comparativo grande usa páginas extras em vez de perder conteúdo (paginas_extras_anexo={extras})")
 
 
+# FIX_20260930 (Rafael, PDF real: "as barras de 2024 e 2026 ficam quase
+# idênticas" com 3 períodos -- ver FIX_20260930 em `_cor_periodo`).
+# Regressão pura (sem canvas) que confere que, pra 2, 3 e 4 períodos
+# (range suportado), todas as barras de valores POSITIVOS ficam
+# visivelmente distintas entre si (limiar de luminosidade -- não exige
+# separação perceptual "profissional", só que não fiquem quase iguais
+# como no bug real) e que a leitura "mais escuro = mais recente" continua
+# valendo (luminosidade estritamente decrescente conforme o período fica
+# mais recente).
+def _luminosidade_hex(cor_hex: str) -> float:
+    cor_hex = cor_hex.lstrip("#")
+    r, g, b = (int(cor_hex[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def test_grafico_evolucao_cores_periodos_positivos_sao_distintas():
+    for n_periodos in (2, 3, 4):
+        cores = [B._cor_periodo(i, n_periodos, v=1.0) for i in range(n_periodos)]
+        assert len(set(cores)) == n_periodos, (
+            f"n_periodos={n_periodos}: cores repetidas entre períodos positivos ({cores}) -- "
+            "período diferente tem que ter cor visivelmente diferente"
+        )
+        luminosidades = [_luminosidade_hex(c) for c in cores]
+        # decrescente estrito: período mais recente (i maior) sempre mais escuro
+        assert all(luminosidades[i] > luminosidades[i + 1] for i in range(n_periodos - 1)), (
+            f"n_periodos={n_periodos}: luminosidade não é estritamente decrescente ({luminosidades}) -- "
+            "'mais escuro = mais recente' quebraria"
+        )
+        # degrau mínimo entre luminosidades vizinhas -- limiar baixo de
+        # propósito (só prova "visivelmente distinto", o bug real tinha
+        # degrau quase 0 entre 2024/2026 com o range antigo)
+        degraus = [luminosidades[i] - luminosidades[i + 1] for i in range(n_periodos - 1)]
+        # limiar 0.06 -- o range NOVO (#5A63D8→NAVY) tem o pior degrau
+        # (n=4) em ~0.094; o range ANTIGO do bug real (#2A32AC→NAVY) tinha
+        # ~0.032 no mesmo n=4 -- 0.06 fica no meio, longe o bastante do
+        # antigo pra pegar uma regressão de verdade se alguém reduzir a
+        # faixa de novo, sem exigir mais do que o range atual entrega.
+        assert min(degraus) > 0.06, (
+            f"n_periodos={n_periodos}: menor degrau de luminosidade entre períodos vizinhos "
+            f"é {min(degraus):.4f} -- perto demais de 0, período ficaria quase idêntico ao vizinho "
+            f"(o bug real relatado pelo Rafael, ver FIX_20260930)"
+        )
+    print("OK: cor do gráfico de evolução -- 2/3/4 períodos positivos sempre distintos entre si, "
+          "mais escuro = mais recente, sem degraus quase-invisíveis")
+
+
+def test_grafico_evolucao_negativo_sempre_red_accent_independente_do_periodo():
+    for n_periodos in (2, 3, 4):
+        for i in range(n_periodos):
+            assert B._cor_periodo(i, n_periodos, v=-1.0) == B.RED_ACCENT
+    print("OK: valor negativo é sempre RED_ACCENT, independente do período/posição na escala ordinal")
+
+
 if __name__ == "__main__":
     testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
     falhas = 0

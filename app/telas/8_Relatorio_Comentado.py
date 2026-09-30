@@ -442,7 +442,29 @@ pode_gerar = (
     or (modo != "Período único" and 2 <= len(periodos_multi) <= 4 and bool(empresas_multi))
 )
 
-if st.button("Gerar relatório", type="primary", key="relatorio_gerar_btn", disabled=not pode_gerar):
+# FIX_20260930 (Rafael, variante "Demonstrativo Comentado Gerencial" --
+# a página "Composição das Despesas Administrativas" sai do relatório
+# padrão e só existe nesta variante nova, pág. 3 explicada em
+# dados_relatorio_comentado._VARIANTE_TITULOS). Só o modo "Período único"
+# (Modelo A) tem essa página pra começo de conversa -- o Comparativo
+# (Modelo B, "Evolução Financeira") continua com 1 botão só, sem
+# variante (fora de escopo desta rodada).
+variante_selecionada = "padrao"
+if modo == "Período único":
+    col_btn_padrao, col_btn_gerencial = st.columns(2)
+    clique_padrao = col_btn_padrao.button(
+        "Gerar relatório", type="primary", key="relatorio_gerar_btn", disabled=not pode_gerar,
+    )
+    clique_gerencial = col_btn_gerencial.button(
+        "Gerar Demonstrativo Comentado Gerencial", key="relatorio_gerar_gerencial_btn", disabled=not pode_gerar,
+    )
+    if clique_gerencial:
+        variante_selecionada = "gerencial"
+    clicou_gerar = clique_padrao or clique_gerencial
+else:
+    clicou_gerar = st.button("Gerar relatório", type="primary", key="relatorio_gerar_btn", disabled=not pode_gerar)
+
+if clicou_gerar:
     admin = dict(
         nome_administrador=nome_administrador, cargo_administrador=cargo_administrador or "Administrador",
         nome_contador=nome_contador, cargo_contador=cargo_contador or "Contador",
@@ -457,16 +479,25 @@ if st.button("Gerar relatório", type="primary", key="relatorio_gerar_btn", disa
                     conn, empresa_codigo=empresa_arg, periodo=periodo_sel,
                     periodo_label=periodo_label.strip() or periodo_sel.strftime("%m/%Y"),
                     periodo_extenso=periodo_extenso.strip(), admin=admin,
-                    granularidade=granularidade_sel,
+                    granularidade=granularidade_sel, variante=variante_selecionada,
                 )
-                nome_arquivo = f"Demonstrativo_{sufixo_empresas_unico}_{periodo_sel.strftime('%Y%m%d')}.pdf"
+                sufixo_variante = "" if variante_selecionada == "padrao" else "_GERENCIAL"
+                nome_arquivo = (
+                    f"Demonstrativo_{sufixo_empresas_unico}_{periodo_sel.strftime('%Y%m%d')}{sufixo_variante}.pdf"
+                )
                 caminho = f"/tmp/{nome_arquivo}"
                 g.gerar_pdf_completo(dados, caminho, incluir_pagina_resultado=incluir_pagina_resultado)
             with open(caminho, "rb") as f:
                 pdf_bytes = f.read()
+            # FIX_20260930: contagem de páginas do layout-base (9) agora
+            # desconta 2 páginas opcionais, não só 1 -- Resultado
+            # (incluir_pagina_resultado) E Composição das Despesas
+            # (variante == "padrao"). Mensagem tinha "9"/"8" fixos.
+            n_paginas_layout = 9 - (0 if incluir_pagina_resultado else 1) - (1 if variante_selecionada == "padrao" else 0)
             st.success(
                 f"Relatório gerado ({len(pdf_bytes) // 1024} KB, "
-                f"{'9' if incluir_pagina_resultado else '8'} páginas"
+                f"{n_paginas_layout} páginas"
+                f"{' (variante Gerencial)' if variante_selecionada == 'gerencial' else ''}"
                 f"{f', {len(empresas_unico_multi)} empresas consolidadas' if len(empresas_unico_multi) > 1 else ''})."
             )
             if not incluir_pagina_resultado:

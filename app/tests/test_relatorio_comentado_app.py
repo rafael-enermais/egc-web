@@ -394,6 +394,68 @@ def test_gerar_relatorio_chama_pipeline_e_nao_quebra():
         print("OK: Relatório Comentado — clique em Gerar chama o pipeline completo e gera PDF real sem exceção")
 
 
+# FIX_20260930 (Rafael, variante "Demonstrativo Comentado Gerencial" --
+# 2º botão ao lado do "Gerar relatório" de sempre, só no modo "Período
+# único").
+def test_botao_gerencial_chama_pipeline_com_variante_gerencial_e_nome_de_arquivo_diferente():
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos", return_value=[PERIODO]), \
+         patch.object(db, "listar_periodos_detalhado", return_value=_det([PERIODO])), \
+         patch.object(drc, "montar_dados_relatorio", return_value=(dict(DADOS_FIXTURE, variante="gerencial"), True)) as m_montar, \
+         patch.object(db, "registrar_relatorio_gerado") as m_log:
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        botoes = [b for b in at.button if b.label == "Gerar Demonstrativo Comentado Gerencial"]
+        assert len(botoes) == 1, "botão 'Gerar Demonstrativo Comentado Gerencial' não encontrado (modo Período único)"
+        botoes[0].click().run(timeout=30)
+        assert not at.exception, f"excecao gerando relatorio gerencial: {at.exception}"
+        assert m_montar.called
+        assert m_montar.call_args.kwargs.get("variante") == "gerencial", (
+            f"botão Gerencial deveria passar variante='gerencial' pro montar_dados_relatorio, "
+            f"veio {m_montar.call_args.kwargs.get('variante')!r}"
+        )
+        assert any("(variante Gerencial)" in s.value for s in at.success)
+        # AppTest não expõe o nome do arquivo do download_button (só id/label/
+        # url mockados) -- a distinção de nome de arquivo (sufixo _GERENCIAL)
+        # é conferida diretamente na string montada em 8_Relatorio_Comentado.py,
+        # não dá pra inspecionar aqui sem reimplementar a lógica da tela.
+        assert any(b.key == "relatorio_download_btn" for b in at.download_button)
+        print("OK: Relatório Comentado — botão 'Gerar Demonstrativo Comentado Gerencial' passa variante='gerencial'")
+
+
+def test_botao_padrao_continua_passando_variante_padrao_sem_regressao():
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos", return_value=[PERIODO]), \
+         patch.object(db, "listar_periodos_detalhado", return_value=_det([PERIODO])), \
+         patch.object(drc, "montar_dados_relatorio", return_value=(DADOS_FIXTURE, True)) as m_montar, \
+         patch.object(db, "registrar_relatorio_gerado"):
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        botao = next(b for b in at.button if b.label == "Gerar relatório")
+        botao.click().run(timeout=30)
+        assert not at.exception
+        assert m_montar.call_args.kwargs.get("variante") == "padrao", (
+            f"botão padrão deveria continuar passando variante='padrao', veio {m_montar.call_args.kwargs.get('variante')!r}"
+        )
+        print("OK: Relatório Comentado — botão padrão ('Gerar relatório') continua passando variante='padrao'")
+
+
+def test_modo_comparativo_nao_tem_botao_gerencial():
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos", return_value=PERIODOS_COMPARATIVO), \
+         patch.object(db, "listar_periodos_detalhado", return_value=_det(PERIODOS_COMPARATIVO)):
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        at.radio(key="relatorio_modo").set_value("Comparativo (evolução entre períodos)").run(timeout=30)
+        assert not any(b.label == "Gerar Demonstrativo Comentado Gerencial" for b in at.button), (
+            "modo Comparativo não deveria mostrar o botão da variante Gerencial (só existe pro Período único)"
+        )
+        print("OK: Relatório Comentado — modo Comparativo não mostra o botão da variante Gerencial")
+
+
 if __name__ == "__main__":
     # FIX_20260929h: bloco antigo não chamava
     # test_lista_de_contatos_e_compartilhada_entre_administrador_e_contador
