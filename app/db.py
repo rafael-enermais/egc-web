@@ -244,14 +244,14 @@ def salvar_despesas_admin_itens(
     de fallback ja usado em inserir_lancamentos p/ nao travar o resto da
     importacao por causa de uma tabela nova que so' esta Fase 2 usa.
 
-    granularidade (Fase 4, 30/09/2026, bloco 18 do schema.sql): o
+    granularidade (Fase 4, 30/09/2026, bloco 19 do schema.sql): o
     documento e' identificado por (empresa, periodo_fim, granularidade) --
     antes, reimportar o SEMESTRAL de 06/2026 apagava os itens do
     TRIMESTRAL de 06/2026 (delete por empresa+periodo) e o ranking do
     relatorio trimestral mostrava itens do semestral. Com granularidade
     informada (inclusive ""), so' troca os itens dessa granularidade. None
     (chamador legado) mantem o comportamento antigo (empresa+periodo).
-    Se a coluna `granularidade` ainda nao existe (bloco 18 nao rodou),
+    Se a coluna `granularidade` ainda nao existe (bloco 19 nao rodou),
     cai no comportamento antigo sem quebrar.
     """
     def _legado(cur):
@@ -314,7 +314,7 @@ def listar_despesas_admin_itens(
     periodo que nao tem grupo Administrativas) -- o gerador de relatorio
     ja trata despesas_admin_itens=[] de forma segura (degrada sem quebrar).
 
-    granularidade (Fase 4, 30/09/2026, bloco 18): filtro por documento
+    granularidade (Fase 4, 30/09/2026, bloco 19): filtro por documento
     (inclusive "" = nao declarada); None nao filtra (legado). Se a coluna
     ainda nao existe no banco, devolve os itens de empresa+periodo como
     antes -- quem consome (dados_relatorio_comentado) valida a soma contra

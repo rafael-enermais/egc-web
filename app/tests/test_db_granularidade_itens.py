@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""db.salvar/listar_despesas_admin_itens com granularidade (bloco 18 do
+"""db.salvar/listar_despesas_admin_itens com granularidade (bloco 19 do
 schema.sql, 30/09/2026): o documento e' (empresa, periodo_fim,
 granularidade) -- reimportar o semestral nao pode apagar o ranking do
 trimestral do mesmo periodo_fim."""
@@ -44,7 +44,7 @@ def test_listar_com_granularidade_filtra_pelo_documento():
 
 
 class _CursorSemColuna(FakeCursor):
-    """Banco onde o bloco 18 ainda nao rodou: qualquer SQL que cite a coluna falha."""
+    """Banco onde o bloco 19 ainda nao rodou: qualquer SQL que cite a coluna falha."""
 
     def execute(self, sql, params=None):
         if "granularidade" in sql:
