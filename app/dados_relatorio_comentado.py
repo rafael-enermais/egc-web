@@ -454,7 +454,7 @@ def _consolidar_historico(conn, empresas_codigos: list, tipo: str, granularidade
 def _buscar_itens_admin(conn, cod: str, periodo: date, granularidade: str) -> list:
     """Itens de despesas administrativas de 1 empresa pro documento
     (periodo, granularidade) pedido. Primeiro a granularidade exata; se
-    nao houver (linhas gravadas antes do bloco 18 do schema.sql, que nao
+    nao houver (linhas gravadas antes do bloco 19 do schema.sql, que nao
     tinham a coluna e ficam como "" / nao declarada), cai nas linhas
     sem granularidade -- quem chama valida a coerencia com o total do
     DRE (_itens_admin_coerentes) antes de usar."""
