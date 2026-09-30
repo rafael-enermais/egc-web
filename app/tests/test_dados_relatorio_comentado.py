@@ -417,6 +417,94 @@ def test_sem_dre_gravado_tambem_leva_erro_claro():
     print("OK: sem DRE gravado -> ValueError claro")
 
 
+# ─────────────────────────────────────────────
+#  FIX_20260930 -- variante "padrao"/"gerencial" e empresas_nomes (capa
+#  multi-empresa lista nomes em vez de só contagem).
+# ─────────────────────────────────────────────
+def test_variante_padrao_e_o_default_e_entra_no_cabecalho_e_no_dict():
+    dados, _ = _montar()
+    assert dados["variante"] == "padrao"
+    assert dados["cabecalho_relatorio"] == "Demonstrativo Comentado · 1º Semestre 2026"
+    print("OK: variante default ('padrao') aparece em dados['variante'] e no título/cabeçalho")
+
+
+def test_variante_gerencial_muda_titulo_do_cabecalho():
+    dados, _ = _montar(variante="gerencial")
+    assert dados["variante"] == "gerencial"
+    assert dados["cabecalho_relatorio"] == "Demonstrativo Comentado Gerencial · 1º Semestre 2026"
+    print("OK: variante='gerencial' muda o título pra 'Demonstrativo Comentado Gerencial' no cabeçalho")
+
+
+def test_variante_desconhecida_levanta_valueerror_claro():
+    try:
+        _montar(variante="fornecedor")
+        assert False, "deveria ter levantado ValueError -- variante 'fornecedor' ainda não foi construída"
+    except ValueError as e:
+        assert "fornecedor" in str(e)
+    print("OK: variante desconhecida ('fornecedor', cogitada mas não implementada) levanta ValueError claro")
+
+
+EMPRESAS_GRUPO = [
+    {"codigo": "ENERGIA", "nome": "Enermais Energia Ltda", "cnpj": "47.040.664/0001-48"},
+    {"codigo": "SMG", "nome": "SMG Soluções", "cnpj": "18.387.666/0001-00"},
+]
+
+BP_GRUPO_ACHATADO = [
+    {"empresa_codigo": "ENERGIA", "grupo": "ATIVO CIRCULANTE", "conta": "TOTAL CIRCULANTE ATIVO", "valor": 100.0},
+    {"empresa_codigo": "ENERGIA", "grupo": "TOTAL", "conta": "TOTAL DO ATIVO", "valor": 100.0},
+    {"empresa_codigo": "SMG", "grupo": "ATIVO CIRCULANTE", "conta": "TOTAL CIRCULANTE ATIVO", "valor": 25.0},
+    {"empresa_codigo": "SMG", "grupo": "TOTAL", "conta": "TOTAL DO ATIVO", "valor": 25.0},
+]
+DRE_GRUPO_ACHATADO = [
+    {"empresa_codigo": "ENERGIA", "grupo": "RESULTADO", "conta": "RECEITA OPERACIONAL LIQUIDA", "valor": 100.0},
+    {"empresa_codigo": "ENERGIA", "grupo": "RESULTADO", "conta": "LUCRO LIQUIDO DO EXERCICIO", "valor": 10.0},
+    {"empresa_codigo": "SMG", "grupo": "RESULTADO", "conta": "RECEITA OPERACIONAL LIQUIDA", "valor": 20.0},
+    {"empresa_codigo": "SMG", "grupo": "RESULTADO", "conta": "LUCRO LIQUIDO DO EXERCICIO", "valor": 2.0},
+]
+
+
+def test_grupo_preenche_empresas_nomes_com_o_nome_real_de_cada_empresa():
+    """FIX_20260930 -- capa multi-empresa (Modelo A) agora lista os NOMES
+    das empresas, não só a contagem (ver gerador_relatorio_comentado.
+    _nomes_empresas_grupo). Mocka no limite de _consolidar_periodo/
+    _consolidar_historico/_consolidar_despesas_admin_itens (visao_grupo.
+    montar_pivot_grupo direto) -- a mecânica de consolidação BP/DRE já
+    tem teste próprio (test_visao_grupo.py); aqui só confere que
+    `empresas_nomes` sai na MESMA ordem de `empresas_codigos`, com o
+    nome de verdade (não o código)."""
+    import visao_grupo
+
+    def _pivot_fake(lancs, cods):
+        df = pd.DataFrame(lancs)
+        return df.groupby(["grupo", "conta"], as_index=False)["valor"].sum().rename(
+            columns={"valor": "VALOR CONSOLIDADO"}
+        )
+
+    with patch("dados_relatorio_comentado.db.listar_empresas", return_value=EMPRESAS_GRUPO), \
+         patch("dados_relatorio_comentado.db.listar_periodos_detalhado",
+               return_value=[{"periodo": PERIODO, "granularidade": ""}]), \
+         patch("dados_relatorio_comentado.db.listar_lancamentos_grupo",
+               side_effect=lambda conn, per, tipo, cods, granularidade="":
+               BP_GRUPO_ACHATADO if tipo == "BP" else DRE_GRUPO_ACHATADO), \
+         patch("dados_relatorio_comentado.visao_grupo.montar_pivot_grupo", side_effect=_pivot_fake), \
+         patch("dados_relatorio_comentado.db.listar_periodos_grupo", return_value=[PERIODO]), \
+         patch("dados_relatorio_comentado.db.listar_lancamentos_grupo_periodos",
+               side_effect=lambda conn, periodos, tipo, cods:
+               [dict(x, periodo=PERIODO, granularidade="") for x in (BP_GRUPO_ACHATADO if tipo == "BP" else DRE_GRUPO_ACHATADO)]), \
+         patch("dados_relatorio_comentado.db.listar_despesas_admin_itens", return_value=[]), \
+         patch("dados_relatorio_comentado.indicadores.calcular_indicadores",
+               return_value=_indic_df({PERIODO: INDIC_ROW})):
+        dados, _ = drc.montar_dados_relatorio(
+            conn=object(), empresa_codigo=["ENERGIA", "SMG"], periodo=PERIODO,
+            periodo_label="1º Semestre 2026",
+        )
+    assert dados["empresas_codigos"] == ["ENERGIA", "SMG"]
+    assert dados["empresas_nomes"] == ["Enermais Energia Ltda", "SMG Soluções"], (
+        f"empresas_nomes deveria ter o NOME de cada empresa (mesma ordem de empresas_codigos), veio {dados['empresas_nomes']}"
+    )
+    print("OK: montar_dados_relatorio (grupo, 2 empresas) preenche empresas_nomes com o nome real de cada uma, na ordem certa")
+
+
 if __name__ == "__main__":
     test_conversao_de_sinal_bate_com_fixture_do_gerador()
     test_despesas_admin_itens_ordenado_e_percentual_correto()
@@ -432,3 +520,7 @@ if __name__ == "__main__":
     test_sem_bp_gravado_leva_erro_claro_nao_zerodivisionerror()
     test_bp_gravado_sem_total_do_ativo_leva_erro_claro()
     test_sem_dre_gravado_tambem_leva_erro_claro()
+    test_variante_padrao_e_o_default_e_entra_no_cabecalho_e_no_dict()
+    test_variante_gerencial_muda_titulo_do_cabecalho()
+    test_variante_desconhecida_levanta_valueerror_claro()
+    test_grupo_preenche_empresas_nomes_com_o_nome_real_de_cada_empresa()

@@ -450,6 +450,22 @@ def _consolidar_despesas_admin_itens(conn, empresas_codigos: list, periodo: date
     return [(conta, somas[conta]) for conta in ordem]
 
 
+# FIX_20260930 (Rafael, variante "Demonstrativo Comentado Gerencial" --
+# a página "Composição das Despesas Administrativas" sai do relatório
+# padrão e só existe nesta variante nova). String (não bool) de proposito
+# -- Rafael já avisou que quer construir uma 3ª variante ("fornecedor")
+# depois; mapa fica pronto pra crescer sem reabrir a assinatura de
+# `montar_dados_relatorio`. "fornecedor" e' cogitada mas NAO implementada
+# ainda (pedido explicito do Rafael pra nao construir agora) -- por isso
+# so' "padrao"/"gerencial" sao validas aqui; pedir uma variante
+# desconhecida levanta erro claro em vez de gerar um relatorio errado
+# silenciosamente (mesma REGRA DE OURO do resto do modulo).
+_VARIANTE_TITULOS = {
+    "padrao": "Demonstrativo Comentado",
+    "gerencial": "Demonstrativo Comentado Gerencial",
+}
+
+
 def montar_dados_relatorio(
     conn,
     empresa_codigo,
@@ -459,6 +475,7 @@ def montar_dados_relatorio(
     data_geracao: Optional[str] = None,
     admin: Optional[dict] = None,
     granularidade: str = "",
+    variante: str = "padrao",
 ) -> tuple[dict, bool]:
     """Monta (dados, incluir_pagina_resultado) prontos pra
     gerador_relatorio_comentado.gerar_pdf_completo(dados, caminho,
@@ -495,9 +512,23 @@ def montar_dados_relatorio(
     nome_contador/cargo_contador/email_empresa/site_empresa -- tambem
     inputs editaveis na tela (decisao do Rafael, 24/09). Campo ausente
     vira string vazia (a tela decide o que exigir antes de gerar).
+
+    variante ("padrao"/"gerencial", FIX_20260930): decide o TÍTULO ("Demonstrativo
+    Comentado" vs "Demonstrativo Comentado Gerencial" -- entra em
+    `dados['cabecalho_relatorio']`, cabeçalho de toda página) e é
+    repassada em `dados['variante']` pra `gerador_relatorio_comentado.
+    gerar_pdf_completo` decidir se inclui a página de Composição das
+    Despesas Administrativas (só na "gerencial") e o texto da capa. Este
+    módulo não desenha nada -- só resolve o título e guarda a variante no
+    dict pro gerador ler.
     """
     admin = admin or {}
     data_geracao = data_geracao or date.today().strftime("%d/%m/%Y")
+    if variante not in _VARIANTE_TITULOS:
+        raise ValueError(
+            f"variante '{variante}' desconhecida -- use {sorted(_VARIANTE_TITULOS)} "
+            "('fornecedor' foi cogitada mas ainda não foi construída)."
+        )
 
     codigos = [empresa_codigo] if isinstance(empresa_codigo, str) else list(empresa_codigo)
     if not codigos:
@@ -655,7 +686,8 @@ def montar_dados_relatorio(
         empresa_codigo=codigos[0],
         empresa_nome=nome_empresa,
         cnpj=cnpj,
-        cabecalho_relatorio=f"Demonstrativo Comentado · {periodo_label}",
+        cabecalho_relatorio=f"{_VARIANTE_TITULOS[variante]} · {periodo_label}",
+        variante=variante,
         periodo_label=periodo_label,
         periodo_extenso=periodo_extenso,
         data_posicao=periodo.strftime("%d/%m/%Y"),
@@ -683,6 +715,7 @@ def montar_dados_relatorio(
     )
     if grupo:
         dados["empresas_codigos"] = list(codigos)
+        dados["empresas_nomes"] = [empresas.get(cod, {}).get("nome", cod) for cod in codigos]
     if tem_csll_irpj:
         dados["csll_irpj"] = csll_irpj
 
@@ -929,6 +962,12 @@ def montar_dados_relatorio_comparativo(
     return dict(
         empresa_codigo=empresas_codigos[0],
         empresas_codigos=list(empresas_codigos),
+        # FIX_20260930 (Rafael, capa multi-empresa: "quero a LISTA dos
+        # nomes" -- ver gerador_relatorio_comentado._nomes_empresas_grupo,
+        # reaproveitado pela capa do Modelo B). Preenchido sempre (nao só
+        # quando `grupo`) -- inofensivo com 1 empresa só (o helper da capa
+        # ignora a lista nesse caso).
+        empresas_nomes=[empresas_map.get(cod, {}).get("nome", cod) for cod in empresas_codigos],
         empresa_nome=nome_empresa,
         cnpj=cnpj,
         cabecalho_relatorio=f"Evolução Financeira · {periodo_range_label}",

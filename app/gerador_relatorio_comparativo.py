@@ -61,6 +61,7 @@ _fundo_marca_dagua = A._fundo_marca_dagua
 _header, _footer = A._header, A._footer
 _logo_dados = A._logo_dados
 _linha_identificacao_empresa = A._linha_identificacao_empresa
+_nomes_empresas_grupo = A._nomes_empresas_grupo
 _coluna_anexo = A._coluna_anexo
 pagina_anexo = A.pagina_anexo  # pagina inteira reaproveitada sem alteracao
 paginas_extras_anexo = A.paginas_extras_anexo  # FIX_20260929o -- ver Modelo A
@@ -111,9 +112,26 @@ def pagina_capa_comparativa(c, dados, pagina: int, total_paginas: int):
     txt(c, MARGEM, 310, "Evolução", font="heavy", size=30, color=NAVY)
     txt(c, MARGEM, 345, "Financeira", font="heavy", size=30, color=NAVY)
     txt(c, MARGEM, 380, d["empresa_nome"], font="regular", size=12, color=GREY_TEXT)
-    txt(c, MARGEM, 398, _linha_identificacao_empresa(d), font="regular", size=12, color=GREY_TEXT)
-    rect(c, MARGEM, 428, MARGEM + 280, 458, fill=ORANGE, radius=15)
-    txt(c, MARGEM + 20, 447, f"PERÍODO · {d['periodo_range_label'].upper()}", font="bold", size=10, color="#FFFFFF")
+
+    # FIX_20260930 (Rafael, capa do relatório multi-empresa: "quero a
+    # LISTA dos nomes, uma por linha" em vez de só "N empresas do grupo"
+    # -- mesmo pedido já aplicado na capa do Modelo A, ver
+    # `_nomes_empresas_grupo`). A pílula do período (largura fixa aqui,
+    # diferente da pílula dinâmica do Modelo A) desce proporcionalmente
+    # pra nunca sobrepor a lista de nomes.
+    nomes_grupo = _nomes_empresas_grupo(d)
+    if nomes_grupo:
+        for i, nome in enumerate(nomes_grupo):
+            txt(c, MARGEM, 398 + i * 14, nome, font="regular", size=12, color=GREY_TEXT)
+        deslocamento_pilula = (len(nomes_grupo) - 1) * 14
+    else:
+        txt(c, MARGEM, 398, _linha_identificacao_empresa(d), font="regular", size=12, color=GREY_TEXT)
+        deslocamento_pilula = 0
+
+    y_pilula0 = 428 + deslocamento_pilula
+    y_pilula1 = 458 + deslocamento_pilula
+    rect(c, MARGEM, y_pilula0, MARGEM + 280, y_pilula1, fill=ORANGE, radius=15)
+    txt(c, MARGEM + 20, y_pilula1 - 11, f"PERÍODO · {d['periodo_range_label'].upper()}", font="bold", size=10, color="#FFFFFF")
 
 
 # ------------------------------------------------------------------ pagina 2
@@ -310,6 +328,22 @@ def pagina_resumo_evolucao(c, dados, pagina: int, total_paginas: int):
 
 
 # ------------------------------------------------------------------ pagina 3
+# Cor inicial da escala ordinal de período -- mesmo matiz/saturação de
+# NAVY (~236°/61%), luminosidade ~60% (ver FIX_20260930 em `_cor_periodo`).
+_COR_PERIODO_CLARA = "#5A63D8"
+
+
+def _cor_periodo(i: int, n_periodos: int, v: float) -> str:
+    """Cor da barra do período `i` (0 = mais antigo) num grupo de
+    `n_periodos`, pro grafico de evolucao. Extraída em função pura (mesmo
+    padrão de `_layout_tabela_evolucao` neste módulo) pra virar
+    regressão testável sem gerar PDF -- ver
+    test_grafico_evolucao_cores_periodos_positivos_sao_distintas."""
+    if v < 0:
+        return RED_ACCENT
+    return _interp_cor(_COR_PERIODO_CLARA, NAVY, i / max(1, n_periodos - 1))
+
+
 def grafico_evolucao(c, x0, x1, y0_top, metricas, periodos_labels, altura_grupo=58.0):
     """Mini-barras horizontais por periodo, 1 grupo por metrica, escala
     PROPRIA por metrica (nao dá pra comparar Receita e EBITDA na mesma
@@ -334,23 +368,15 @@ def grafico_evolucao(c, x0, x1, y0_top, metricas, periodos_labels, altura_grupo=
         for i, v in enumerate(vals):
             # FIX_20260929p+r (Rafael: 1º "esse lilás claro tá mt ruim",
             # depois "a paleta me incomoda... não tem alguma melhor que
-            # combine com a cara da Enermais?"). O 1º fix (#5C62C6) já
-            # resolvia contraste mas era só um azul-arroxeado genérico,
-            # sem relação com a marca. Esta é uma escala ORDINAL (a cor
-            # marca a ORDEM cronológica do período, não a magnitude -- o
-            # comprimento da barra já é a magnitude), então o padrão certo
-            # (skill de dataviz: "Ordinal -- 1 matiz só, degraus de
-            # luminosidade monótonos") é 1 matiz só do fim claro ao
-            # escuro -- aqui, o próprio NAVY da marca. #2A32AC tem o
-            # MESMO matiz de NAVY (~236°) na mesma saturação (~61%), só
-            # mais claro -- lê como "azul Enermais mais claro", não como
-            # uma cor emprestada de outro lugar (#5C62C6 tinha 48% de
-            # saturação -- por isso parecia lavado/genérico mesmo já
-            # passando no contraste). Validado com o script do skill de
-            # dataviz (--ordinal): luminosidade monótona, degrau visível
-            # entre 2/3/4 períodos, ponta clara 9.51:1 contra o fundo (SLA
-            # de texto pede 4.5:1), matiz único confirmado.
-            cor = RED_ACCENT if v < 0 else _interp_cor("#2A32AC", NAVY, i / max(1, n_periodos - 1))
+            # combine com a cara da Enermais?") + FIX_20260930 (Rafael,
+            # PDF real com 3 períodos 2023/2024/2026: "as barras de 2024
+            # e 2026 ficam quase idênticas, só a de 2023 se distingue" --
+            # ponto de partida antigo, #2A32AC, tinha luminosidade
+            # perto demais do NAVY final). Ver `_cor_periodo` pro
+            # raciocínio completo (escala ordinal, matiz único, faixa de
+            # luminosidade) e o teste de regressão
+            # test_grafico_evolucao_cores_periodos_positivos_sao_distintas.
+            cor = _cor_periodo(i, n_periodos, v)
             txt(c, x0, y + altura_barra - 2, periodos_labels[i], font="regular", size=7.5, color=GREY_TEXT)
             bx0 = x0 + col_label_w
             largura = largura_barra_max * (abs(v) / maior_abs)

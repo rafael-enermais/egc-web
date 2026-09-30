@@ -221,6 +221,24 @@ def test_consolidado_nome_e_escopo_mostram_grupo_e_quais_empresas():
     print("OK: montar_dados_relatorio_comparativo (consolidado) — nome 'Grupo Enermais' + escopo lista as empresas")
 
 
+# FIX_20260930 (Rafael, capa multi-empresa: "quero a LISTA dos nomes,
+# uma por linha" -- ver gerador_relatorio_comentado._nomes_empresas_grupo,
+# reaproveitado pela capa do Modelo B).
+def test_empresas_nomes_preenchido_com_nome_real_na_ordem_dos_codigos():
+    dados = _chamar(empresas_codigos=["ENERGIA", "SMG"])
+    assert dados["empresas_nomes"] == ["Enermais Energia Ltda", "SMG Soluções"]
+    print("OK: montar_dados_relatorio_comparativo — empresas_nomes com o nome real de cada empresa, na ordem de empresas_codigos")
+
+
+def test_empresas_nomes_com_1_empresa_tambem_preenchido_mas_ignorado_pela_capa():
+    # 1 empresa -- empresas_nomes ainda vem preenchido (lista de 1), mas
+    # _nomes_empresas_grupo (capa) ignora nesse caso (len(codigos) <= 1),
+    # comportamento de sempre (linha "CNPJ ...").
+    dados = _chamar(empresas_codigos=["ENERGIA"])
+    assert dados["empresas_nomes"] == ["Enermais Energia Ltda"]
+    print("OK: montar_dados_relatorio_comparativo — empresas_nomes preenchido mesmo com 1 empresa só")
+
+
 def test_consolidado_anexo_usa_valor_consolidado_do_pivot():
     dados = _chamar(empresas_codigos=["ENERGIA", "SMG"])
     ativo_por_label = {l[1]: l for l in dados["anexo_ativo"] if l[0] != "grupo"}

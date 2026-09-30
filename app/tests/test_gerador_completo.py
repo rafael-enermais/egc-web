@@ -110,6 +110,66 @@ def test_leitura_balanco_referencia_pagina_certa_com_e_sem_resultado():
     print("OK: _leitura_balanco referencia Resultado/Anexo pelo número de página real de cada layout, não hardcoded")
 
 
+def test_leitura_balanco_nao_confunde_variante_padrao_com_lucro_presumido_na_pagina_6():
+    """FIX_20260930 -- achado implementando a variante 'padrao' (pula a
+    página de Despesas): a heurística antiga (`tem_pagina_resultado =
+    pagina == 7`) parte de UM único layout de 9 páginas com só 1 página
+    opcional (Resultado). Com a página de Despesas TAMBÉM opcional agora,
+    2 cenários diferentes colidem na MESMA página de Balanço (6):
+      (a) COM despesas, SEM resultado (lucro presumido, layout de sempre)
+      (b) SEM despesas (variante padrao), COM resultado (lucro real)
+    Sem o parâmetro explícito `tem_pagina_resultado`, o caso (b) seria
+    mal-interpretado como "sem Resultado" (mesma pagina==6 do caso 'a')
+    e a citação à página do Resultado sumiria da leitura mesmo a página
+    existindo de verdade no PDF. Prova que os 2 casos, mesma pagina=6,
+    dão leituras DIFERENTES quando `tem_pagina_resultado` é passado
+    explícito."""
+    d = BASE
+    # Caso (a): lucro presumido, layout de sempre (Despesas presente,
+    # Resultado ausente) -- comportamento OK mesmo por inferência (pagina==6).
+    _, p2_presumido = g._leitura_balanco(d, 6, 8, tem_pagina_resultado=False)
+    assert "página 5" not in p2_presumido
+
+    # Caso (b): variante padrao (Despesas ausente), lucro REAL (Resultado
+    # presente) -- MESMA pagina=6 do caso (a), mas Resultado EXISTE.
+    # A inferência antiga (pagina==7) erraria aqui; o parâmetro explícito
+    # não.
+    _, p2_variante_padrao = g._leitura_balanco(d, 6, 8, tem_pagina_resultado=True)
+    assert "página 4" in p2_variante_padrao, (
+        "variante padrao (Resultado 2 páginas antes do Balanço, sem Despesas no meio) deveria citar a "
+        f"página do Resultado -- texto: {p2_variante_padrao}"
+    )
+    assert p2_presumido != p2_variante_padrao, (
+        "os 2 cenários têm o MESMO número de página de Balanço (6) mas presença de Resultado diferente -- "
+        "a leitura tem que diferir, senão a página=6 sozinha não bastava pra decidir (bug do FIX_20260930)"
+    )
+    print("OK: _leitura_balanco distingue 'lucro presumido' de 'variante padrao + lucro real' mesmo com o "
+          "MESMO número de página de Balanço, via tem_pagina_resultado explícito")
+
+
+def test_gerar_pdf_completo_variante_padrao_com_resultado_cita_pagina_certa_do_resultado():
+    """Integração fim-a-fim do bug acima: gera o PDF de verdade com
+    variante='padrao' (pula Despesas) E incluir_pagina_resultado=True
+    (lucro real) -- Balanço cai na página 6 (mesma página que lucro
+    presumido teria SEM variante), e a leitura do Balanço precisa citar
+    a página do Resultado corretamente mesmo assim."""
+    import pdfplumber
+
+    with tempfile.TemporaryDirectory() as tmp:
+        caminho = os.path.join(tmp, "padrao_com_resultado.pdf")
+        dados = dict(BASE, variante="padrao")
+        g.gerar_pdf_completo(dados, caminho, incluir_pagina_resultado=True)
+        with pdfplumber.open(caminho) as pdf:
+            paginas_txt = [(p.extract_text() or "") for p in pdf.pages]
+        assert len(paginas_txt) == 8, f"variante padrao + com resultado deveria ter 8 páginas, veio {len(paginas_txt)}"
+        pagina_balanco_txt = next(p for p in paginas_txt if "Posição Patrimonial" in p)
+        assert "página 4" in pagina_balanco_txt, (
+            "leitura do Balanço (variante padrao, com Resultado) deveria citar a página 4 (onde o Resultado "
+            f"está nesse layout de 8 páginas sem Despesas) -- texto:\n{pagina_balanco_txt}"
+        )
+    print("OK: gerar_pdf_completo (variante padrao + com Resultado) cita a página certa do Resultado na leitura do Balanço")
+
+
 def test_grafico_ranking_horizontal_nao_quebra_lista_vazia():
     with tempfile.TemporaryDirectory() as tmp:
         caminho = os.path.join(tmp, "sem_itens.pdf")
@@ -300,3 +360,124 @@ def test_ebitda_sem_csll_irpj_nao_quebra_e_nao_menciona_provisao():
         g.gerar_pdf_completo(dados_sem_csll, caminho, incluir_pagina_resultado=False)
         assert os.path.exists(caminho) and os.path.getsize(caminho) > 5000
     print("OK: EBITDA sem csll_irpj nao quebra e nao menciona provisao inexistente")
+
+
+# ─────────────────────────────────────────────
+#  FIX_20260930 -- variante "Gerencial", valor R$ na Composição das
+#  Despesas, e lista de nomes na capa multi-empresa. Usa pdfplumber pra
+#  extrair texto de verdade do PDF gerado (não só tamanho/exceção) --
+#  disponível no projeto (ver test_parser_admin_itens.py).
+# ─────────────────────────────────────────────
+import pdfplumber  # noqa: E402
+
+
+def _texto_paginas(caminho):
+    with pdfplumber.open(caminho) as pdf:
+        return [(p.extract_text() or "") for p in pdf.pages]
+
+
+def test_variante_padrao_pula_pagina_despesas_e_gerencial_inclui():
+    with tempfile.TemporaryDirectory() as tmp:
+        caminho_padrao = os.path.join(tmp, "padrao.pdf")
+        dados_padrao = dict(BASE, variante="padrao")
+        g.gerar_pdf_completo(dados_padrao, caminho_padrao)
+        paginas_padrao = _texto_paginas(caminho_padrao)
+        assert len(paginas_padrao) == 8, (
+            f"variante padrao deveria ter 8 páginas (9 - Composição das Despesas), veio {len(paginas_padrao)}"
+        )
+        assert not any("Composição das Despesas" in p for p in paginas_padrao), (
+            "variante padrao NÃO pode incluir a página de Composição das Despesas Administrativas"
+        )
+
+        caminho_gerencial = os.path.join(tmp, "gerencial.pdf")
+        dados_gerencial = dict(BASE, variante="gerencial")
+        g.gerar_pdf_completo(dados_gerencial, caminho_gerencial)
+        paginas_gerencial = _texto_paginas(caminho_gerencial)
+        assert len(paginas_gerencial) == 9, (
+            f"variante gerencial deveria manter as 9 páginas de sempre, veio {len(paginas_gerencial)}"
+        )
+        assert any("Composição das Despesas" in p for p in paginas_gerencial), (
+            "variante gerencial deveria incluir a página de Composição das Despesas Administrativas"
+        )
+
+        # dados ausente de 'variante' -- retrocompatibilidade (todo dado
+        # montado antes desta rodada, ou dict de teste antigo) cai no
+        # comportamento padrao de sempre (pula a página).
+        caminho_sem_variante = os.path.join(tmp, "sem_variante.pdf")
+        g.gerar_pdf_completo(dict(BASE), caminho_sem_variante)
+        assert len(_texto_paginas(caminho_sem_variante)) == 8
+    print("OK: variante 'padrao' pula a página de Composição das Despesas, 'gerencial' inclui, sem variante = padrao")
+
+
+def test_variante_gerencial_mostra_selo_na_capa_padrao_nao_mostra():
+    with tempfile.TemporaryDirectory() as tmp:
+        caminho = os.path.join(tmp, "capa_gerencial.pdf")
+        g.gerar_pdf_completo(dict(BASE, variante="gerencial"), caminho)
+        capa = _texto_paginas(caminho)[0]
+        assert "GERENCIAL" in capa, "capa da variante gerencial deveria mostrar o selo 'GERENCIAL'"
+
+        caminho2 = os.path.join(tmp, "capa_padrao.pdf")
+        g.gerar_pdf_completo(dict(BASE, variante="padrao"), caminho2)
+        capa2 = _texto_paginas(caminho2)[0]
+        assert "GERENCIAL" not in capa2, "capa da variante padrao não deveria mostrar o selo 'GERENCIAL'"
+    print("OK: selo 'GERENCIAL' na capa só aparece na variante gerencial")
+
+
+def test_despesas_admin_mostra_valor_em_reais_junto_do_percentual():
+    with tempfile.TemporaryDirectory() as tmp:
+        caminho = os.path.join(tmp, "despesas_rs.pdf")
+        dados = dict(BASE, variante="gerencial")
+        g.gerar_pdf_completo(dados, caminho)
+        paginas = _texto_paginas(caminho)
+        pagina_despesas_txt = next(p for p in paginas if "Composição das Despesas" in p)
+        # BASE: ("Serviços Profissionais", 11_401_300.0, 38.9) -- valor
+        # formatado (moeda_br) tem que aparecer JUNTO do percentual, não
+        # só o percentual sozinho como antes desta rodada.
+        assert "11.401.300,00" in pagina_despesas_txt.replace("R$", "").replace("R$\xa0", ""), (
+            "valor em R$ do maior item de despesa administrativa não aparece na página -- "
+            f"conteúdo extraído:\n{pagina_despesas_txt}"
+        )
+        assert "38,9%" in pagina_despesas_txt or "38,9 %" in pagina_despesas_txt
+    print("OK: página de Composição das Despesas mostra o valor em R$ ao lado do percentual de cada item")
+
+
+def test_capa_multi_empresa_lista_nomes_das_empresas_uma_por_linha():
+    with tempfile.TemporaryDirectory() as tmp:
+        caminho = os.path.join(tmp, "capa_grupo.pdf")
+        dados = dict(
+            BASE,
+            empresa_nome="Grupo Enermais",
+            empresas_codigos=["ENERGIA", "SMG"],
+            empresas_nomes=["Enermais Energia Ltda", "SMG Soluções"],
+            anexo_ativo=[("grupo", "ATIVO"), ("conta", "Disponível", 100.0), ("total", "TOTAL DO ATIVO", 100.0)],
+            anexo_passivo=[("grupo", "PASSIVO"), ("conta", "Fornecedores", 100.0), ("total", "TOTAL PASSIVO + PL", 100.0)],
+        )
+        g.gerar_pdf_completo(dados, caminho)
+        capa = _texto_paginas(caminho)[0]
+        assert "Enermais Energia Ltda" in capa, f"nome da 1ª empresa não aparece na capa:\n{capa}"
+        assert "SMG Soluções" in capa, f"nome da 2ª empresa não aparece na capa:\n{capa}"
+        assert "2 empresas do grupo" not in capa, (
+            "capa multi-empresa deveria mostrar a LISTA de nomes, não mais a contagem genérica"
+        )
+    print("OK: capa multi-empresa (Modelo A) lista os nomes das empresas, uma por linha, em vez de só a contagem")
+
+
+def test_capa_1_empresa_continua_mostrando_cnpj_sem_regressao():
+    """Retrocompatibilidade: sem `empresas_codigos` (ou com só 1), a capa
+    continua mostrando 'CNPJ ...' -- o comportamento de sempre."""
+    with tempfile.TemporaryDirectory() as tmp:
+        caminho = os.path.join(tmp, "capa_1_empresa.pdf")
+        g.gerar_pdf_completo(dict(BASE), caminho)
+        capa = _texto_paginas(caminho)[0]
+        assert "CNPJ" in capa
+    print("OK: capa de 1 empresa continua mostrando CNPJ, sem regressão")
+
+
+def test_nomes_empresas_grupo_cai_pros_codigos_se_empresas_nomes_ausente():
+    """`_nomes_empresas_grupo` não pode travar a capa se o dict foi
+    montado sem `empresas_nomes` (dict de teste antigo, ou algum
+    caminho que ainda não passa esse campo opcional) -- cai pros
+    próprios códigos em vez de inventar nome."""
+    dados = dict(BASE, empresas_codigos=["ENERGIA", "SMG"])
+    assert g._nomes_empresas_grupo(dados) == ["ENERGIA", "SMG"]
+    print("OK: _nomes_empresas_grupo cai pros códigos quando 'empresas_nomes' está ausente")
