@@ -262,7 +262,9 @@ else:
 
         filtro_status = st.multiselect(
             "Filtrar por status", options=sorted(tabela["status"].unique()),
-            default=[s for s in tabela["status"].unique() if s != "LANCADA"] or list(tabela["status"].unique()),
+            # todos os status por padrao: com LANCADA escondida a coluna
+            # "Título Sienge" parecia vazia (so' notas lancadas tem titulo).
+            default=list(tabela["status"].unique()),
             key="nf_filtro_status",
         )
         tabela_filtrada = tabela[tabela["status"].isin(filtro_status)] if filtro_status else tabela

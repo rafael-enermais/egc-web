@@ -30,7 +30,7 @@ def test_preparar_tabela_renomeia_e_tira_internas():
     df = nf_export.preparar_tabela(_tabela())
     assert "registro_id" not in df.columns and "origem" not in df.columns
     assert "Título Sienge" in df.columns and "Documento no Sienge" in df.columns
-    assert list(df.columns)[:3] == ["Nº da nota", "CFOP", "Emissão"]
+    assert list(df.columns)[:3] == ["Nº da nota", "Título Sienge", "Documento no Sienge"]
 
 
 def test_xlsx_completo_tem_todas_as_abas_e_todas_as_linhas():

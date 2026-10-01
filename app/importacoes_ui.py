@@ -119,6 +119,28 @@ def agrupar_historico_importacoes(
     return [eventos_por_chave[c] for c in ordem_chaves]
 
 
+def assinatura_item(r: dict) -> str:
+    """Assinatura estavel de 1 PDF da previa (arquivo + periodo + tipo +
+    granularidade DETECTADA + tamanho). Usada como sufixo das keys dos
+    widgets do Streamlit no lugar do indice posicional.
+
+    Bug real (Rafael, 01/10/2026): com key posicional (`..._{i}`), o
+    widget do 1o arquivo do lote seguinte herdava o valor escolhido no lote
+    anterior -- gravou o TRIMESTRAL, subiu o SEMESTRAL e o seletor
+    continuou em "Trimestral"; o app entao achava que o semestre
+    substituiria o trimestre e travava a gravacao. Com a assinatura, cada
+    arquivo novo nasce com o proprio default (o detectado no PDF)."""
+    import hashlib
+    meta = (r.get("meta") or [None])[0]
+    if meta:
+        _e, cnpj, periodo, _n, tipo, _f, p_ini, gran = meta
+        base = f"{r.get('arquivo')}|{cnpj}|{periodo}|{tipo}|{p_ini}|{gran}"
+    else:
+        base = f"{r.get('arquivo')}|sem-meta"
+    base += f"|{len(r.get('bp_rows') or [])}|{len(r.get('dre_rows') or [])}"
+    return hashlib.sha1(base.encode("utf-8")).hexdigest()[:10]
+
+
 def chave_documento_item(r: dict):
     """(tipo, periodo_str, granularidade_confirmada) de cada tipo que o
     item `r` (1 PDF da previa) vai gravar -- usado pra detectar conflito.

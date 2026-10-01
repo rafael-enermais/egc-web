@@ -52,6 +52,7 @@ from parser_egc import processar_pdf, extrair_despesas_admin_itens  # noqa: E402
 from validacoes import checar_fechamento_bp, formatar_br  # noqa: E402
 from importacoes_ui import (  # noqa: E402
     chave_ordenacao_previa, agrupar_historico_importacoes, detectar_conflitos_lote, chave_documento_item,
+    assinatura_item,
 )
 import formatacao  # noqa: E402
 
@@ -188,6 +189,7 @@ if resultados:
             # agora fica disponivel em QUALQUER arquivo, com erro
             # detectado ou nao -- a contadora decide, o sistema nao
             # precisa "adivinhar" que aquele arquivo especifico e' ruim.
+            r["_sig"] = assinatura_item(r)
             r["_i"] = i  # FIX_20260930: guarda o indice original -- usado
             # pra gerar keys unicas pros controles espelhados na secao 3
             # (Confirmar gravacao), pedido do Rafael: "queria q as funções
@@ -195,12 +197,12 @@ if resultados:
             # forma de apagar por la tb".
             col_incl, col_rem = st.columns([3, 1])
             incluir = col_incl.checkbox(
-                "Incluir nesta gravação", value=True, key=f"incluir_{i}",
+                "Incluir nesta gravação", value=True, key=f"incluir_{r['_sig']}",
                 help="Desmarque pra deixar este arquivo de fora do grupo de gravação "
                      "abaixo, sem perder o processamento (fica pendente na lista).",
             )
             r["_incluir"] = incluir
-            if col_rem.button("🗑️ Remover da lista", key=f"remover_manual_{i}"):
+            if col_rem.button("🗑️ Remover da lista", key=f"remover_manual_{r['_sig']}"):
                 st.session_state["import_resultados"] = [
                     x for x in st.session_state["import_resultados"] if x is not r
                 ]
@@ -245,7 +247,7 @@ if resultados:
                         list(_OPCOES_GRANULARIDADE.keys()),
                         index=list(_OPCOES_GRANULARIDADE.keys()).index(granularidade if granularidade in _OPCOES_GRANULARIDADE else ""),
                         format_func=lambda g: _OPCOES_GRANULARIDADE[g],
-                        key=f"granularidade_confirmada_{i}",
+                        key=f"granularidade_confirmada_{r['_sig']}",
                     )
                     r["_granularidade_confirmada"] = granularidade_escolhida
                 else:
@@ -282,7 +284,7 @@ if resultados:
                     idx = st.selectbox(
                         "Empresa (manual)", opcoes_idx,
                         format_func=lambda j: "-- selecione --" if j == -1 else nomes[j],
-                        key=f"empresa_manual_{i}",
+                        key=f"empresa_manual_{r['_sig']}",
                     )
                     if idx == -1:
                         r["_bloqueado"] = True
@@ -426,10 +428,10 @@ if resultados:
                 col_nome, col_incl2, col_rem2 = st.columns([3, 1, 1])
                 col_nome.caption(x["arquivo"])
                 incluir2 = col_incl2.checkbox(
-                    "Incluir", value=x.get("_incluir", True), key=f"incluir_grav_{idx}",
+                    "Incluir", value=x.get("_incluir", True), key=f"incluir_grav_{x['_sig']}",
                 )
                 x["_incluir"] = incluir2
-                if col_rem2.button("🗑️ Remover", key=f"remover_grav_{idx}"):
+                if col_rem2.button("🗑️ Remover", key=f"remover_grav_{x['_sig']}"):
                     remover_agora = x
             if remover_agora is not None:
                 st.session_state["import_resultados"] = [
@@ -469,35 +471,43 @@ if resultados:
                         if nome != escolha:
                             excluidos_conflito.add((nome, cf["tipo"]))
 
-            substituicoes = []  # [(tipo, periodo_str, rotulo, [docs ativos])]
+            substituicoes = []  # [(tipo, periodo_str, rotulo, [docs ativos], [arquivos novos])]
             try:
-                _vistos = set()
+                _vistos = {}
                 for x in itens_incluidos:
                     for tipo_k, periodo_k, gran_k, _n in chave_documento_item(x):
-                        if (x["arquivo"], tipo_k) in excluidos_conflito or (tipo_k, periodo_k, gran_k) in _vistos:
+                        if (x["arquivo"], tipo_k) in excluidos_conflito:
                             continue
-                        _vistos.add((tipo_k, periodo_k, gran_k))
-                        _dt_k = _dt.datetime.strptime(periodo_k, "%d/%m/%Y").date()
-                        existentes = db.listar_documentos_ativos(get_conn(), cod_g, _dt_k, tipo_k, gran_k)
-                        if existentes:
-                            substituicoes.append((tipo_k, periodo_k, indicadores_rotulo(gran_k), existentes))
+                        _vistos.setdefault((tipo_k, periodo_k, gran_k), []).append(x["arquivo"])
+                for (tipo_k, periodo_k, gran_k), novos_arqs in _vistos.items():
+                    _dt_k = _dt.datetime.strptime(periodo_k, "%d/%m/%Y").date()
+                    existentes = db.listar_documentos_ativos(get_conn(), cod_g, _dt_k, tipo_k, gran_k)
+                    if existentes:
+                        substituicoes.append((tipo_k, periodo_k, indicadores_rotulo(gran_k), existentes, novos_arqs))
             except Exception:
                 substituicoes = []  # nao consegue checar -> nao bloqueia (comportamento anterior)
             confirmou_substituir = True
             if substituicoes:
-                for tipo_k, periodo_k, rot_k, existentes in substituicoes:
+                # Trimestral e semestral do MESMO fim de periodo NAO se
+                # substituem (granularidade faz parte da chave). Este aviso so'
+                # aparece quando ja existe o MESMO documento (tipo + periodo +
+                # granularidade) -- reimportacao/correcao do mesmo fechamento.
+                for tipo_k, periodo_k, rot_k, existentes, novos_arqs in substituicoes:
                     st.warning(
-                        f"♻️ Já existe {tipo_k} ATIVO de {periodo_k} ({rot_k}) para esta empresa: "
+                        f"♻️ O arquivo {', '.join(novos_arqs)} será gravado como **{tipo_k} {rot_k}** de "
+                        f"{periodo_k}, e já existe um {tipo_k} {rot_k} ATIVO desse período: "
                         + "; ".join(
                             f"{e['arquivo']} ({e['contas']} contas"
                             + (f", gravado em {formatacao.hora_br(e['gravado_em'])}" if e.get("gravado_em") else "")
                             + ")" for e in existentes
                         )
-                        + ". Gravar arquiva (não apaga) o documento atual e passa a valer o novo."
+                        + ". Gravar arquiva (não apaga) o atual e passa a valer o novo. "
+                        "Se a granularidade acima estiver errada, corrija no seletor do card do arquivo."
                     )
+                _sig_subst = "_".join(sorted(x["_sig"] for x in itens_incluidos))
                 confirmou_substituir = st.checkbox(
                     "Confirmo: substituir o(s) documento(s) acima pelo(s) novo(s)",
-                    key=f"confirma_subst_{cod_g}_{len(substituicoes)}",
+                    key=f"confirma_subst_{cod_g}_{_sig_subst}",
                 )
             bloqueado_por_duplicidade = conflitos_abertos > 0 or not confirmou_substituir
 

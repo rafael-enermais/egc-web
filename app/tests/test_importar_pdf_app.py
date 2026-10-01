@@ -29,6 +29,7 @@ from streamlit.testing.v1 import AppTest  # noqa: E402
 import auth  # noqa: E402
 import conexao  # noqa: E402
 import db  # noqa: E402
+from importacoes_ui import assinatura_item  # noqa: E402
 
 PAGE = str(Path(__file__).resolve().parent.parent / "telas" / "1_Importar_PDF.py")
 
@@ -102,7 +103,7 @@ def test_importar_pdf_sem_cnpj_nao_defaulta_pra_energia():
         at.run(timeout=30)
         assert not at.exception, f"excecao com CNPJ nao identificado: {at.exception}"
 
-        sel = at.selectbox(key="empresa_manual_0")
+        sel = at.selectbox(key=f"empresa_manual_{assinatura_item(FAKE_RESULT_SEM_CNPJ[0])}")
         assert sel.value == -1, "default deveria ser '-- selecione --' (-1), nao a 1a empresa da lista"
         assert "Nenhum arquivo pronto pra gravar ainda." in " ".join(i.value for i in at.info), (
             "sem escolher a empresa, nao deveria aparecer nenhum grupo pronto pra gravar"
@@ -150,7 +151,7 @@ def test_importar_pdf_granularidade_editavel_default_e_override():
         at.run(timeout=30)
         assert not at.exception, f"excecao com DRE + granularidade detectada: {at.exception}"
 
-        sel = at.selectbox(key="granularidade_confirmada_0")
+        sel = at.selectbox(key=f"granularidade_confirmada_{assinatura_item(FAKE_RESULT_DRE_COM_GRANULARIDADE[0])}")
         assert sel.value == "trimestral", f"default deveria ser o detectado ('trimestral'), veio {sel.value!r}"
 
         # contadora corrige pra semestral (ex.: o mesmo fechamento tem os
@@ -188,7 +189,7 @@ def test_importar_pdf_bp_nao_tem_selector_de_granularidade():
         at.session_state["import_resultados"] = [dict(FAKE_RESULT_SEM_CNPJ[0])]  # tipo BP
         at.run(timeout=30)
         assert not at.exception, f"excecao com BP: {at.exception}"
-        assert not any(s.key == "granularidade_confirmada_0" for s in at.selectbox), (
+        assert not any(s.key == f"granularidade_confirmada_{assinatura_item(FAKE_RESULT_SEM_CNPJ[0])}" for s in at.selectbox), (
             "BP nao deveria ter selector de granularidade"
         )
         print("OK: Importar PDF — BP nao ganha selector de granularidade (so' DRE)")
@@ -299,7 +300,7 @@ def test_importar_pdf_bp_herda_granularidade_do_dre_irmao_fix_20260930c():
         assert not at.exception, f"excecao com BP+DRE separados do mesmo periodo: {at.exception}"
 
         # DRE mantem o default detectado (nao mexeu no seletor)
-        sel = at.selectbox(key="granularidade_confirmada_1")  # DRE e' o 2o item (indice 1, ordenado BP antes de DRE)
+        sel = at.selectbox(key=f"granularidade_confirmada_{assinatura_item(FAKE_LOTE_BP_DRE_SEPARADOS_MESMO_PERIODO[1])}")  # DRE e' o 2o item do lote
         assert sel.value == "trimestral"
 
         botoes_gravar = [b for b in at.button if "Gravar" in b.label]
@@ -391,6 +392,76 @@ def test_importar_pdf_documento_ativo_existente_exige_confirmar_substituicao_01_
         botao.click().run(timeout=30)
         assert mock_inserir.call_count == 1
         print("OK: Importar PDF — documento ativo existente exige confirmacao")
+
+
+def _dre(nome, periodo_ini, gran, n=5):
+    return {
+        "arquivo": nome, "bp_rows": [],
+        "dre_rows": [(f"CONTA {i}", 10.0, "RECEITAS", "PDF") for i in range(n)],
+        "admin_itens": [], "log": [],
+        "meta": [("Enermais Energia Ltda", "47.040.664/0001-48", "30/06/2026", nome, "DRE", "SPED", periodo_ini, gran)],
+    }
+
+
+def _ativos_so_trimestral(conn, cod, dt, tipo, gran):
+    # banco ja' tem o TRIMESTRAL de 30/06/2026; semestral nao existe
+    if tipo == "DRE" and gran == "trimestral":
+        return [{"arquivo": "energia_dre_2tri.pdf", "contas": 5, "gravado_em": None}]
+    return []
+
+
+def test_importar_pdf_semestral_apos_trimestral_nao_herda_widget_do_lote_anterior_01_10():
+    # Bug real (Rafael, 01/10/2026): gravou o trimestral, subiu o semestral
+    # do MESMO periodo_fim e o seletor continuou em "Trimestral" (key
+    # posicional reaproveitada) -> app achava que era substituicao e travava.
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_importacoes_recentes", return_value=[]), \
+         patch.object(db, "listar_documentos_ativos", side_effect=_ativos_so_trimestral), \
+         patch.object(db, "inativar_periodo_existente", return_value=0), \
+         patch.object(db, "inserir_lancamentos", return_value=1) as mock_inserir, \
+         patch.object(db, "registrar_importacao", return_value=None):
+        tri = _dre("energia_dre_2tri_novo.pdf", "01/04/2026", "trimestral")
+        sem = _dre("energia_dre_1sem.pdf", "01/01/2026", "semestral")
+        at = AppTest.from_file(PAGE)
+        at.session_state["import_resultados"] = [tri]
+        at.run(timeout=30)
+        assert not at.exception, at.exception
+        assert at.selectbox(key=f"granularidade_confirmada_{assinatura_item(tri)}").value == "trimestral"
+        # proximo lote: so' o semestral, na MESMA posicao 0 da lista
+        at.session_state["import_resultados"] = [sem]
+        at.run(timeout=30)
+        assert not at.exception, at.exception
+        sel = at.selectbox(key=f"granularidade_confirmada_{assinatura_item(sem)}")
+        assert sel.value == "semestral", f"semestral herdou o widget do lote anterior: {sel.value!r}"
+        assert not any("substituir" in c.label for c in at.checkbox), "semestral nao substitui trimestral"
+        botao = [b for b in at.button if "Gravar" in b.label][0]
+        assert not botao.disabled, "semestral apos trimestral nao pode travar a gravacao"
+        botao.click().run(timeout=30)
+        assert mock_inserir.call_args.kwargs.get("granularidade") == "semestral"
+        print("OK: Importar PDF — semestral apos trimestral nao trava")
+
+
+def test_importar_pdf_trimestral_e_semestral_no_mesmo_lote_nao_conflitam_01_10():
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_importacoes_recentes", return_value=[]), \
+         patch.object(db, "listar_documentos_ativos", return_value=[]), \
+         patch.object(db, "inativar_periodo_existente", return_value=0), \
+         patch.object(db, "inserir_lancamentos", return_value=1) as mock_inserir, \
+         patch.object(db, "registrar_importacao", return_value=None):
+        at = AppTest.from_file(PAGE)
+        at.session_state["import_resultados"] = [
+            _dre("a_tri.pdf", "01/04/2026", "trimestral"), _dre("b_sem.pdf", "01/01/2026", "semestral"),
+        ]
+        at.run(timeout=30)
+        assert not at.exception, at.exception
+        assert not any("MESMO" in e.value for e in at.error), [e.value for e in at.error]
+        botao = [b for b in at.button if "Gravar" in b.label][0]
+        assert not botao.disabled
+        botao.click().run(timeout=30)
+        assert mock_inserir.call_count == 2
+        print("OK: Importar PDF — trimestral e semestral coexistem no lote")
 
 
 if __name__ == "__main__":
