@@ -342,7 +342,8 @@ def test_tela_fornecedor_gera_com_sufixo_e_titulo(conn):
             assert not at.exception, at.exception
             assert capturado["caminho"].endswith("Demonstrativo_ENERGIA_20260630_trimestral_FORNECEDOR.pdf")
             assert capturado["dados"]["variante"] == "fornecedor"
-            assert capturado["dados"]["cabecalho_relatorio"].startswith("Demonstrativo Comentado Fornecedor")
+            assert capturado["dados"]["cabecalho_relatorio"].startswith("Demonstrativo Comentado")
+            assert "Fornecedor" not in capturado["dados"]["cabecalho_relatorio"]
         finally:
             _parar(ps)
 

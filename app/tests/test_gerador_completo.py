@@ -492,11 +492,13 @@ def test_variante_fornecedor_igual_ao_padrao_sem_despesas_e_com_selo_proprio():
         pg_f = _texto_paginas(cam_f)
         assert len(pg_f) == 8
         assert not any("Composição das Despesas" in p for p in pg_f)
-        assert "FORNECEDOR" in pg_f[0] and "GERENCIAL" not in pg_f[0]
+        # 01/10/2026: capa SEM selo/palavra "Fornecedor" (pedido do Rafael)
+        assert "FORNECEDOR" not in pg_f[0].upper() and "GERENCIAL" not in pg_f[0]
+        assert "Demonstrativo" in pg_f[0] or "Comentado" in pg_f[0]
         cam_p = os.path.join(tmp, "p.pdf")
         g.gerar_pdf_completo(dict(BASE, variante="padrao"), cam_p)
         assert "FORNECEDOR" not in _texto_paginas(cam_p)[0]
         cam_g = os.path.join(tmp, "g.pdf")
         g.gerar_pdf_completo(dict(BASE, variante="gerencial"), cam_g)
         assert "FORNECEDOR" not in _texto_paginas(cam_g)[0]
-    print("OK: variante 'fornecedor' = padrao (8 paginas) + selo FORNECEDOR na capa")
+    print("OK: variante 'fornecedor' = padrao (8 paginas) sem selo na capa")

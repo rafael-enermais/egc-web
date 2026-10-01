@@ -523,7 +523,9 @@ def _consolidar_despesas_admin_itens(conn, empresas_codigos: list, periodo: date
 _VARIANTE_TITULOS = {
     "padrao": "Demonstrativo Comentado",
     "gerencial": "Demonstrativo Comentado Gerencial",
-    "fornecedor": "Demonstrativo Comentado Fornecedor",
+    # 01/10/2026 (Rafael): "retira 'fornecedor' da capa" -- o nome so' existe no app
+    # (seletor de tipo) e no sufixo do arquivo; o documento diz so' "Demonstrativo Comentado".
+    "fornecedor": "Demonstrativo Comentado",
 }
 VARIANTES_VALIDAS = tuple(_VARIANTE_TITULOS)
 
@@ -610,8 +612,9 @@ def _avisar_documentos_identicos(
             avisos.append(
                 f"{cod} {periodo.strftime('%m/%Y')}: os documentos '{granularidade or 'não declarada'}' e "
                 f"'{outra or 'não declarada'}' têm Receita Líquida e Resultado Líquido idênticos "
-                f"(R$ {rl:,.2f} / R$ {ll or 0:,.2f}) — provável erro de classificação na importação; "
-                "confira qual PDF foi gravado em cada base."
+                f"(R$ {rl:,.2f} / R$ {ll or 0:,.2f}) — confira: é normal quando a empresa "
+                "só teve movimento no último trimestre do semestre (ex.: começou a operar nele); "
+                "se ela já operava antes, algum dos PDFs está gravado na base errada."
             )
 
 

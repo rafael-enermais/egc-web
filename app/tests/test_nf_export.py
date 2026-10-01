@@ -30,7 +30,7 @@ def test_preparar_tabela_renomeia_e_tira_internas():
     df = nf_export.preparar_tabela(_tabela())
     assert "registro_id" not in df.columns and "origem" not in df.columns
     assert "Título Sienge" in df.columns and "Documento no Sienge" in df.columns
-    assert list(df.columns)[:3] == ["Nº da nota", "Título Sienge", "Documento no Sienge"]
+    assert list(df.columns)[:3] == ["Nº da nota", "CFOP", "Título Sienge"]
 
 
 def test_xlsx_completo_tem_todas_as_abas_e_todas_as_linhas():
@@ -53,3 +53,14 @@ def test_xlsx_sem_orfaos_nem_pendencias_nao_quebra():
     data = nf_export.gerar_xlsx_conferencia(t, "X", "07/2026")
     xl = pd.ExcelFile(io.BytesIO(data))
     assert len(xl.parse("Pendências")) == 0 and len(xl.parse("Sienge sem nota")) == 0
+
+
+def test_aba_pendencias_traz_cfop_logo_depois_do_numero_01_10():
+    import io
+    import openpyxl
+    t = _tabela()
+    xlsx = nf_export.gerar_xlsx_conferencia(t, "Energia", "06/2026")
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx))
+    cab = [c.value for c in wb["Pendências"][1]]
+    assert cab[:2] == ["Nº da nota", "CFOP"], cab
+    assert any(r[1] for r in wb["Pendências"].iter_rows(min_row=2, values_only=True)), "CFOP vazio nas pendencias"

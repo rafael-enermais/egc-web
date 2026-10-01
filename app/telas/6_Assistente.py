@@ -121,8 +121,9 @@ sidebar_contexto(usuario)  # so' rodape -- ver nota em conexao.sidebar_contexto
 conn = get_conn()
 
 st.caption(
-    "Pergunte sobre BP, DRE ou Visão Grupo das 6 empresas — o assistente só responde "
-    "com dado que já está importado no sistema, nunca inventa número."
+    "Pergunte sobre BP, DRE, Visão Grupo, indicadores, completude dos dados e conferência de "
+    "Notas Fiscais das 6 empresas — o assistente só lê e só responde com dado que já está "
+    "no sistema, nunca inventa número. Ele não grava nem corrige nada."
 )
 
 
@@ -348,8 +349,18 @@ with col_chat:
     # documentado la): fase 1 so' grava a pergunta e recarrega; fase 2
     # roda na recarga seguinte, sem pergunta nova pendente.
     if pergunta:
-        st.session_state.assistente_mensagens.append({"role": "user", "content": pergunta})
+        pergunta_limpa = chat_egc.limpar_texto_entrada(pergunta)
+        if len(pergunta) > chat_egc.MAX_CHARS_PERGUNTA:
+            st.session_state["assistente_aviso"] = (
+                f"Pergunta muito longa — usei só os primeiros {chat_egc.MAX_CHARS_PERGUNTA} caracteres. "
+                "Se precisar, divida em perguntas menores."
+            )
+        if pergunta_limpa.strip():
+            st.session_state.assistente_mensagens.append({"role": "user", "content": pergunta_limpa})
         st.rerun()
+    _aviso = st.session_state.pop("assistente_aviso", None)
+    if _aviso:
+        st.warning(_aviso)
 
     if st.session_state.assistente_mensagens and st.session_state.assistente_mensagens[-1]["role"] == "user":
         with st.spinner("Consultando..."):
@@ -366,7 +377,8 @@ with col_chat:
                                          usuario=usuario, detalhe=str(exc))
                 except Exception:
                     pass
-                r = {"texto": f"Não consegui responder agora (erro na API): {exc}", "ferramentas_usadas": []}
+                # detalhe tecnico (pode ter id de organizacao/trecho de requisicao) fica so' no log
+                r = {"texto": "Não consegui responder agora (erro ao falar com o assistente). Tente de novo em instantes.", "ferramentas_usadas": []}
         st.session_state.assistente_mensagens.append({"role": "assistant", "content": r["texto"]})
         if r["ferramentas_usadas"]:
             st.session_state.assistente_ultima_ferramenta = r["ferramentas_usadas"][-1]

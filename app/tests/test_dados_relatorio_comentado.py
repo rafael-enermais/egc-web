@@ -447,7 +447,8 @@ def test_variante_fornecedor_v040_muda_titulo_e_mantem_conteudo_do_padrao():
     # v0.40.0: "fornecedor" construida -- mesmo conteudo do padrao, so' titulo/selo mudam.
     dados, _ = _montar(variante="fornecedor")
     assert dados["variante"] == "fornecedor"
-    assert dados["cabecalho_relatorio"] == "Demonstrativo Comentado Fornecedor · 1º Semestre 2026"
+    # 01/10/2026: o documento nao leva "Fornecedor" (so' o app/sufixo do arquivo)
+    assert dados["cabecalho_relatorio"] == "Demonstrativo Comentado · 1º Semestre 2026"
     base, _ = _montar()
     for campo in ("receita_liquida", "ebitda", "resultado_liquido", "total_ativo", "anexo_ativo", "anexo_passivo"):
         assert dados[campo] == base[campo]

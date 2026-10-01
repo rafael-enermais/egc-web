@@ -1,0 +1,4 @@
+# Tema: troca o vermelho padrao do Streamlit (botoes primarios, selecoes) pelo
+# azul do dashboard da Visao do Grupo. Claro/escuro continuam automaticos.
+[theme]
+primaryColor = "#2a78d6"

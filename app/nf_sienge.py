@@ -706,7 +706,7 @@ def listar_pendencias_abertas(conn, empresa_codigo: Optional[str] = None, limite
                 FROM egc.nf_manifesto_import
                 ORDER BY empresa_codigo, periodo_referencia, criado_em DESC
             )
-            SELECT m.empresa_codigo, m.periodo_referencia, m.numero_nota, m.data_emissao,
+            SELECT m.empresa_codigo, m.periodo_referencia, m.numero_nota, m.cfop, m.data_emissao,
                    m.valor, m.fornecedor_nome, m.fornecedor_cnpj, c.status, c.observacao,
                    c.pendencia_status, c.atualizado_em
             FROM egc.nf_conciliacao c
@@ -774,6 +774,7 @@ def listar_orfaos_abertos(conn, empresa_codigo: Optional[str] = None, limite: in
         df = pd.DataFrame(cur.fetchall(), columns=cols)
     if df.empty:
         return df
+    df["cfop"] = None  # titulo orfao nao tem CFOP (so' existe no manifesto)
     df = df.rename(columns={
         "document_number": "numero_nota", "issue_date": "data_emissao",
         "total_invoice_amount": "valor", "creditor_nome": "fornecedor_nome", "creditor_cnpj": "fornecedor_cnpj",
