@@ -123,3 +123,23 @@ def remover_timezone_para_excel(df: pd.DataFrame) -> pd.DataFrame:
                 lambda v: v.replace(tzinfo=None) if isinstance(v, _dt.datetime) and v.tzinfo is not None else v
             )
     return saida
+
+
+def moeda_curta(v: Optional[float], vazio: str = "—") -> str:
+    """Valor em R$ abreviado pra rotulo de grafico/card: 'R$ 39,8 mi',
+    'R$ 850 mil', 'R$ 1,2 bi', 'R$ 320' (padrao BR: virgula decimal).
+    Negativo leva '-' antes do R$. NaN/None -> `vazio`."""
+    if _e_vazio(v):
+        return vazio
+    n = float(v)
+    sinal = "-" if n < 0 else ""
+    a = abs(n)
+    if a >= 1e9:
+        txt, suf = f"{a / 1e9:.1f}", " bi"
+    elif a >= 1e6:
+        txt, suf = f"{a / 1e6:.1f}", " mi"
+    elif a >= 1e3:
+        txt, suf = f"{a / 1e3:.0f}", " mil"
+    else:
+        txt, suf = f"{a:.0f}", ""
+    return f"{sinal}R$ {txt.replace('.', ',')}{suf}"

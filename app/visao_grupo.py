@@ -315,3 +315,107 @@ def montar_indicadores_grupo(
     ind = indicadores.calcular_indicadores(bp, dre, granularidade=granularidade or "")
     alvo = pd.DatetimeIndex(pd.to_datetime(sorted(periodos)), name="periodo")
     return ind.reindex(alvo)
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  Dashboard (01/10/2026, "faz um dash com leitura boa, dinamica, fluida")
+# ─────────────────────────────────────────────────────────────────────
+CONTAS_ESTRUTURA_BP = ["TOTAL CIRCULANTE ATIVO", "TOTAL CIRCULANTE PASSIVO", "TOTAL NAO CIRCULANTE PASSIVO",
+                       "TOTAL PATRIMONIO LIQUIDO"]
+
+
+def montar_resumo_por_empresa(
+    lancs_bp: list[dict], lancs_dre: list[dict], cods_selecionados: list[str], periodo, granularidade: str,
+) -> pd.DataFrame:
+    """1 linha por empresa (indice = codigo) no `periodo`/`granularidade`:
+    Receita Líquida, EBITDA, Margem EBITDA, Resultado Líquido, Total do Ativo,
+    Endividamento Geral. Mesma formula do consolidado (indicadores.
+    calcular_indicadores, base unica = a granularidade escolhida); empresa
+    sem documento nesse periodo/base fica com NaN -- nunca 0 inventado."""
+    colunas = ["Receita Líquida", "EBITDA", "Margem EBITDA", "Resultado Líquido", "Total do Ativo",
+               "Endividamento Geral"]
+    ts = pd.Timestamp(periodo)
+    linhas = {}
+    for cod in cods_selecionados:
+        bp = [r for r in lancs_bp if r["empresa_codigo"] == cod]
+        dre = [r for r in lancs_dre if r["empresa_codigo"] == cod]
+        ind = indicadores.calcular_indicadores(bp, dre, granularidade=granularidade or "")
+        serie_dre = montar_serie_kpis_grupo(dre, [cod], CONTAS_KPI_DRE, [periodo], granularidade=granularidade or "")
+        serie_bp = montar_serie_kpis_grupo(bp, [cod], CONTAS_KPI_BP, [periodo], granularidade=granularidade or "")
+        tem_dre = any(r["periodo"] == periodo and (r.get("granularidade") or "") == (granularidade or "") for r in dre)
+        tem_bp = any(r["periodo"] == periodo and (r.get("granularidade") or "") == (granularidade or "") for r in bp)
+        nan = float("nan")
+        linhas[cod] = {
+            "Receita Líquida": float(serie_dre.loc[ts, "RECEITA OPERACIONAL LIQUIDA"]) if tem_dre else nan,
+            "EBITDA": float(ind.loc[ts, "EBITDA"]) if ts in ind.index else nan,
+            "Margem EBITDA": float(ind.loc[ts, "Margem EBITDA"]) if ts in ind.index else nan,
+            "Resultado Líquido": float(serie_dre.loc[ts, "LUCRO LIQUIDO DO EXERCICIO"]) if tem_dre else nan,
+            "Total do Ativo": float(serie_bp.loc[ts, "TOTAL DO ATIVO"]) if tem_bp else nan,
+            "Endividamento Geral": float(ind.loc[ts, "Endividamento Geral"]) if ts in ind.index else nan,
+        }
+    df = pd.DataFrame.from_dict(linhas, orient="index", columns=colunas)
+    df.index.name = "empresa"
+    return df
+
+
+def _var_pct(atual: float, anterior: float):
+    if pd.isna(atual) or pd.isna(anterior) or anterior == 0:
+        return None
+    return (atual - anterior) / abs(anterior)
+
+
+def gerar_destaques(
+    ind_grupo: pd.DataFrame, serie_dre: pd.DataFrame, serie_bp: pd.DataFrame, resumo_empresas: pd.DataFrame,
+    periodo, periodo_anterior, nome_por_cod: dict,
+) -> list[tuple[str, str]]:
+    """'Leitura rápida' do topo do dashboard: frases FACTUAIS calculadas dos
+    mesmos numeros dos KPIs (nada de opiniao nem limiar inventado) -- so'
+    reporta o que os dados mostram. Devolve [(nivel, texto)] com nivel
+    'info' ou 'atencao', na ordem em que devem aparecer. Sem dado pra uma
+    frase, a frase simplesmente nao aparece."""
+    import formatacao as _f
+    ts = pd.Timestamp(periodo)
+    ts_ant = pd.Timestamp(periodo_anterior) if periodo_anterior is not None else None
+    out: list[tuple[str, str]] = []
+
+    rec = serie_dre.loc[ts, "RECEITA OPERACIONAL LIQUIDA"] if ts in serie_dre.index else float("nan")
+    rec_ant = serie_dre.loc[ts_ant, "RECEITA OPERACIONAL LIQUIDA"] if ts_ant is not None and ts_ant in serie_dre.index else float("nan")
+    var = _var_pct(rec, rec_ant)
+    if var is not None:
+        verbo = "cresceu" if var >= 0 else "caiu"
+        out.append(("info" if var >= 0 else "atencao",
+                    f"A receita líquida {verbo} {_f.pct_br(abs(var))} vs o período anterior "
+                    f"({_f.moeda_curta(rec_ant)} → {_f.moeda_curta(rec)})."))
+
+    ebitda = ind_grupo.loc[ts, "EBITDA"] if ts in ind_grupo.index else float("nan")
+    m_ebitda = ind_grupo.loc[ts, "Margem EBITDA"] if ts in ind_grupo.index else float("nan")
+    if pd.notna(ebitda):
+        txt = ("EBITDA positivo" if ebitda >= 0 else "EBITDA negativo no consolidado")
+        if pd.notna(m_ebitda):
+            txt += f", margem EBITDA de {_f.pct_br(m_ebitda)}"
+        out.append(("info" if ebitda >= 0 else "atencao", txt + "."))
+
+    liq = ind_grupo.loc[ts, "Liquidez Corrente"] if ts in ind_grupo.index else float("nan")
+    cg = ind_grupo.loc[ts, "Capital de Giro"] if ts in ind_grupo.index else float("nan")
+    if pd.notna(liq) and liq < 1:
+        out.append(("atencao", f"Liquidez corrente de {_f.numero_br(liq, sufixo='x')}: o ativo circulante não cobre o passivo circulante "
+                               f"(capital de giro {_f.moeda_curta(cg)})."))
+
+    if resumo_empresas is not None and not resumo_empresas.empty:
+        rec_emp = resumo_empresas["Receita Líquida"].dropna()
+        if len(rec_emp) >= 2 and rec_emp.sum() > 0:
+            top = rec_emp.idxmax()
+            out.append(("info", f"{nome_por_cod.get(top, top)} responde por {_f.pct_br(rec_emp[top] / rec_emp.sum())} da receita do período."))
+        neg = resumo_empresas["EBITDA"].dropna()
+        neg = neg[neg < 0].sort_values()
+        if len(neg):
+            nomes = ", ".join(nome_por_cod.get(c, c) for c in neg.index)
+            out.append(("atencao", f"Empresas com EBITDA negativo no período: {nomes}."))
+
+    ativo = serie_bp.loc[ts, "TOTAL DO ATIVO"] if ts in serie_bp.index else float("nan")
+    passivo = serie_bp.loc[ts, "TOTAL DO PASSIVO"] if ts in serie_bp.index else float("nan")
+    if pd.notna(ativo) and pd.notna(passivo) and abs(ativo - passivo) > 1.0:
+        out.append(("atencao", f"Ativo ({_f.moeda_curta(ativo)}) diferente do Passivo ({_f.moeda_curta(passivo)}) no consolidado — "
+                               "confira o BP das empresas."))
+    return out
+

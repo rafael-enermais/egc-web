@@ -117,3 +117,43 @@ def agrupar_historico_importacoes(
                 evento["arquivos"].append(nome_arq)
 
     return [eventos_por_chave[c] for c in ordem_chaves]
+
+
+def chave_documento_item(r: dict):
+    """(tipo, periodo_str, granularidade_confirmada) de cada tipo que o
+    item `r` (1 PDF da previa) vai gravar -- usado pra detectar conflito.
+    Devolve lista de tuplas (tipo, periodo_str, granularidade, n_contas)."""
+    if not r.get("meta"):
+        return []
+    _e, _c, periodo_str, _n, *_resto = r["meta"][0]
+    granularidade = r.get("_granularidade_confirmada", "") or ""
+    saida = []
+    if r.get("bp_rows"):
+        saida.append(("BP", periodo_str, granularidade, len(r["bp_rows"])))
+    if r.get("dre_rows"):
+        saida.append(("DRE", periodo_str, granularidade, len(r["dre_rows"])))
+    return saida
+
+
+def detectar_conflitos_lote(itens: list[dict]) -> list[dict]:
+    """
+    Mesmo documento (tipo + periodo + granularidade) em 2+ PDFs do MESMO
+    grupo de gravacao (= mesma empresa). Antes desta checagem (pergunta do
+    Rafael, 01/10/2026: "o que acontece se eu upar 2 BP do mesmo periodo
+    ao mesmo tempo?") o ultimo da lista substituia o primeiro SEM AVISO
+    -- a ordem da lista e' a de `chave_ordenacao_previa` (desempate pelo
+    nome do arquivo), entao quem "ganhava" era decidido por ordem
+    alfabetica, nao pela contadora. O primeiro ficava INATIVO.
+
+    Devolve [{"tipo","periodo","granularidade","arquivos":[(nome, n_contas)]}]
+    so' com os conflitos reais (2+ arquivos). `itens` ja' deve conter so'
+    os incluidos na gravacao (checkbox marcado).
+    """
+    por_chave: dict = {}
+    for r in itens:
+        for tipo, periodo_str, gran, n in chave_documento_item(r):
+            por_chave.setdefault((tipo, periodo_str, gran), []).append((r["arquivo"], n))
+    return [
+        {"tipo": t, "periodo": p, "granularidade": g, "arquivos": arqs}
+        for (t, p, g), arqs in por_chave.items() if len(arqs) > 1
+    ]

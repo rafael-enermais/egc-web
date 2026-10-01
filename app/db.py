@@ -197,6 +197,31 @@ def inativar_periodo_existente(
         return cur.rowcount
 
 
+def listar_documentos_ativos(
+    conn, empresa_codigo: str, periodo: date, tipo: str, granularidade: str = "",
+) -> list[dict]:
+    """
+    Documento(s) ATIVO(s) ja' gravado(s) pra (empresa, periodo, tipo,
+    granularidade) -- 1 linha por arquivo de origem. A tela Importar PDF
+    usa pra avisar "ja existe; gravar vai arquivar e substituir" ANTES de
+    gravar (01/10/2026), em vez de inativar em silencio como
+    `inativar_periodo_existente` faz. So' leitura.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COALESCE(arquivo_pdf, '(sem arquivo)') AS arquivo, COUNT(*) AS contas, MAX(criado_em) AS gravado_em
+            FROM egc.lancamentos
+            WHERE empresa_codigo = %s AND periodo = %s AND tipo = %s
+              AND COALESCE(granularidade, '') = %s AND status = 'ATIVO'
+            GROUP BY COALESCE(arquivo_pdf, '(sem arquivo)')
+            ORDER BY gravado_em DESC
+            """,
+            (empresa_codigo, periodo, tipo, granularidade or ""),
+        )
+        return [{"arquivo": r[0], "contas": r[1], "gravado_em": r[2]} for r in cur.fetchall()]
+
+
 def inserir_lancamentos(
     conn,
     empresa_codigo: str,

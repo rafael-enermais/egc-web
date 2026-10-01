@@ -35,6 +35,7 @@ from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS  # noqa: E402
 import db  # noqa: E402
 import nf_parser  # noqa: E402
 import nf_sienge  # noqa: E402
+import nf_export  # noqa: E402
 import formatacao  # noqa: E402
 
 NOME_POR_COD = {cod: nome for cod, nome, _cnpj in EMPRESAS_FIXAS}
@@ -194,7 +195,37 @@ st.divider()
 
 # ─────────────────────────── 3. Resultado da última conferência ───────────────
 st.subheader("3. Resultado da conferência")
-import_id_atual = st.session_state.get("nf_ultimo_import_id")
+
+# 01/10/2026: histórico carregado ANTES do resultado (e não só na seção 4)
+# pra poder reabrir/baixar qualquer rodada anterior -- antes só a última
+# rodada da sessão aparecia aqui, e sumia ao recarregar a página.
+try:
+    historico = nf_sienge.listar_historico_importacoes(conn, cod_empresa)
+except Exception as exc:
+    st.warning(f"Não foi possível carregar o histórico: {exc}")
+    _log_erro("Falha ao listar histórico de conferências", detalhe=str(exc), empresa_codigo=cod_empresa)
+    historico = []
+
+import_id_atual = None
+rodada_sel = None
+if historico:
+    _ids = [str(h["import_id"]) for h in historico]
+    _recente = str(st.session_state.get("nf_ultimo_import_id") or "")
+    if _recente in _ids and st.session_state.get("_nf_rodada_recente_aplicada") != _recente:
+        st.session_state["nf_rodada_sel"] = _recente  # acabou de rodar -> abre essa
+        st.session_state["_nf_rodada_recente_aplicada"] = _recente
+    if st.session_state.get("nf_rodada_sel") not in _ids:
+        st.session_state["nf_rodada_sel"] = _ids[0]
+    _por_id = {str(h["import_id"]): h for h in historico}
+
+    def _rotulo_rodada(i):
+        h = _por_id[i]
+        return (f"{formatacao.hora_br(h['criado_em'])} · período {h['periodo_referencia']} · "
+                f"{h['total_notas']} notas · {h['arquivo_nome']}")
+
+    import_id_atual = st.selectbox("Rodada de conferência", _ids, format_func=_rotulo_rodada, key="nf_rodada_sel",
+                                    help="A mais recente vem selecionada. Escolha outra para rever ou baixar de novo.")
+    rodada_sel = _por_id[import_id_atual]
 
 if not import_id_atual:
     st.caption("Rode uma conferência acima pra ver o resultado aqui.")
@@ -239,29 +270,49 @@ else:
         # registro_id/origem sao internos (usados so' pelo "Salvar status"
         # abaixo, via pendencias_df) -- fora da tela/planilha que a
         # contadora ve, pra nao acrescentar coluna tecnica sem sentido pra ela.
-        colunas_internas = ["registro_id", "origem"]
-        tabela_fmt = tabela_filtrada.drop(columns=colunas_internas).copy()
-        tabela_fmt["valor"] = tabela_fmt["valor"].apply(formatacao.moeda_br)
-        tabela_fmt["sienge_valor"] = tabela_fmt["sienge_valor"].apply(formatacao.moeda_br)
+        tabela_fmt = nf_export.preparar_tabela(tabela_filtrada)
+        for col in nf_export.COLUNAS_MOEDA:
+            tabela_fmt[col] = tabela_fmt[col].apply(formatacao.moeda_br)
+        if "Título Sienge" in tabela_fmt.columns:
+            tabela_fmt["Título Sienge"] = tabela_fmt["Título Sienge"].apply(
+                lambda v: "" if pd.isna(v) else str(int(v)))
         st.dataframe(tabela_fmt, hide_index=True, use_container_width=True)
 
         pendencias_df = tabela[tabela["status"] != "LANCADA"]
+        _periodo_arq = (rodada_sel or {}).get("periodo_referencia") or "periodo"
+        _periodo_arq = str(_periodo_arq).replace("/", "_")
+        # FIX_20260928 (Rafael, "Rodar conferência" quebrando com ValueError ao
+        # baixar a planilha): atualizado_em é timestamptz -> openpyxl não aceita
+        # tz. nf_export._escrever_aba usa formatacao.remover_timezone_para_excel.
+        # 01/10/2026: DOIS downloads. A planilha COMPLETA (todas as notas,
+        # lançadas e pendentes, + título/documento do Sienge + títulos do
+        # Sienge sem nota) e a de pendências (pra mandar ao Suprimentos).
+        try:
+            xlsx_completo = nf_export.gerar_xlsx_conferencia(
+                tabela, nome_empresa, (rodada_sel or {}).get("periodo_referencia") or "",
+                (rodada_sel or {}).get("arquivo_nome"), formatacao.hora_br(_dt.datetime.now()),
+            )
+        except Exception as exc:
+            xlsx_completo = None
+            st.warning(f"Não consegui montar a planilha completa: {exc}")
+            _log_erro("Falha ao montar xlsx completo de NF", detalhe=str(exc), empresa_codigo=cod_empresa)
+        d1, d2 = st.columns(2)
+        if xlsx_completo:
+            d1.download_button(
+                "⬇️ Baixar conferência COMPLETA (todas as notas + Sienge)",
+                data=xlsx_completo,
+                file_name=f"conferencia_nf_{cod_empresa}_{_periodo_arq}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="nf_download_completo", type="primary",
+            )
         if not pendencias_df.empty:
             buffer = io.BytesIO()
-            # FIX_20260928 (Rafael, "Rodar conferência" quebrando com
-            # ValueError ao baixar a planilha de pendências): atualizado_em
-            # vem do banco como timestamptz (schema.sql) -> psycopg2
-            # devolve datetime timezone-aware -> openpyxl nao aceita
-            # datetime com timezone no .xlsx (ver docstring de
-            # formatacao.remover_timezone_para_excel). Nao muda o que
-            # aparece na tela (st.dataframe, linha acima, aceita tz
-            # normalmente) -- so' a exportacao precisa do tratamento.
-            export_df = formatacao.remover_timezone_para_excel(pendencias_df.drop(columns=colunas_internas))
+            export_df = formatacao.remover_timezone_para_excel(nf_export.preparar_tabela(pendencias_df))
             export_df.to_excel(buffer, index=False, sheet_name="Pendencias")
-            st.download_button(
-                "⬇️ Baixar planilha de pendências (pra mandar ao Suprimentos)",
+            d2.download_button(
+                "⬇️ Baixar só as pendências (pra mandar ao Suprimentos)",
                 data=buffer.getvalue(),
-                file_name=f"pendencias_nf_{cod_empresa}_{periodo_referencia or 'periodo'}.xlsx",
+                file_name=f"pendencias_nf_{cod_empresa}_{_periodo_arq}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="nf_download_pendencias",
             )
@@ -301,13 +352,6 @@ st.divider()
 
 # ─────────────────────────── 4. Histórico de conferências ───────────────────────────
 st.subheader("4. Histórico de conferências")
-try:
-    historico = nf_sienge.listar_historico_importacoes(conn, cod_empresa)
-except Exception as exc:
-    st.warning(f"Não foi possível carregar o histórico: {exc}")
-    _log_erro("Falha ao listar histórico de conferências", detalhe=str(exc), empresa_codigo=cod_empresa)
-    historico = []
-
 if not historico:
     st.caption("Nenhuma conferência rodada ainda pra essa empresa.")
 else:

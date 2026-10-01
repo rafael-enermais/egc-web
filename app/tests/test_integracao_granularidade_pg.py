@@ -315,12 +315,12 @@ def test_tela_periodo_unico_lista_pares_explicitos_e_gera_a_base_escolhida(conn)
             assert not at.exception, at.exception
             assert capturado["dados"]["receita_liquida"] == pytest.approx(17_380_604.41, abs=0.01)
             assert capturado["dados"]["granularidade"] == "trimestral"
-            assert capturado["caminho"].endswith("Demonstrativo_ENERGIA_20260630_trimestral.pdf")
+            assert capturado["caminho"].endswith("Demonstrativo_ENERGIA_20260630_trimestral_GERENCIAL.pdf")
             # semestral: arquivo e numeros do semestral
             _sb(at).set_value((P26, "semestral")).run(timeout=60)
             next(b for b in at.button if b.label == "Gerar relatório").click().run(timeout=60)
             assert capturado["dados"]["receita_liquida"] == pytest.approx(33_350_846.80, abs=0.01)
-            assert capturado["caminho"].endswith("Demonstrativo_ENERGIA_20260630_semestral.pdf")
+            assert capturado["caminho"].endswith("Demonstrativo_ENERGIA_20260630_semestral_GERENCIAL.pdf")
         finally:
             _parar(ps)
 

@@ -121,19 +121,55 @@ def test_classificar_nao_encontrada():
     assert r["sienge_bill_id"] is None
 
 
-def test_classificar_achada_fora_do_universo_nfe_nf_fallback():
-    """Nota lancada sob tipo de documento diferente de NFE/NF (ex.: RDV) --
-    2o passe restrito nao acha, mas o fallback (3o passe, sem filtro de
-    tipo) acha e sinaliza a divergencia de tipo na observacao."""
+def test_classificar_titulo_de_outro_tipo_nao_conta_mais_01_10():
+    """01/10/2026: o fallback "sem tipo" saiu. Um titulo RDV/PPC (nao NFE/NF)
+    nunca concilia uma nota -> NAO_ENCONTRADA (pendencia real: o Suprimentos
+    corrige o tipo no Sienge). Antes: LANCADA com observacao de tipo."""
     bills = _bills([
         [600, 591, "RDV ", "321", 150.00, None, "07.393.522/0001-40", "07393522000140", "321"],
+        [601, 591, "PPC ", "4548", 4266.00, None, "07.393.522/0001-40", "07393522000140", "4548"],
     ])
     row = {"_cnpj_normalizado": "07393522000140", "_numero_normalizado": "321",
            "_valor_float": 150.00, "Chave": None, "Num": "321"}
-    r = nf_sienge._classificar_nota(row, bills)
-    assert r["status"] == "LANCADA"
-    assert r["confianca"] == "NUMERO_CNPJ_VALOR_TIPO_DIVERGENTE"
-    assert "RDV" in r["observacao"]
+    assert nf_sienge._classificar_nota(row, bills)["status"] == "NAO_ENCONTRADA"
+
+
+def test_eh_nota_fiscal_aceita_padding_e_rejeita_outros_tipos():
+    assert nf_sienge.eh_nota_fiscal("NFE ") and nf_sienge.eh_nota_fiscal("NF  ") and nf_sienge.eh_nota_fiscal("nfe")
+    for t in ("PPC ", "RDV ", "NFS ", "NFC ", "FAT ", "", None):
+        assert not nf_sienge.eh_nota_fiscal(t), t
+
+
+def test_sincronizar_bills_grava_so_nfe_nf_e_pagina_pelo_tamanho_cru(monkeypatch):
+    """Pagina com 3 titulos (PPC, NFE, NF) -> so' 2 entram; total devolvido = 2."""
+    pagina = [
+        {"id": 32010, "documentIdentificationId": "PPC ", "documentNumber": "PPC.4548", "totalInvoiceAmount": 4266.0},
+        {"id": 32034, "documentIdentificationId": "NFE ", "documentNumber": "22299", "totalInvoiceAmount": 4266.0},
+        {"id": 32040, "documentIdentificationId": "NF  ", "documentNumber": "10", "totalInvoiceAmount": 5.0},
+    ]
+
+    class Resp:
+        def raise_for_status(self): pass
+        def json(self): return {"results": pagina}
+
+    class Sess:
+        auth = None
+        def get(self, *a, **k): return Resp()
+
+    gravados = []
+    monkeypatch.setattr(nf_sienge, "_sessao_sienge", lambda *a: ("http://x", Sess()))
+    monkeypatch.setattr(nf_sienge, "execute_values", lambda cur, sql, linhas, template=None: gravados.extend(linhas))
+
+    class Cur:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    class Conn:
+        def cursor(self): return Cur()
+
+    import datetime
+    n = nf_sienge.sincronizar_bills(Conn(), "http://x", "u", "p", datetime.date(2026, 7, 1), datetime.date(2026, 7, 31))
+    assert n == 2
+    assert [l[0] for l in gravados] == [32034, 32040]
 
 
 def test_classificar_bills_vazio_nao_quebra():

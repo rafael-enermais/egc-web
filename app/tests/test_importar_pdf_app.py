@@ -329,6 +329,70 @@ def test_importar_pdf_historico_vazio_sem_excecao():
         print("OK: Importar PDF — historico vazio nao quebra a pagina")
 
 
+def _bp(nome, n):
+    return {
+        "arquivo": nome,
+        "bp_rows": [("ATIVO CIRCULANTE", f"CONTA {i}", 100.0, "PDF") for i in range(n)],
+        "dre_rows": [], "admin_itens": [], "log": [],
+        "meta": [("Enermais Energia Ltda", "47.040.664/0001-48", "31/12/2025", nome, "BP", "SPED", None, None)],
+    }
+
+
+def test_importar_pdf_dois_bp_mesmo_periodo_bloqueia_ate_escolher_01_10():
+    # Pergunta do Rafael (01/10/2026): 2 BP da Energia 31/12/2025 no mesmo lote
+    # (33 e 38 contas). Antes: o ultimo substituia o primeiro em silencio.
+    # Agora: erro + selectbox "manter qual", Gravar desabilitado ate escolher.
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_importacoes_recentes", return_value=[]), \
+         patch.object(db, "listar_documentos_ativos", return_value=[]), \
+         patch.object(db, "inativar_periodo_existente", return_value=0), \
+         patch.object(db, "inserir_lancamentos", return_value=1) as mock_inserir, \
+         patch.object(db, "registrar_importacao", return_value=None):
+        at = AppTest.from_file(PAGE)
+        at.session_state["import_resultados"] = [_bp("Balanco 2025.pdf", 33), _bp("BP SPED 2025.pdf", 38)]
+        at.run(timeout=30)
+        assert not at.exception, at.exception
+        assert any("MESMO BP" in e.value for e in at.error), [e.value for e in at.error]
+        botao = [b for b in at.button if "Gravar" in b.label][0]
+        assert botao.disabled, "Gravar deveria ficar desabilitado com conflito aberto"
+
+        sel = [x for x in at.selectbox if x.label.startswith("Manter qual BP")][0]
+        sel.select("BP SPED 2025.pdf").run(timeout=30)
+        assert not at.exception, at.exception
+        botao = [b for b in at.button if "Gravar" in b.label][0]
+        assert not botao.disabled
+        botao.click().run(timeout=30)
+        assert not at.exception, at.exception
+        assert mock_inserir.call_count == 1
+        assert mock_inserir.call_args.args[5] == "BP SPED 2025.pdf", mock_inserir.call_args
+        print("OK: Importar PDF — 2 BP do mesmo periodo exigem escolher qual manter")
+
+
+def test_importar_pdf_documento_ativo_existente_exige_confirmar_substituicao_01_10():
+    existente = [{"arquivo": "antigo.pdf", "contas": 33, "gravado_em": None}]
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_importacoes_recentes", return_value=[]), \
+         patch.object(db, "listar_documentos_ativos", return_value=existente), \
+         patch.object(db, "inativar_periodo_existente", return_value=33), \
+         patch.object(db, "inserir_lancamentos", return_value=1) as mock_inserir, \
+         patch.object(db, "registrar_importacao", return_value=None):
+        at = AppTest.from_file(PAGE)
+        at.session_state["import_resultados"] = [_bp("novo.pdf", 38)]
+        at.run(timeout=30)
+        assert not at.exception, at.exception
+        assert any("antigo.pdf" in w.value for w in at.warning), [w.value for w in at.warning]
+        botao = [b for b in at.button if "Gravar" in b.label][0]
+        assert botao.disabled, "sem confirmar a substituicao nao deveria gravar"
+        [c for c in at.checkbox if c.label.startswith("Confirmo")][0].check().run(timeout=30)
+        botao = [b for b in at.button if "Gravar" in b.label][0]
+        assert not botao.disabled
+        botao.click().run(timeout=30)
+        assert mock_inserir.call_count == 1
+        print("OK: Importar PDF — documento ativo existente exige confirmacao")
+
+
 if __name__ == "__main__":
     testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
     falhas = 0

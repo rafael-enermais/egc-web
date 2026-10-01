@@ -170,6 +170,24 @@ def test_arquivos_ausente_na_linha_nao_quebra():
     print("OK: agrupar_historico_importacoes — linha sem chave 'arquivos' nao quebra (vira lista vazia)")
 
 
+def test_detectar_conflitos_lote_dois_bp_mesmo_periodo():
+    from importacoes_ui import detectar_conflitos_lote
+    def item(nome, n, tipo="BP", periodo="31/12/2025", gran=""):
+        r = {"arquivo": nome, "meta": [("E", "c", periodo, nome, tipo, "SPED", None, None)],
+             "bp_rows": [1] * n if tipo == "BP" else [], "dre_rows": [1] * n if tipo == "DRE" else [],
+             "_granularidade_confirmada": gran}
+        return r
+    # 2 BP iguais -> conflito; BP+DRE do mesmo periodo -> nao; DRE de granularidade diferente -> nao
+    c = detectar_conflitos_lote([item("a.pdf", 33), item("b.pdf", 38)])
+    assert len(c) == 1 and c[0]["tipo"] == "BP" and c[0]["arquivos"] == [("a.pdf", 33), ("b.pdf", 38)]
+    assert detectar_conflitos_lote([item("a.pdf", 33), item("d.pdf", 10, tipo="DRE")]) == []
+    assert detectar_conflitos_lote([item("x.pdf", 10, tipo="DRE", gran="trimestral"),
+                                    item("y.pdf", 10, tipo="DRE", gran="semestral")]) == []
+    assert len(detectar_conflitos_lote([item("x.pdf", 10, tipo="DRE", gran="trimestral"),
+                                        item("y.pdf", 10, tipo="DRE", gran="trimestral")])) == 1
+    assert detectar_conflitos_lote([item("a.pdf", 5), item("b.pdf", 5, periodo="30/06/2026")]) == []
+
+
 if __name__ == "__main__":
     testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
     falhas = 0
