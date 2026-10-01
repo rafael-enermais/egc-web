@@ -94,7 +94,7 @@ def test_sem_periodo_mostra_info_sem_excecao():
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
         assert not at.exception, f"excecao sem periodo nenhum: {at.exception}"
-        assert any("ainda não tem nenhum período" in i.value for i in at.info)
+        assert any("Nenhuma empresa tem período importado" in i.value for i in at.info)
         print("OK: Relatório Comentado — sem período disponível mostra info, sem exceção")
 
 
