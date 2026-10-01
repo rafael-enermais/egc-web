@@ -126,3 +126,26 @@ def test_arquivos_ativos_por_periodo(conn):
     _importar(conn, "A.pdf", 100)
     _importar(conn, "B.pdf", 200)
     assert db.arquivos_ativos_por_periodo(conn, "ENERGIA")[P] == {"B.pdf"}
+
+
+def test_recuperaveis_so_lista_o_que_realmente_recupera(conn):
+    """v0.44.1: periodo com versao ativa + versao antiga substituida NAO aparece no Recuperar
+    (clicar nao fazia nada); periodo arquivado sem versao ativa aparece."""
+    _importar(conn, "A.pdf", 100)
+    _importar(conn, "B.pdf", 200)                       # A inativo, B ativo
+    assert db.listar_periodos_recuperaveis(conn, "ENERGIA") == []
+    db.arquivar_periodo(conn, "ENERGIA", P)
+    assert db.listar_periodos_recuperaveis(conn, "ENERGIA") == [{"periodo": P, "granularidade": "trimestral"}]
+    assert db.recuperar_periodo(conn, "ENERGIA", P) == 2   # a versao mais recente (B)
+    assert db.listar_periodos_recuperaveis(conn, "ENERGIA") == []
+
+
+def test_chat_recuperar_usa_a_mesma_regra_da_tela(conn):
+    import acoes_chat
+    _importar(conn, "A.pdf", 100)
+    _importar(conn, "B.pdf", 200)
+    r = acoes_chat.montar_proposta(conn, "RECUPERAR_PERIODO", {"empresa": "ENERGIA", "periodo": "2026-06"}, ["ENERGIA"])
+    assert "erro" in r, "periodo com versao ativa nao e' recuperavel"
+    db.arquivar_periodo(conn, "ENERGIA", P)
+    r = acoes_chat.montar_proposta(conn, "RECUPERAR_PERIODO", {"empresa": "ENERGIA", "periodo": "2026-06"}, ["ENERGIA"])
+    assert "proposta" in r

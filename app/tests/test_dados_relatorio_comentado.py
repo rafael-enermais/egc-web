@@ -544,3 +544,25 @@ if __name__ == "__main__":
     test_variante_gerencial_muda_titulo_do_cabecalho()
     test_variante_desconhecida_levanta_valueerror_claro()
     test_grupo_preenche_empresas_nomes_com_o_nome_real_de_cada_empresa()
+
+
+def test_itens_admin_com_creditos_batem_com_o_total_e_nao_viram_despesa():
+    """v0.44.1 -- caso real Energia SPED 2025: itens de credito (+) dentro de Administrativas
+    faziam a soma de |valor| (23,0 mi) estourar o total (18,7 mi) e o ranking era descartado."""
+    itens = [("Salarios", -10_000.0), ("Servicos", -8_000.0), ("Seguros", -1_000.0), ("Viagens", -500.0),
+             ("Material", -300.0), ("Cartorio", -100.0), ("Brindes", -80.0), ("Informatica", -60.0),
+             ("Copa", -150.0), ("Correios", -150.0), ("Agua", -150.0), ("Limpeza", -150.0),
+             ("Ajuste de Exercicios Anteriores", 200.0), ("Reembolso", 40.0)]
+    total = abs(sum(v for _n, v in itens))  # liquida: despesas 20.640 - creditos 240
+    avisos: list = []
+    ok = drc._itens_admin_coerentes(itens, total, avisos, "Energia")
+    assert ok == itens and avisos == [], "creditos devem abater, nao somar"
+    ranking = drc._montar_despesas_admin_itens(itens, total)
+    nomes = [n for n, _v, _p in ranking]
+    assert "Ajuste de Exercicios Anteriores" not in nomes and "Reembolso" not in nomes, "credito nao e' despesa"
+    assert all(v > 0 for _n, v, _p in ranking)
+    assert round(sum(v for _n, v, _p in ranking), 2) == round(total, 2), "ranking fecha com o total"
+    assert round(sum(p for _n, _v, p in ranking), 1) == 100.0
+    # itens de OUTRO documento continuam sendo recusados
+    avisos2: list = []
+    assert drc._itens_admin_coerentes(itens, total * 2, avisos2, "Energia") == [] and avisos2

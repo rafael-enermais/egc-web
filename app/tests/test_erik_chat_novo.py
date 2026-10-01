@@ -153,4 +153,4 @@ def test_visual_pendencias_nao_expoe_registro_id():
                          "fornecedor_nome": "A", "valor": 100.0}], "quantidade": 1}
     prep = chat_visual.preparar("consultar_notas_pendentes", r)
     assert "registro_id" not in prep["df"].columns
-    assert chat_visual.tabela_exibicao(prep)["valor"].iloc[0] == "R$ 100,00"
+    assert chat_visual.tabela_exibicao(prep)["Valor"].iloc[0] == "R$ 100,00"

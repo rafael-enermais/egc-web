@@ -158,15 +158,47 @@ def preparar(nome: str, r: dict, nomes_empresa: Optional[dict] = None) -> Option
     return None
 
 
+_ROTULOS_COLUNA = {
+    "periodo": "Período", "periodo_referencia": "Período de referência", "valor": "Valor", "sienge_valor": "Valor no Sienge",
+    "fornecedor_nome": "Fornecedor", "fornecedor_cnpj": "CNPJ do fornecedor", "numero_nota": "Nota", "numero_normalizado": "Nota (normalizada)",
+    "empresa_codigo": "Empresa", "status": "Status", "pendencia_status": "Pendência", "data_emissao": "Emissão", "cfop": "CFOP",
+    "criado_em": "Criado em", "usuario": "Usuário", "arquivos": "Arquivos", "tipo": "Tipo", "mensagem": "Mensagem",
+    "nivel": "Nível", "conta": "Conta", "grupo": "Grupo", "granularidade": "Base", "taxa_conciliacao": "Taxa de conciliação",
+    "total_notas": "Total de notas", "total_lancadas": "Lançadas", "total_pendencias": "Pendências", "arquivo_nome": "Arquivo",
+    "valor_atual": "Valor atual", "valor_original_pdf": "Valor original (PDF)", "origem": "Origem", "gerado_em": "Gerado em",
+}
+
+
+def _rotulo_coluna(c) -> str:
+    """Nome de coluna legivel: 'fornecedor_nome' -> 'Fornecedor'. Nomes que ja' vem
+    legiveis (com maiuscula/espaco, ex. 'Liquidez Corrente') ficam como estao."""
+    c = str(c)
+    if c in _ROTULOS_COLUNA:
+        return _ROTULOS_COLUNA[c]
+    if "_" in c and c == c.lower():
+        c = c.replace("_", " ")
+        return c[:1].upper() + c[1:]
+    return c[:1].upper() + c[1:] if c == c.lower() else c
+
+
+def _celula_vazia(v) -> bool:
+    return v is None or (isinstance(v, float) and pd.isna(v)) or (isinstance(v, str) and v.strip().lower() in ("none", "nan", "nat"))
+
+
 def tabela_exibicao(prep: dict) -> pd.DataFrame:
+    """Tabela pronta para mostrar (tela e PDF): numeros em pt-BR, vazios como '—' (nunca
+    'None'/'nan') e nomes de coluna legiveis."""
     df = prep["df"].copy()
     lf = prep.get("linha_formato")
     if lf is not None and "Valor" in df.columns:
         df["Valor"] = [_rotulo_formato(lf.get(i, "R$"), v) for i, v in zip(df["Indicador"], df["Valor"])]
-        return df
-    for c, fmt in prep["formatos"].items():
-        if c in df.columns and fmt != "int":  # contagens ficam numericas (ordenaveis na tabela)
-            df[c] = df[c].apply(lambda v, f=fmt: _rotulo_formato(f, v))
+    else:
+        for c, fmt in prep["formatos"].items():
+            if c in df.columns and fmt != "int":  # contagens ficam numericas (ordenaveis na tabela)
+                df[c] = df[c].apply(lambda v, f=fmt: _rotulo_formato(f, v))
+    df = df.astype(object)
+    df = df.apply(lambda col: col.map(lambda v: "—" if _celula_vazia(v) else v))
+    df.columns = [_rotulo_coluna(c) for c in df.columns]
     return df
 
 
@@ -230,14 +262,38 @@ def excel_bytes(prep: dict, usuario: str = "", consulta: str = "") -> bytes:
                     cell = ws.cell(row=i, column=j)
                     f = fmt or lf.get(df.iloc[i - 2]["Indicador"], "R$")
                     cell.number_format = {"R$": '#,##0.00;[Red]-#,##0.00', "pct": "0.0%", "x": '0.00"x"'}.get(f, "General")
+        for j, c in enumerate(df.columns, start=1):   # cabecalho legivel (depois de usar os nomes tecnicos acima)
+            ws.cell(row=1, column=j).value = _rotulo_coluna(c)
         pd.DataFrame(_meta(prep, usuario, consulta), columns=["Campo", "Valor"]).to_excel(xw, sheet_name="Fonte", index=False)
         xw.sheets["Fonte"].column_dimensions["A"].width = 16
         xw.sheets["Fonte"].column_dimensions["B"].width = 90
     return buf.getvalue()
 
 
-def _png_grafico(grafico: dict, tipo: str, ys: Optional[list[str]] = None) -> Optional[bytes]:
-    """PNG do grafico via matplotlib (sem kaleido), pro PDF."""
+_NAVY, _ORANGE, _GREY = "#171C60", "#EA9527", "#525252"
+# 1a serie navy, 2a azul medio; laranja fica pra "abaixo de zero" (mesma regra dos relatorios)
+CORES_MARCA = [_NAVY, "#7F87C9", _ORANGE, "#B4B9D6", "#525252"]
+_TEXTO_DA_COR = {_NAVY: _NAVY, "#7F87C9": "#4A53A8", _ORANGE: "#9A5200", "#B4B9D6": "#5E648F", "#525252": "#525252"}
+
+
+def _rotulo_compacto(fmt: str, v) -> str:
+    """Rotulo curto p/ colocar em cima da barra (R$ 1,2 mi / R$ 200 mil); demais formatos como na tabela."""
+    if fmt != "R$" or v is None or pd.isna(v):
+        return _rotulo_formato(fmt, v)
+    a = abs(v)
+    sinal = "-" if v < 0 else ""
+    if a >= 1_000_000:
+        return f"{sinal}R$ {a / 1_000_000:.1f} mi".replace(".", ",")
+    if a >= 100_000:
+        return f"{sinal}R$ {a / 1_000:.0f} mil"
+    if a >= 1_000:
+        return f"{sinal}R$ {a / 1_000:.1f} mil".replace(".", ",")
+    return f"{sinal}R$ {a:.0f}"
+
+
+def _png_grafico(grafico: dict, tipo: str, ys: Optional[list[str]] = None, marca: bool = False) -> Optional[bytes]:
+    """PNG do grafico via matplotlib (sem kaleido), pro PDF. `marca=True`: paleta/fonte da
+    EnerMais (navy; laranja = abaixo de zero), rotulos de valor nas barras."""
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -246,78 +302,195 @@ def _png_grafico(grafico: dict, tipo: str, ys: Optional[list[str]] = None) -> Op
         return None
     df, x, fmt = grafico["df"], grafico["x"], grafico["formato"]
     ys = [y for y in (ys or grafico["ys"]) if y in df.columns] or grafico["ys"]
-    fig, ax = plt.subplots(figsize=(7.2, 3.2), dpi=150)
-    rotulos = df[x].astype(str).tolist()
-    n = len(ys)
-    pos = list(range(len(rotulos)))
-    base = [0.0] * len(rotulos)
-    for i, y in enumerate(ys):
-        vals = [0.0 if pd.isna(v) else (v * 100.0 if fmt == "pct" else v) for v in df[y]]
-        cor = CORES[i % len(CORES)]
-        if tipo == "Linhas":
-            ax.plot(pos, vals, marker="o", color=cor, label=str(y))
-        elif grafico.get("empilhado"):
-            ax.bar(pos, vals, bottom=base, color=cor, label=str(y)); base = [b + v for b, v in zip(base, vals)]
-        else:
-            w = 0.8 / n
-            ax.bar([p - 0.4 + w * (i + 0.5) for p in pos], vals, width=w, color=cor, label=str(y))
-    ax.set_xticks(pos)
-    ax.set_xticklabels([r[:22] for r in rotulos], rotation=30 if len(rotulos) > 4 else 0, ha="right" if len(rotulos) > 4 else "center", fontsize=7)
-    ax.tick_params(axis="y", labelsize=7)
-    ax.axhline(0, color="#8a8985", linewidth=0.6)
-    for lado in ("top", "right"):
-        ax.spines[lado].set_visible(False)
-    if n > 1:
-        ax.legend(fontsize=7, frameon=False)
-    ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _p: (f"{v:,.0f}".replace(",", ".")) + ("%" if fmt == "pct" else "")))
-    fig.tight_layout()
-    out = io.BytesIO()
-    fig.savefig(out, format="png")
-    plt.close(fig)
+    familia = None
+    if marca:
+        try:
+            import os as _os
+            from matplotlib import font_manager as _fm
+            import gerador_relatorio_comentado as _A
+            for f in ("Poppins-Regular.ttf", "Poppins-Bold.ttf"):
+                _fm.fontManager.addfont(_os.path.join(_A.FONT_DIR, f))
+            familia = "Poppins"
+        except Exception:
+            familia = None
+    cores = CORES_MARCA if marca else CORES
+    ctx = matplotlib.rc_context({"font.family": familia} if familia else {})
+    with ctx:
+        fig, ax = plt.subplots(figsize=(10.2, 3.3) if marca else (7.2, 3.2), dpi=150)
+        rotulos = df[x].astype(str).tolist()
+        n = len(ys)
+        pos = list(range(len(rotulos)))
+        base = [0.0] * len(rotulos)
+        pouco = len(rotulos) * n <= 16
+        for i, y in enumerate(ys):
+            vals = [0.0 if pd.isna(v) else (v * 100.0 if fmt == "pct" else v) for v in df[y]]
+            cor = cores[i % len(cores)]
+            if tipo == "Linhas":
+                ax.plot(pos, vals, marker="o", color=cor, linewidth=2, label=_rotulo_coluna(y))
+                if marca and pouco:
+                    for p, v in zip(pos, vals):
+                        ax.annotate(_rotulo_compacto(fmt, v / 100.0 if fmt == "pct" else v), (p, v), textcoords="offset points",
+                                    xytext=(0, 7), ha="center", fontsize=7, color=_TEXTO_DA_COR.get(cor, cor))
+            elif grafico.get("empilhado"):
+                ax.bar(pos, vals, bottom=base, color=cor, label=_rotulo_coluna(y), width=0.6 if marca else 0.8)
+                base = [b + v for b, v in zip(base, vals)]
+            else:
+                w = min((0.6 if marca else 0.8) / n, 0.32 if marca else 9)
+                xs = [p - (w * n / 2) + w * (i + 0.5) for p in pos]
+                if marca and n == 1:
+                    barras = ax.bar(xs, vals, width=w, color=[_NAVY if v >= 0 else _ORANGE for v in vals], label=_rotulo_coluna(y))
+                else:
+                    barras = ax.bar(xs, vals, width=w, color=cor, label=_rotulo_coluna(y))
+                if marca and pouco:
+                    for b, v in zip(barras, vals):
+                        ax.annotate(_rotulo_compacto(fmt, v / 100.0 if fmt == "pct" else v), (b.get_x() + b.get_width() / 2, v),
+                                    textcoords="offset points", xytext=(0, 4 if v >= 0 else -10), ha="center", fontsize=6.5,
+                                    color=(_NAVY if v >= 0 else "#9A5200") if n == 1 else _TEXTO_DA_COR.get(cor, cor),
+                                    fontweight="bold")
+        ax.set_xticks(pos)
+        ax.set_xticklabels([r[:22] for r in rotulos], rotation=30 if len(rotulos) > 4 else 0, ha="right" if len(rotulos) > 4 else "center", fontsize=7)
+        ax.tick_params(axis="y", labelsize=7)
+        ax.axhline(0, color="#8a8985", linewidth=0.6)
+        ax.margins(y=0.15)
+        if marca and tipo != "Linhas":
+            ax.set_xlim(-0.75, len(rotulos) - 0.25)   # poucas barras nao esticam pra largura toda
+        for lado in ("top", "right"):
+            ax.spines[lado].set_visible(False)
+        if marca:
+            ax.yaxis.grid(True, color="#E3E7EE", linewidth=0.6)
+            ax.set_axisbelow(True)
+            for lado in ("left", "bottom"):
+                ax.spines[lado].set_color("#DADFE8")
+        if n > 1:
+            ax.legend(fontsize=7, frameon=False)
+        ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _p: (f"{v:,.0f}".replace(",", ".")) + ("%" if fmt == "pct" else "")))
+        fig.tight_layout()
+        out = io.BytesIO()
+        fig.savefig(out, format="png", transparent=False, facecolor="white")
+        plt.close(fig)
     return out.getvalue()
 
 
 def pdf_bytes(prep: dict, usuario: str = "", consulta: str = "", grafico: Optional[dict] = None,
               tipo_grafico: str = "Barras", ys: Optional[list[str]] = None) -> bytes:
-    """Relatorio PDF simples: titulo, detalhes, grafico (opcional) e tabela formatada pt-BR."""
-    from reportlab.lib import colors
+    """Relatorio PDF no padrao visual EnerMais (mesma marca dos relatorios comentados):
+    faixa navy->laranja, logo do Grupo, Poppins, tabela com cabecalho navy, grafico com a
+    paleta da marca, rodape com pagina X de Y. A4 paisagem (tabelas largas)."""
+    import os
+    from reportlab.lib.colors import HexColor
     from reportlab.lib.pagesizes import A4, landscape
-    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-    from reportlab.lib.units import mm
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas as _canvas
     from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
     from xml.sax.saxutils import escape
+    import gerador_relatorio_comentado as A
 
+    A._registrar_fontes()
+    W, H = landscape(A4)
+    M = 36.0
+    gerado_em = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+    logo = A.LOGO.get("GRUPO")
+
+    class _Numerado(_canvas.Canvas):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self._paginas = []
+
+        def showPage(self):
+            self._paginas.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            total = len(self._paginas)
+            for estado in self._paginas:
+                self.__dict__.update(estado)
+                self._moldura(total)
+                super().showPage()
+            super().save()
+
+        def _moldura(self, total):
+            # faixa navy -> laranja (igual aos relatorios)
+            passos = 80
+            for i in range(passos):
+                self.setFillColor(HexColor(A._interp_cor(A.NAVY, A.ORANGE, i / (passos - 1))))
+                self.rect(i * W / passos, H - 5, W / passos + 0.5, 5, stroke=0, fill=1)
+            if logo and os.path.exists(logo):
+                ir = ImageReader(logo)
+                iw, ih = ir.getSize()
+                esc = min(150 / iw, 40 / ih)
+                self.drawImage(ir, M, H - 14 - ih * esc, iw * esc, ih * esc, mask="auto")
+            self.setFillColor(HexColor(A.NAVY))
+            self.setFont("Sans-Bold", 8)
+            self.drawRightString(W - M, H - 28, "ERIK.AI · CONSULTA AO SISTEMA")
+            self.setFont("Sans-Bold", 11)
+            self.drawRightString(W - M, H - 43, str(prep["titulo"])[:70])
+            self.setStrokeColor(HexColor(A.BORDER_LIGHT)); self.setLineWidth(0.75)
+            self.line(M, H - 60, W - M, H - 60)
+            self.line(M, 34, W - M, 34)
+            self.setFillColor(HexColor(A.GREY_TEXT)); self.setFont("Sans", 7.5)
+            self.drawString(M, 22, f"EGC — Gestão Contábil EnerMais · gerado por {usuario or '—'} em {gerado_em}")
+            self.drawRightString(W - M, 22, f"Página {self._pageNumber} de {total}")
+
+    doc = SimpleDocTemplate(io.BytesIO(), pagesize=(W, H), leftMargin=M, rightMargin=M, topMargin=72, bottomMargin=46,
+                            title=str(prep["titulo"]), author="EnerMais EGC")
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=14 * mm, rightMargin=14 * mm, topMargin=12 * mm,
-                            bottomMargin=12 * mm, title=prep["titulo"], author="EnerMais EGC")
-    st = getSampleStyleSheet()
-    h1 = ParagraphStyle("h1", parent=st["Title"], fontSize=16, alignment=0, textColor=colors.HexColor("#1f2a37"))
-    small = ParagraphStyle("small", parent=st["Normal"], fontSize=8, textColor=colors.HexColor("#555555"))
-    cel = ParagraphStyle("cel", parent=st["Normal"], fontSize=7, leading=8.5)
-    el = [Paragraph(escape(prep["titulo"]), h1)]
+    doc.filename = buf
+    cinza = HexColor(A.GREY_TEXT)
+    h1 = ParagraphStyle("h1", fontName="Sans-Bold", fontSize=17, leading=21, textColor=HexColor(A.NAVY))
+    sub = ParagraphStyle("sub", fontName="Sans", fontSize=9, leading=12.5, textColor=cinza)
+    nota = ParagraphStyle("nota", fontName="Sans-Italic", fontSize=7.5, leading=10.5, textColor=cinza)
+    cel = ParagraphStyle("cel", fontName="Sans", fontSize=7.5, leading=9.5, textColor=HexColor("#222222"))
+    celd = ParagraphStyle("celd", parent=cel, alignment=2)
+    cab = ParagraphStyle("cab", fontName="Sans-Bold", fontSize=7.5, leading=9.5, textColor=HexColor("#FFFFFF"))
+    cabd = ParagraphStyle("cabd", parent=cab, alignment=2)
+
+    el = [Paragraph(escape(str(prep["titulo"])), h1)]
     if prep.get("subtitulo"):
-        el.append(Paragraph(escape(prep["subtitulo"]), small))
-    el.append(Paragraph(escape(f"Gerado por {usuario or '—'} em {datetime.datetime.now():%d/%m/%Y %H:%M} · fonte: {consulta or 'sistema EGC'} · "
-                              "valores consultados no sistema, sem recálculo ou estimativa."), small))
+        el.append(Paragraph(escape(prep["subtitulo"]), sub))
     el.append(Spacer(1, 6))
+    caixa = Table([[Paragraph(escape(f"Fonte: {consulta or 'sistema EGC'} · consulta feita no sistema pela Erik.AI. "
+                                      "Os valores foram lidos do banco, sem recálculo ou estimativa."), nota)]],
+                  colWidths=[W - 2 * M])
+    caixa.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), HexColor(A.GREY_BG)), ("BOX", (0, 0), (-1, -1), 0.5, HexColor(A.BORDER_LIGHT)),
+                               ("LEFTPADDING", (0, 0), (-1, -1), 8), ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5)]))
+    el += [caixa, Spacer(1, 10)]
     if grafico is not None:
-        png = _png_grafico(grafico, tipo_grafico, ys)
+        png = _png_grafico(grafico, tipo_grafico, ys, marca=True)
         if png:
-            el += [Image(io.BytesIO(png), width=170 * mm, height=76 * mm), Spacer(1, 6)]
+            largura = W - 2 * M
+            el += [Image(io.BytesIO(png), width=largura * 0.86, height=largura * 0.86 * 3.3 / 10.2), Spacer(1, 8)]
+
     disp = tabela_exibicao(prep)
     MAX = 300
     cortado = len(disp) > MAX
     disp = disp.head(MAX)
-    dados = [[Paragraph(f"<b>{escape(str(c))}</b>", cel) for c in disp.columns]]
+    colunas = list(disp.columns)
+    fm = prep.get("formatos", {})
+    # alinha a direita o que e' numero (formato conhecido na tabela; no quadro de indicadores, "Valor")
+    nomes_num = {_rotulo_coluna(c) for c, f in fm.items() if f in ("R$", "pct", "x", "int")}
+    if prep.get("linha_formato") is not None:
+        nomes_num.add("Valor")
+    direita = [c in nomes_num for c in colunas]
+    dados = [[Paragraph(f"<b>{escape(str(c))}</b>", cabd if d else cab) for c, d in zip(colunas, direita)]]
     for _i, row in disp.iterrows():
-        dados.append([Paragraph(escape(str(v if v is not None and not (isinstance(v, float) and pd.isna(v)) else "—")), cel) for v in row])
-    tb = Table(dados, repeatRows=1)
+        dados.append([Paragraph(escape(str(v)), celd if d else cel) for v, d in zip(row, direita)])
+    pesos = []
+    for c in colunas:
+        tam = max([len(str(c))] + [len(str(v)) for v in disp[c].head(60)])
+        pesos.append(min(max(tam, 7), 38))
+    total_p = float(sum(pesos)) or 1.0
+    larg = [(W - 2 * M) * p / total_p for p in pesos]
+    tb = Table(dados, colWidths=larg, repeatRows=1)
     tb.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8eef7")), ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#c9ced6")),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"), ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f6f8fb")]),
+        ("BACKGROUND", (0, 0), (-1, 0), HexColor(A.NAVY)), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [HexColor("#FFFFFF"), HexColor(A.GREY_BG)]),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.25, HexColor(A.BORDER_LIGHT)),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5), ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 3.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
     ]))
     el.append(tb)
     if cortado:
-        el.append(Paragraph(f"Tabela limitada às primeiras {MAX} linhas — baixe o Excel para ver tudo.", small))
-    doc.build(el)
+        el += [Spacer(1, 4), Paragraph(f"Tabela limitada às primeiras {MAX} linhas — baixe o Excel para ver tudo.", nota)]
+    doc.build(el, canvasmaker=_Numerado)
     return buf.getvalue()

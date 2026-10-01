@@ -18,7 +18,7 @@ banco real (ver app/tests/test_db_logic.py — mocka conn/cursor).
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 from typing import Optional
 
 import psycopg2.errors
@@ -94,6 +94,29 @@ def listar_periodos_detalhado(conn, empresa_codigo: str, status: str = "ATIVO") 
             (empresa_codigo, status),
         )
         return [{"periodo": row[0], "granularidade": row[1]} for row in cur.fetchall()]
+
+
+def listar_periodos_recuperaveis(conn, empresa_codigo: str) -> list[dict]:
+    """(periodo, granularidade) que o "Recuperar" consegue reativar (v0.44.1): tem lancamento
+    INATIVO de um tipo (BP/DRE) que NAO tem versao ATIVA. Versao anterior substituida por
+    reimportacao (o periodo continua ativo) fica de fora -- para voltar a ela use o
+    "Desfazer" do Importar PDF (db.desfazer_importacao). Antes o Recuperar listava esses
+    periodos e clicar nao fazia nada."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT i.periodo, COALESCE(i.granularidade, '') AS granularidade
+            FROM egc.lancamentos i
+            WHERE i.empresa_codigo = %s AND i.status = 'INATIVO'
+              AND NOT EXISTS (
+                SELECT 1 FROM egc.lancamentos a
+                WHERE a.empresa_codigo = i.empresa_codigo AND a.periodo = i.periodo AND a.tipo = i.tipo
+                  AND COALESCE(a.granularidade, '') = COALESCE(i.granularidade, '') AND a.status = 'ATIVO')
+            ORDER BY i.periodo DESC, granularidade
+            """,
+            (empresa_codigo,),
+        )
+        return [{"periodo": r[0], "granularidade": r[1]} for r in cur.fetchall()]
 
 
 def arquivos_ativos_por_periodo(conn, empresa_codigo: str) -> dict:

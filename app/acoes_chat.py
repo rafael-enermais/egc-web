@@ -68,12 +68,20 @@ def _numero(v) -> Optional[float]:
         return None
 
 
+def _documentos(conn, empresa: str, status: str) -> list[dict]:
+    """Documentos (periodo, granularidade) alvo da acao: ATIVOS p/ arquivar; p/ recuperar,
+    so' os que de fato podem ser recuperados (sem versao ativa) -- mesma regra da tela."""
+    if status == "INATIVO":
+        return db.listar_periodos_recuperaveis(conn, empresa)
+    return db.listar_periodos_detalhado(conn, empresa, status=status)
+
+
 def _resolver_periodo(conn, empresa: str, periodo_txt: str, status: str, granularidade: Optional[str]):
     """-> (date, granularidade, erro). Resolve o documento (periodo_fim + granularidade)."""
     ym = _periodo_data(periodo_txt)
     if not ym:
         return None, None, "Período inválido — use o formato AAAA-MM (ex.: 2026-06)."
-    detalhados = [d for d in db.listar_periodos_detalhado(conn, empresa, status=status)
+    detalhados = [d for d in _documentos(conn, empresa, status)
                   if d["periodo"].year == ym[0] and d["periodo"].month == ym[1]]
     if not detalhados:
         rotulo = "ativo" if status == "ATIVO" else "arquivado"
@@ -226,8 +234,8 @@ def executar_proposta(conn, proposta: dict, usuario: str, empresas_codigos: list
             msg = f"Pendência atualizada para {p['novo_status']}."
         elif tipo in ("ARQUIVAR_PERIODO", "RECUPERAR_PERIODO"):
             ano, mes = _periodo_data(p["periodo"])
-            alvo = [d["periodo"] for d in db.listar_periodos_detalhado(
-                conn, p["empresa"], status="ATIVO" if tipo == "ARQUIVAR_PERIODO" else "INATIVO")
+            alvo = [d["periodo"] for d in _documentos(
+                conn, p["empresa"], "ATIVO" if tipo == "ARQUIVAR_PERIODO" else "INATIVO")
                 if d["periodo"].year == ano and d["periodo"].month == mes][0]
             fn = db.arquivar_periodo if tipo == "ARQUIVAR_PERIODO" else db.recuperar_periodo
             n = fn(conn, p["empresa"], alvo, p["granularidade"])
