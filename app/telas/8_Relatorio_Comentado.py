@@ -81,7 +81,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from auth import usuario_atual  # noqa: E402
-from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS  # noqa: E402
+from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS, flash, mostrar_flash  # noqa: E402
 import db  # noqa: E402
 import dados_relatorio_comentado as drc  # noqa: E402
 import gerador_relatorio_comentado as g  # noqa: E402
@@ -98,6 +98,7 @@ st.title("📄 Relatório Comentado")
 usuario = usuario_atual()
 sidebar_contexto(usuario)
 conn = get_conn()
+mostrar_flash()
 
 st.caption(
     "Gera o Demonstrativo Comentado (PDF) a partir do BP/DRE já importado. "
@@ -516,7 +517,7 @@ def _seletor_contato(tipo: str, cargo_padrao: str, col) -> tuple[str, str]:
                 conn, tipo=contato["tipo"], nome=novo_nome.strip(), cargo=novo_cargo.strip(),
                 email=novo_email.strip() or None, contato_id=contato["id"], usuario=usuario,
             )
-            st.success("Contato atualizado.")
+            flash("ok", "Contato atualizado.")
             st.rerun()
     return contato["nome"], contato["cargo"]
 

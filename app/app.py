@@ -104,8 +104,7 @@ def pagina_inicio():
     # uteis... tudo oq ajudar e saber e interessante" -- zero import novo,
     # calculado em cima do BP/DRE que ja esta no banco (mesma fonte que
     # Visao Grupo/Revisao). Reaproveita db.listar_historico_grupo (ja
-    # existia pro motor de projecao, removido desta versao -- ver
-    # app/_arquivados/).
+    # existia antes de os indicadores serem feitos).
     st.divider()
     st.subheader("Indicadores contábeis")
     try:
@@ -364,12 +363,10 @@ paginas = [
     # Supabase -- ver dados_relatorio_comentado.py. 1ª versão, 1 empresa +
     # 1 período por geração.
     st.Page("telas/8_Relatorio_Comentado.py", title="Relatório Comentado", icon="📄"),
-    # Dashboard de Projeção removido do menu por pedido do Rafael
-    # (22/09/2026): numeros ficavam irreais em horizonte longo com pouco
-    # historico real (tendencia linear sem teto). Codigo e tabelas
-    # (egc.projecoes/projecoes_ajustes) preservados, nao apagados -- ver
-    # app/_arquivados/5_Dashboard_Projecao.py pra reativar se decidir
-    # retomar com mais historico acumulado.
+    # Dashboard de Projeção removido (22/09/2026, pedido do Rafael: numeros
+    # irreais em horizonte longo) e o codigo morto apagado em v0.44.2. As
+    # tabelas egc.projecoes/projecoes_ajustes continuam no banco (sem uso);
+    # o codigo antigo fica no historico do git (commit anterior a v0.44.2).
     # Nome do bot: "Erik.AI" (pedido do Rafael 23/09/2026) -- url_path
     # fixado em "Assistente" (era o default implícito antes) pra NÃO
     # quebrar o link enermais04.streamlit.app/Assistente já em uso.

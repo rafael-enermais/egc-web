@@ -164,6 +164,18 @@ def consultar_bp_dre(
         {"grupo": l["grupo"], "conta": l["conta"], "valor": float(l["valor"])}
         for l in linhas
     ]
+    if not contas:
+        # Periodo existe (ex.: so' o DRE foi importado) mas ESTE tipo nao tem
+        # lancamento ativo nele -- devolver "0 contas" como sucesso fazia a
+        # Consulta rapida do Erik.AI quebrar (KeyError 'valor') e deixava o
+        # modelo sem sinal claro de que o dado nao existe.
+        return {
+            "erro": (
+                f"{empresa_codigo} não tem {tipo} ativo em {periodo.strftime('%Y-%m')} "
+                f"(só existe o outro demonstrativo nesse período, ou o {tipo} foi arquivado)."
+            ),
+            "periodos_disponiveis": [d["periodo"].strftime("%Y-%m") for d in sorted(periodos_disponiveis, key=lambda d: d["periodo"], reverse=True)],
+        }
     return {
         "empresa_codigo": empresa_codigo,
         "tipo": tipo,
