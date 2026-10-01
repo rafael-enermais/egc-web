@@ -232,7 +232,7 @@ def test_grafico_evolucao_valores_abaixo_de_zero_usam_familia_laranja_por_recenc
         cores = [B._cor_periodo(i, n_periodos, v=-1.0) for i in range(n_periodos)]
         assert len(set(cores)) == n_periodos, f"n={n_periodos}: cores repetidas ({cores})"
         assert cores[-1] == B.ORANGE, "o periodo mais recente (abaixo de zero) e' o ORANGE pleno"
-        assert B.RED_ACCENT not in cores
+        assert "#C38492" not in cores  # rosa-avermelhado antigo aposentado (RED_ACCENT agora e' alias do laranja)
         lum = [_luminosidade_hex(c) for c in cores]
         assert all(lum[i] > lum[i + 1] for i in range(n_periodos - 1)), f"mais claro = mais antigo ({lum})"
         # nao pode coincidir com nenhum tom da rampa de positivos

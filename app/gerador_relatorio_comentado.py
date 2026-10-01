@@ -64,7 +64,14 @@ NAVY = "#171C60"
 ORANGE = "#EA9527"
 GREY_TEXT = "#525252"
 GREY_BG = "#F6F8FB"
-RED_ACCENT = "#C38492"
+# 01/10/2026 (Rafael: "aquele vermelho esquisito ta em todo lugar"): o rosa-
+# avermelhado #C38492 foi aposentado. Negativo/reducao passa a usar a MESMA
+# familia laranja do grafico de Evolucao (ver PALETAS_NEGATIVO): preenchimento
+# em ORANGE e texto em tom escuro (#9A5200) pra manter contraste sobre branco.
+# O nome RED_ACCENT fica como alias (gerador_relatorio_comparativo importa).
+NEG_FILL = ORANGE
+NEG_TEXT = "#9A5200"
+RED_ACCENT = NEG_FILL
 BORDER_LIGHT = "#DADFE8"
 
 LOGO = {
@@ -472,7 +479,7 @@ def pagina_destaques(c, dados, pagina: int, total_paginas: int):
 
     # 4 KPIs pequenos
     col_w = (CONTEUDO_W - 3 * 10) / 4
-    cores = [NAVY, RED_ACCENT, NAVY, GREY_TEXT]
+    cores = [NAVY, NEG_FILL, NAVY, GREY_TEXT]
     kpis_pequenos = [
         ("Lucro Bruto", f"{moeda_br(dados['lucro_bruto'] / 1_000_000)} MM", f"margem {pct_br(dados['margem_bruta'])}"),
         ("Despesas Operacionais", f"{moeda_br(dados['despesas_operacionais'] / 1_000_000)} MM", dados["complemento_despesas"]),
@@ -1036,7 +1043,8 @@ def desenhar_bloco_empresa_capa(c, dados) -> float:
 
 # ------------------------------------------------------------------ pagina 1
 # v0.40.0: selo da capa por variante (padrao = sem selo).
-SELO_VARIANTE = {"gerencial": "GERENCIAL", "fornecedor": "FORNECEDOR"}
+# "fornecedor" sem selo (01/10/2026): a capa diz so' "Demonstrativo Comentado".
+SELO_VARIANTE = {"gerencial": "GERENCIAL"}
 # variantes que NAO incluem a pagina "Composicao das Despesas" (v0.40.0:
 # "fornecedor" = igual ao padrao, so' muda o titulo/selo/sufixo do arquivo)
 VARIANTES_SEM_PAGINA_DESPESAS = ("padrao", "fornecedor")
@@ -1197,11 +1205,11 @@ def pagina_receita_custos(c, dados, pagina: int, total_paginas: int):
         dict(tipo="abs", valor=d["receita_bruta"] / 1e6, cor=NAVY, label="Receita\nBruta",
              rotulo_valor=f"{moeda_br(d['receita_bruta'] / 1e6)} MM"),
         dict(tipo="delta", valor=-d["deducoes_receita"] / 1e6, cor=RED_ACCENT, label="Deduções\nda Receita",
-             rotulo_valor=f"-{moeda_br(d['deducoes_receita'] / 1e6)} MM", cor_rotulo=RED_ACCENT),
+             rotulo_valor=f"-{moeda_br(d['deducoes_receita'] / 1e6)} MM", cor_rotulo=NEG_TEXT),
         dict(tipo="abs", valor=d["receita_liquida"] / 1e6, cor=NAVY, label="Receita\nLíquida",
              rotulo_valor=f"{moeda_br(d['receita_liquida'] / 1e6)} MM", conectar=True),
         dict(tipo="delta", valor=-d["custo_servicos"] / 1e6, cor=RED_ACCENT, label="Custo dos\nServiços",
-             rotulo_valor=f"-{moeda_br(d['custo_servicos'] / 1e6)} MM", cor_rotulo=RED_ACCENT),
+             rotulo_valor=f"-{moeda_br(d['custo_servicos'] / 1e6)} MM", cor_rotulo=NEG_TEXT),
         dict(tipo="abs", valor=d["lucro_bruto"] / 1e6, cor=ORANGE, label="Lucro\nBruto",
              rotulo_valor=f"{moeda_br(d['lucro_bruto'] / 1e6)} MM", cor_rotulo=ORANGE),
     ]
@@ -1345,12 +1353,12 @@ def pagina_resultado(c, dados, pagina: int, total_paginas: int):
         dict(tipo="abs", valor=d["lucro_bruto"] / 1e6, cor=NAVY, label="Lucro Bruto",
              rotulo_valor=f"{moeda_br(d['lucro_bruto'] / 1e6)} MM"),
         dict(tipo="delta", valor=-d["despesas_operacionais"] / 1e6, cor=RED_ACCENT, label="Despesas\nOperacionais",
-             rotulo_valor=f"-{moeda_br(d['despesas_operacionais'] / 1e6)} MM", cor_rotulo=RED_ACCENT),
+             rotulo_valor=f"-{moeda_br(d['despesas_operacionais'] / 1e6)} MM", cor_rotulo=NEG_TEXT),
         dict(tipo="delta", valor=-d["csll_irpj"] / 1e6, cor=RED_ACCENT, label="CSLL + IRPJ",
-             rotulo_valor=f"-{moeda_br(d['csll_irpj'] / 1e6)} MM", cor_rotulo=RED_ACCENT),
+             rotulo_valor=f"-{moeda_br(d['csll_irpj'] / 1e6)} MM", cor_rotulo=NEG_TEXT),
         dict(tipo="abs", valor=d["resultado_liquido"] / 1e6, cor=RED_ACCENT, label="Resultado Líquido\ndo Período",
              rotulo_valor=f"{moeda_br(d['resultado_liquido'] / 1e6, forcar_sinal=True)} MM",
-             cor_rotulo=RED_ACCENT, conectar=False),
+             cor_rotulo=NEG_TEXT, conectar=False),
     ]
     grafico_waterfall(c, MARGEM, MARGEM + CONTEUDO_W, 150, 420, itens)
 
@@ -1429,7 +1437,7 @@ def pagina_ebitda(c, dados, pagina: int, total_paginas: int):
     csll_irpj = d.get("csll_irpj", 0) or 0
     itens = [
         dict(tipo="abs", valor=d["resultado_liquido"] / 1e6, cor=RED_ACCENT, label="Resultado Líquido\ndo Período",
-             rotulo_valor=f"{moeda_br(d['resultado_liquido'] / 1e6, forcar_sinal=True)} MM", cor_rotulo=RED_ACCENT, conectar=False),
+             rotulo_valor=f"{moeda_br(d['resultado_liquido'] / 1e6, forcar_sinal=True)} MM", cor_rotulo=NEG_TEXT, conectar=False),
     ]
     if csll_irpj:
         itens.append(

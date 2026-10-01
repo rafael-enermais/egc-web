@@ -268,11 +268,11 @@ def _tabela_evolucao(c, x, largura, y_top, titulos_colunas, linhas, mostrar_vari
         rect(c, tag_x0, y - 8, tag_x0 + TAG_W, y + 2, fill=tag_cor, radius=2)
         txt(c, tag_x0 + TAG_W / 2, y - 1, tag_txt, font="bold", size=6.5, color="#FFFFFF", align="center")
         for i, v in enumerate(vals):
-            cor_v = RED_ACCENT if v < 0 else NAVY
+            cor_v = A.NEG_TEXT if v < 0 else NAVY
             txt(c, x_col(i), y, moeda_br(v, forcar_sinal=(v < 0)), font="regular", size=valor_font_size, align="right", color=cor_v)
         if mostrar_variacao and vals[0]:
             delta = (vals[-1] - vals[0]) / abs(vals[0])
-            cor_delta = RED_ACCENT if delta < 0 else "#1a7a3c"
+            cor_delta = A.NEG_TEXT if delta < 0 else "#1a7a3c"
             txt(c, x_var, y, pct_br(delta, forcar_sinal=True), font="bold", size=9.5, color=cor_delta, align="right")
         y += 16
         if linha.get("acumulado") is not None:
