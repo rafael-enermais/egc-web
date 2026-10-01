@@ -217,20 +217,23 @@ def _explicar_pares_fora(cods: list):
         )
 
 
-nomes_emp = [f"{nome} ({cod})" for cod, nome, _cnpj in EMPRESAS_FIXAS]
-idx_emp = st.selectbox(
-    "Empresa", range(len(EMPRESAS_FIXAS)), format_func=lambda i: nomes_emp[i], key="relatorio_empresa_sel",
-)
-cod_empresa, nome_empresa, _cnpj = EMPRESAS_FIXAS[idx_emp]
+# 01/10/2026 (Rafael: "o seletor de cima, Empresa, ta meio inutil... o relatorio
+# e' gerado via seletor de baixo"): confirmado -- o selectbox "Empresa" so'
+# servia de valor inicial do multiselect "Empresas no relatorio" (e barrava a
+# tela se aquela empresa nao tivesse periodo, mesmo com outras escolhidas).
+# Removido; a escolha de empresa(s) e' so' a de baixo.
+cod_empresa, nome_empresa, _cnpj = EMPRESAS_FIXAS[0]  # valor inicial do multiselect (Enermais Energia)
 
 try:
-    periodos_ativos = db.listar_periodos(conn, cod_empresa, status="ATIVO")
+    _alguma_empresa_com_periodo = any(
+        db.listar_periodos(conn, cod, status="ATIVO") for cod, _n, _c in EMPRESAS_FIXAS
+    )
 except Exception as exc:
     st.error(f"Não foi possível consultar os períodos: {exc}")
     st.stop()
 
-if not periodos_ativos:
-    st.info(f"{nome_empresa} ainda não tem nenhum período importado (ou todos estão arquivados).")
+if not _alguma_empresa_com_periodo:
+    st.info("Nenhuma empresa tem período importado ainda (ou todos estão arquivados).")
     st.stop()
 
 st.divider()

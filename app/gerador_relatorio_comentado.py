@@ -868,6 +868,27 @@ _ANEXO_Y_INICIO = 162.0
 _ANEXO_Y_LIMITE = 758.0  # abaixo disso reserva espaco pro rodape (~pag+nota)
 
 
+def _titulo_anexo(c, dados, parte=1, partes=1):
+    """Pilula "ANEXOS" + titulo + subtitulo do anexo (BP). Usado na 1a pagina
+    E nas paginas de continuacao (01/10/2026, Rafael: "a segunda pagina com um
+    titulo igual ao da parte 1 ... parte 1, parte 2, mas um relatorio bonito":
+    antes a continuacao ficava com ~100pt em branco entre o cabecalho e a
+    tabela). Com 2+ partes o titulo traz "(parte N de M)"; com 1 so', nada muda."""
+    d = dados
+    rect(c, MARGEM, 96, MARGEM + 72, 116, fill=NAVY, radius=3)
+    txt(c, MARGEM + 36, 110, "ANEXOS", font="bold", size=9, color="#FFFFFF", align="center")
+    txt(c, MARGEM + 84, 112, "Detalhamento de Contas — Balanço Patrimonial", font="heavy", size=14.5, color=NAVY)
+    if partes > 1:  # "Parte N de M" alinhado a direita, sem empurrar o titulo pra fora da margem
+        txt(c, PAGE_W - MARGEM, 112, f"Parte {parte} de {partes}", font="bold", size=9.5, color=GREY_TEXT, align="right")
+    titulos_colunas = d.get("anexo_colunas")
+    if titulos_colunas and len(titulos_colunas) > 1:
+        subtitulo = f"{d.get('anexo_escopo_label', d['empresa_nome'])} · valores em R$"
+    else:
+        subtitulo = f"{d['empresa_nome']} · Período: {d['data_posicao']} · valores em R$"
+    txt(c, MARGEM, 134, subtitulo, font="regular", size=9, color=GREY_TEXT)
+
+
+
 def _paginar_bloco_anexo(c, dados, x, largura, y, pagina_atual, total_paginas,
                           linhas, titulos_colunas, precisa_titulo, desenhar, nova_pagina_no_inicio=False):
     """Desenha (ou só mede, se `desenhar=False`) um bloco de linhas do
@@ -894,7 +915,9 @@ def _paginar_bloco_anexo(c, dados, x, largura, y, pagina_atual, total_paginas,
         if desenhar:
             _footer(c, pagina_atual, total_paginas)
             c.showPage()
-            _header(c, dados, "Anexos (continuação)")
+            _header(c, dados, "Anexos")
+            ini = dados.get("_anexo_pagina_inicial", 1)
+            _titulo_anexo(c, dados, parte=(pagina_atual + 1) - ini + 1, partes=dados.get("_anexo_partes", 1))
         pagina_atual += 1
         y = _ANEXO_Y_INICIO
         precisa_titulo = True
@@ -1616,17 +1639,11 @@ def pagina_anexo(c, dados, pagina: int, total_paginas: int):
     d = dados
     _header(c, dados, "Anexos")
 
-    rect(c, MARGEM, 96, MARGEM + 72, 116, fill=NAVY, radius=3)
-    txt(c, MARGEM + 36, 110, "ANEXOS", font="bold", size=9, color="#FFFFFF", align="center")
-    txt(c, MARGEM + 84, 112, "Detalhamento de Contas — Balanço Patrimonial", font="heavy", size=14.5, color=NAVY)
-
     titulos_colunas = d.get("anexo_colunas")  # None/1 item = 1 empresa/periodo (layout classico)
     multi = bool(titulos_colunas) and len(titulos_colunas) > 1
-    if multi:
-        subtitulo = f"{d.get('anexo_escopo_label', d['empresa_nome'])} · valores em R$"
-    else:
-        subtitulo = f"{d['empresa_nome']} · Período: {d['data_posicao']} · valores em R$"
-    txt(c, MARGEM, 134, subtitulo, font="regular", size=9, color=GREY_TEXT)
+    partes = (paginas_extras_anexo(dados) + 1) if multi else 1
+    d["_anexo_pagina_inicial"], d["_anexo_partes"] = pagina, partes
+    _titulo_anexo(c, dados, parte=1, partes=partes)
 
     if multi:
         # multi-coluna (2+ empresas/periodos) nao cabe bem no layout

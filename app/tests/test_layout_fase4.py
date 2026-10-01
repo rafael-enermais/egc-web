@@ -65,7 +65,8 @@ def test_anexo_repete_o_cabecalho_ao_abrir_a_pagina_seguinte_sem_perder_linha():
         paginas = _paginas_texto(dados, tmp)
         com_anexo = [t for t in paginas if "Anexos" in t]
         assert len(com_anexo) >= 2, "esperava o anexo em 2+ paginas"
-        assert any("Anexos (continuação)" in t for t in paginas)
+        # 01/10/2026: continuacao repete selo+titulo com "Parte N de M" (antes: "Anexos (continuacao)")
+        assert any("Parte 2 de" in t and "Detalhamento de Contas" in t for t in paginas)
         texto = "\n".join(paginas)
         for lado in ("ATIVO", "PASSIVO"):
             for s in range(5):

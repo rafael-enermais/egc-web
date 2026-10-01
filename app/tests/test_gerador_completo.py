@@ -502,3 +502,32 @@ def test_variante_fornecedor_igual_ao_padrao_sem_despesas_e_com_selo_proprio():
         g.gerar_pdf_completo(dict(BASE, variante="gerencial"), cam_g)
         assert "FORNECEDOR" not in _texto_paginas(cam_g)[0]
     print("OK: variante 'fornecedor' = padrao (8 paginas) sem selo na capa")
+
+
+def test_anexo_multi_paginas_repetem_selo_e_titulo_com_parte_n_de_m():
+    """01/10/2026 (Rafael): a 2a pagina do anexo ficava com ~100pt em branco e so'
+    'Anexos (continuacao)'. Agora toda pagina do anexo traz selo ANEXOS + titulo
+    e 'Parte N de M' (so' quando ha 2+ partes)."""
+    import pdfplumber
+    ativo = [("grupo", "ATIVO CIRCULANTE"), ("conta", "Disponível", 1.0, 2.0), ("total", "TOTAL DO ATIVO", 1.0, 2.0)]
+    passivo = [("grupo", "PASSIVO CIRCULANTE"), ("conta", "Fornecedores", 1.0, 2.0), ("total", "TOTAL PASSIVO + PL", 1.0, 2.0)]
+    dados = dict(BASE, anexo_colunas=["2025", "2T/2026"], anexo_escopo_label="Enermais Energia · 2025 a 2T/2026",
+                 anexo_ativo=ativo, anexo_passivo=passivo)
+    with tempfile.TemporaryDirectory() as tmp:
+        caminho = os.path.join(tmp, "anexo_partes.pdf")
+        g.gerar_pdf_completo(dados, caminho)
+        with pdfplumber.open(caminho) as pdf:
+            textos = [p.extract_text() or "" for p in pdf.pages]
+    com_anexo = [t for t in textos if "Detalhamento de Contas" in t]
+    assert len(com_anexo) == 2
+    assert "Parte 1 de 2" in com_anexo[0] and "Parte 2 de 2" in com_anexo[1]
+    assert all("ANEXOS" in t for t in com_anexo)
+    assert not any("continuação" in t for t in textos)
+
+    # 1 coluna (layout classico, 1 pagina): sem 'Parte'
+    d1 = dict(BASE)
+    with tempfile.TemporaryDirectory() as tmp:
+        caminho = os.path.join(tmp, "anexo_classico.pdf")
+        g.gerar_pdf_completo(d1, caminho)
+        with pdfplumber.open(caminho) as pdf:
+            assert not any("Parte 1 de" in (p.extract_text() or "") for p in pdf.pages)
