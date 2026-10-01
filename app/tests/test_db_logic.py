@@ -91,7 +91,7 @@ def test_inserir_lancamentos_bp_e_dre_ordem_de_colunas():
     sql, registros = cur.executed[0]
     assert n == 1
     (empresa, tipo, periodo, grupo, conta, valor, origem, arquivo, usuario,
-     periodo_inicio, granularidade) = registros[0]
+     periodo_inicio, granularidade, lote) = registros[0]
     assert (empresa, tipo, grupo, conta, valor, origem) == (
         "ENERGIA", "BP", "ATIVO CIRCULANTE", "CLIENTES", 1094484.54, "PDF 31/12/2023"
     )
@@ -113,7 +113,7 @@ def test_inserir_lancamentos_bp_e_dre_ordem_de_colunas():
     )
     _, registros2 = cur2.executed[0]
     (empresa, tipo, periodo, grupo, conta, valor, origem, arquivo, usuario,
-     periodo_inicio2, granularidade2) = registros2[0]
+     periodo_inicio2, granularidade2, lote2) = registros2[0]
     assert (grupo, conta, valor) == ("RECEITAS", "RECEITA OPERACIONAL LIQUIDA", 500000.00)
     assert (periodo_inicio2, granularidade2) == (datetime.date(2023, 1, 1), "anual")
     print("OK: inserir_lancamentos (BP e DRE com ordem de coluna correta, periodo_inicio/granularidade opcionais)")
@@ -136,7 +136,7 @@ def test_inserir_lancamentos_granularidade_none_explicito_nunca_vira_null_no_ban
         periodo_inicio=None, granularidade=None,
     )
     _, registros = cur.executed[0]
-    granularidade_gravada = registros[0][-1]
+    granularidade_gravada = registros[0][-2]  # [-1] e' o lote (v0.44.0)
     assert granularidade_gravada == "", (
         f"granularidade=None explicito deveria virar '' (coluna e' NOT NULL), veio {granularidade_gravada!r}"
     )
@@ -179,12 +179,12 @@ def test_arquivar_e_recuperar_so_alternam_status_nunca_apagam():
     assert "SET status = 'INATIVO'" in sql_arq
     assert "status = 'ATIVO'" in sql_arq
 
-    cur_rec = FakeCursor()
+    cur_rec = FakeCursor(fetchall_result=[("DRE", "")])
     db.recuperar_periodo(FakeConn(cur_rec), "ENERGIA", datetime.date(2023, 12, 31))
-    sql_rec, _ = cur_rec.executed[0]
-    assert "DELETE" not in sql_rec.upper()
-    assert "SET status = 'ATIVO'" in sql_rec
-    assert "status = 'INATIVO'" in sql_rec
+    todos_sql = " ".join(sql for sql, _ in cur_rec.executed)
+    assert "DELETE" not in todos_sql.upper()
+    assert "SET status = 'ATIVO'" in todos_sql
+    assert "status = 'INATIVO'" in todos_sql
     print("OK: arquivar_periodo/recuperar_periodo (so status, sem DELETE)")
 
 

@@ -96,6 +96,23 @@ def listar_periodos_detalhado(conn, empresa_codigo: str, status: str = "ATIVO") 
         return [{"periodo": row[0], "granularidade": row[1]} for row in cur.fetchall()]
 
 
+def arquivos_ativos_por_periodo(conn, empresa_codigo: str) -> dict:
+    """{periodo: {arquivo_pdf, ...}} dos lancamentos ATIVOS da empresa (v0.44.0).
+    O historico de importacoes usa pra saber se ESTE import (pelo nome do
+    arquivo) ainda e' a versao ativa -- e nao apenas "o periodo tem algo ativo",
+    que dava "Ativo" errado na linha de um import ja desfeito."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT periodo, COALESCE(arquivo_pdf, '') FROM egc.lancamentos
+               WHERE empresa_codigo = %s AND status = 'ATIVO' GROUP BY 1, 2""",
+            (empresa_codigo,),
+        )
+        out: dict = {}
+        for per, arq in cur.fetchall():
+            out.setdefault(per, set()).add(arq)
+        return out
+
+
 def listar_periodos_completos_detalhado(conn, empresa_codigo: str, status: str = "ATIVO") -> list[dict]:
     """
     v0.40.0: (periodo, granularidade) em que a empresa tem BP **E** DRE
@@ -259,6 +276,8 @@ def inserir_lancamentos(
     from parser_egc import br_to_float
 
     granularidade = granularidade if granularidade is not None else ""
+    import uuid as _uuid
+    lote = str(_uuid.uuid4())  # v0.44.0: identifica ESTE import (geracao) p/ desfazer/recuperar
     registros = []
     for r in rows:
         if tipo == "BP":
@@ -268,37 +287,31 @@ def inserir_lancamentos(
         valor = br_to_float(valor_br)
         registros.append((
             empresa_codigo, tipo, periodo, grupo, conta, valor, origem,
-            arquivo_pdf, usuario, periodo_inicio, granularidade,
+            arquivo_pdf, usuario, periodo_inicio, granularidade, lote,
         ))
 
+    # Tentativas em ordem: completa (com lote) -> sem lote (bloco 21 ainda nao
+    # rodou) -> sem periodo_inicio/granularidade (bloco 16 ainda nao rodou).
+    # Cada fallback so' acontece em UndefinedColumn; nao trava a importacao.
+    tentativas = [
+        ("empresa_codigo, tipo, periodo, grupo, conta, valor, origem, arquivo_pdf, usuario, "
+         "periodo_inicio, granularidade, lote", 12),
+        ("empresa_codigo, tipo, periodo, grupo, conta, valor, origem, arquivo_pdf, usuario, "
+         "periodo_inicio, granularidade", 11),
+        ("empresa_codigo, tipo, periodo, grupo, conta, valor, origem, arquivo_pdf, usuario", 9),
+    ]
     with conn.cursor() as cur:
-        try:
-            cur.executemany(
-                """
-                INSERT INTO egc.lancamentos
-                    (empresa_codigo, tipo, periodo, grupo, conta, valor, origem,
-                     arquivo_pdf, usuario, periodo_inicio, granularidade)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                registros,
-            )
-        except psycopg2.errors.UndefinedColumn:
-            # Fallback (24/09/2026): migracao da Fase 1 (colunas
-            # periodo_inicio/granularidade) ainda nao rodou no banco --
-            # nao trava a importacao por causa disso, so' grava sem as 2
-            # colunas novas (mesmo comportamento de antes). Reverte a
-            # transacao interrompida pelo erro antes de tentar de novo.
-            conn.rollback()
-            registros_sem_novas = [r[:-2] for r in registros]
-            cur.executemany(
-                """
-                INSERT INTO egc.lancamentos
-                    (empresa_codigo, tipo, periodo, grupo, conta, valor, origem,
-                     arquivo_pdf, usuario)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                registros_sem_novas,
-            )
+        for k, (colunas, n) in enumerate(tentativas):
+            try:
+                cur.executemany(
+                    f"INSERT INTO egc.lancamentos ({colunas}) VALUES ({', '.join(['%s'] * n)})",
+                    [r[:n] for r in registros],
+                )
+                break
+            except psycopg2.errors.UndefinedColumn:
+                if k == len(tentativas) - 1:
+                    raise
+                conn.rollback()
         return cur.rowcount
 
 
@@ -562,15 +575,35 @@ def salvar_correcao_manual(
                 (novo_valor, origem, usuario, lancamento_id),
             )
         else:
-            cur.execute(
-                """
-                INSERT INTO egc.lancamentos
-                    (empresa_codigo, tipo, periodo, grupo, conta, valor, origem, usuario, granularidade)
-                VALUES (%s, %s, %s, 'AJUSTE MANUAL', %s, %s, %s, %s, %s)
-                RETURNING id
-                """,
-                (empresa_codigo, tipo, periodo, conta, novo_valor, origem, usuario, granularidade or ""),
-            )
+            try:
+                # v0.44.0: a conta criada a mao herda o LOTE do documento ativo
+                # (empresa, tipo, periodo, granularidade) -- assim ela acompanha o
+                # documento no Desfazer/Recuperar em vez de virar "orfa".
+                cur.execute(
+                    """
+                    INSERT INTO egc.lancamentos
+                        (empresa_codigo, tipo, periodo, grupo, conta, valor, origem, usuario, granularidade, lote)
+                    VALUES (%s, %s, %s, 'AJUSTE MANUAL', %s, %s, %s, %s, %s,
+                        (SELECT lote FROM egc.lancamentos
+                          WHERE empresa_codigo = %s AND tipo = %s AND periodo = %s
+                            AND COALESCE(granularidade, '') = %s AND status = 'ATIVO' AND lote IS NOT NULL
+                          ORDER BY criado_em DESC LIMIT 1))
+                    RETURNING id
+                    """,
+                    (empresa_codigo, tipo, periodo, conta, novo_valor, origem, usuario, granularidade or "",
+                     empresa_codigo, tipo, periodo, granularidade or ""),
+                )
+            except psycopg2.errors.UndefinedColumn:  # bloco 21 ainda nao rodou
+                conn.rollback()
+                cur.execute(
+                    """
+                    INSERT INTO egc.lancamentos
+                        (empresa_codigo, tipo, periodo, grupo, conta, valor, origem, usuario, granularidade)
+                    VALUES (%s, %s, %s, 'AJUSTE MANUAL', %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (empresa_codigo, tipo, periodo, conta, novo_valor, origem, usuario, granularidade or ""),
+                )
         row = cur.fetchone()
         return row[0] if row else None
 
@@ -605,22 +638,135 @@ def arquivar_periodo(conn, empresa_codigo: str, periodo: date, granularidade: Op
         return cur.rowcount
 
 
+# v0.44.0 -- "geracao" (versao) de um documento: cada gravacao do PDF recebe um
+# `lote` (uuid). Reimportar o mesmo periodo arquiva a geracao antiga e grava a
+# nova; sem saber qual e' qual, "Recuperar" tentava reativar as DUAS (erro de
+# chave duplicada) e "Desfazer" so' arquivava a nova, sem trazer a antiga de volta.
+# Linhas antigas (sem lote) caem no fallback "a:<arquivo_pdf>"; linhas sem lote
+# e sem arquivo (ajustes manuais legados) ficam de fora da escolha da geracao.
+_GERACAO_SQL = "COALESCE(lote::text, 'a:' || COALESCE(arquivo_pdf, ''))"
+
+
+def _geracoes_inativas(cur, empresa_codigo, periodo, tipo, gran):
+    """Geracoes INATIVAS de (empresa, periodo, tipo, granularidade), a mais
+    recente primeiro: [(chave, qtd_linhas, ultima_gravacao, arquivo)]."""
+    cur.execute(
+        f"""
+        SELECT {_GERACAO_SQL} AS gen, COUNT(*), MAX(criado_em), MAX(arquivo_pdf)
+        FROM egc.lancamentos
+        WHERE empresa_codigo = %s AND periodo = %s AND tipo = %s
+          AND COALESCE(granularidade, '') = %s AND status = 'INATIVO'
+          AND NOT (lote IS NULL AND COALESCE(arquivo_pdf, '') = '')
+        GROUP BY 1
+        ORDER BY MAX(criado_em) DESC
+        """,
+        (empresa_codigo, periodo, tipo, gran),
+    )
+    return cur.fetchall()
+
+
+def _reativar_geracao(cur, empresa_codigo, periodo, tipo, gran, chave) -> int:
+    cur.execute(
+        f"""
+        UPDATE egc.lancamentos
+        SET status = 'ATIVO', atualizado_em = now()
+        WHERE empresa_codigo = %s AND periodo = %s AND tipo = %s
+          AND COALESCE(granularidade, '') = %s AND status = 'INATIVO'
+          AND {_GERACAO_SQL} = %s
+        """,
+        (empresa_codigo, periodo, tipo, gran, chave),
+    )
+    return cur.rowcount
+
+
 def recuperar_periodo(conn, empresa_codigo: str, periodo: date, granularidade: Optional[str] = None) -> int:
     """Reativa um periodo previamente arquivado. granularidade: mesmo filtro
     opcional de arquivar_periodo (None = todas as granularidades desse
-    periodo_fim)."""
+    periodo_fim).
+
+    v0.44.0: reativa UMA geracao (a gravada por ultimo) por (tipo,
+    granularidade) -- nunca duas versoes ao mesmo tempo. Se ja existe
+    documento ATIVO desse (tipo, granularidade), nao mexe nele (pra trocar
+    de versao: arquive o ativo antes)."""
     sql = """
-        UPDATE egc.lancamentos
-        SET status = 'ATIVO', atualizado_em = now()
+        SELECT DISTINCT tipo, COALESCE(granularidade, '')
+        FROM egc.lancamentos
         WHERE empresa_codigo = %s AND periodo = %s AND status = 'INATIVO'
     """
     params = [empresa_codigo, periodo]
     if granularidade is not None:
         sql += " AND COALESCE(granularidade, '') = %s"
         params.append(granularidade)
+    total = 0
     with conn.cursor() as cur:
         cur.execute(sql, tuple(params))
-        return cur.rowcount
+        for tipo, gran in cur.fetchall():
+            cur.execute(
+                """SELECT 1 FROM egc.lancamentos
+                   WHERE empresa_codigo = %s AND periodo = %s AND tipo = %s
+                     AND COALESCE(granularidade, '') = %s AND status = 'ATIVO' LIMIT 1""",
+                (empresa_codigo, periodo, tipo, gran),
+            )
+            if cur.fetchone():
+                continue
+            geracoes = _geracoes_inativas(cur, empresa_codigo, periodo, tipo, gran)
+            if geracoes:
+                total += _reativar_geracao(cur, empresa_codigo, periodo, tipo, gran, geracoes[0][0])
+            else:
+                # so' linhas legadas sem lote e sem arquivo: comportamento antigo
+                cur.execute(
+                    """UPDATE egc.lancamentos SET status = 'ATIVO', atualizado_em = now()
+                       WHERE empresa_codigo = %s AND periodo = %s AND tipo = %s
+                         AND COALESCE(granularidade, '') = %s AND status = 'INATIVO'""",
+                    (empresa_codigo, periodo, tipo, gran),
+                )
+                total += cur.rowcount
+    return total
+
+
+def desfazer_importacao(conn, empresa_codigo: str, periodo: date, granularidade: Optional[str] = None) -> dict:
+    """"Desfazer" do historico de importacoes (v0.44.0): arquiva o documento
+    ATIVO do periodo e, se havia uma versao anterior arquivada (a que a
+    reimportacao substituiu), REATIVA essa versao -- por (tipo, granularidade).
+    Nunca apaga nada.
+
+    Retorna {"arquivados": n, "reativados": n, "reativados_arquivos": [nomes]}.
+    """
+    sql = """
+        SELECT DISTINCT tipo, COALESCE(granularidade, '')
+        FROM egc.lancamentos
+        WHERE empresa_codigo = %s AND periodo = %s AND status = 'ATIVO'
+    """
+    params = [empresa_codigo, periodo]
+    if granularidade is not None:
+        sql += " AND COALESCE(granularidade, '') = %s"
+        params.append(granularidade)
+    res = {"arquivados": 0, "reativados": 0, "reativados_arquivos": []}
+    with conn.cursor() as cur:
+        cur.execute(sql, tuple(params))
+        for tipo, gran in cur.fetchall():
+            cur.execute(
+                """UPDATE egc.lancamentos SET status = 'INATIVO', atualizado_em = now()
+                   WHERE empresa_codigo = %s AND periodo = %s AND tipo = %s
+                     AND COALESCE(granularidade, '') = %s AND status = 'ATIVO'
+                   RETURNING COALESCE(lote::text, 'a:' || COALESCE(arquivo_pdf, '')), criado_em""",
+                (empresa_codigo, periodo, tipo, gran),
+            )
+            n_arq = cur.rowcount
+            saindo = cur.fetchall()
+            recem = {r[0] for r in saindo}
+            quando_saiu = max((r[1] for r in saindo), default=None)
+            res["arquivados"] += n_arq
+            # a anterior = geracao inativa mais recente GRAVADA ANTES da que acabou de sair
+            # (assim desfazer em cadeia anda pra tras: C -> B -> A, sem oscilar)
+            anteriores = [g for g in _geracoes_inativas(cur, empresa_codigo, periodo, tipo, gran)
+                          if g[0] not in recem and (quando_saiu is None or g[2] < quando_saiu)]
+            if anteriores:
+                chave, _qtd, _quando, arquivo = anteriores[0]
+                res["reativados"] += _reativar_geracao(cur, empresa_codigo, periodo, tipo, gran, chave)
+                if arquivo and arquivo not in res["reativados_arquivos"]:
+                    res["reativados_arquivos"].append(arquivo)
+    return res
 
 
 # ─────────────────────────────────────────────
