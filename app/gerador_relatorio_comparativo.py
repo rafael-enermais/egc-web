@@ -357,12 +357,39 @@ def _cor_periodo(i: int, n_periodos: int, v: float, paleta: str = None) -> str:
     return pleno if eh_mais_recente else _interp_cor(claro, pleno, t)
 
 
-def _cor_texto_valor(v: float, paleta: str = None) -> str:
-    """Cor do numero ao lado da barra -- sempre escura o bastante pra ler
-    sobre o fundo branco, independente do tom (claro) da barra. Valor
-    abaixo de zero usa a versao escura da familia da barra (contraste
-    >= 5:1 sobre o branco)."""
-    return _paleta_negativa(paleta)[2] if v < 0 else NAVY
+def _contraste_sobre_branco(cor_hex: str) -> float:
+    def lin(c):
+        c = c / 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    h = cor_hex.lstrip("#")
+    r, g, b = (lin(int(h[i:i + 2], 16)) for i in (0, 2, 4))
+    return 1.05 / (0.2126 * r + 0.7152 * g + 0.0722 * b + 0.05)
+
+
+CONTRASTE_MIN_TEXTO_VALOR = 3.5
+
+
+def _cor_texto_valor(v: float, paleta: str = None, cor_barra: str = None) -> str:
+    """Cor do numero ao lado da barra.
+
+    v0.43.2 (pedido do Rafael: "deixa a letra igual a cor do grafico"): com
+    `cor_barra`, o numero usa a MESMA cor da barra do periodo. Nos tons muito
+    claros (periodo mais antigo) a cor exata ficaria ilegivel sobre o branco
+    (ex.: #B4B9D6 = 1,9:1); ai escurece SO' o necessario, mantendo o matiz
+    (multiplica o RGB por um fator), ate contraste >= 3,5:1. Barras nos tons
+    medios/escuros (periodo recente) mantem a cor identica.
+
+    Sem `cor_barra` (comportamento anterior): navy p/ valor >= 0 e versao escura
+    da familia laranja/teal p/ valor < 0."""
+    if not cor_barra:
+        return _paleta_negativa(paleta)[2] if v < 0 else NAVY
+    cor = cor_barra if cor_barra.startswith("#") else "#" + cor_barra
+    fator = 1.0
+    while _contraste_sobre_branco(cor) < CONTRASTE_MIN_TEXTO_VALOR and fator > 0.05:
+        fator -= 0.03
+        h = cor_barra.lstrip("#")
+        cor = "#%02X%02X%02X" % tuple(int(int(h[i:i + 2], 16) * fator) for i in (0, 2, 4))
+    return cor
 
 
 def grafico_evolucao(c, x0, x1, y0_top, metricas, periodos_labels, altura_grupo=58.0, paleta=None):
@@ -403,7 +430,7 @@ def grafico_evolucao(c, x0, x1, y0_top, metricas, periodos_labels, altura_grupo=
             largura = largura_barra_max * (abs(v) / maior_abs)
             rect(c, bx0, y, bx0 + max(largura, 2), y + altura_barra, fill=cor)
             txt(c, bx0 + largura_barra_max + 8, y + altura_barra - 2, moeda_br(v, forcar_sinal=(v < 0)),
-                font="bold", size=8.5, color=_cor_texto_valor(v, paleta), align="left")
+                font="bold", size=8.5, color=_cor_texto_valor(v, paleta, cor_barra=cor), align="left")
             y += altura_barra + espaco_barra
         y += 10
     return y

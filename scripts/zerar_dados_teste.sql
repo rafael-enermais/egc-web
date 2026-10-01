@@ -1,0 +1,79 @@
+-- =====================================================================
+-- EGC -- ZERAR DADOS (v0.44.0)   *** DESTRUTIVO E IRREVERSIVEL ***
+-- Rodar no SQL Editor do Supabase (projeto radar-comercial) SO' quando
+-- quiser voltar o sistema ao estado "limpo" (ex.: apos os testes, antes
+-- de entregar para a contadora).
+--
+-- APAGA (dados de uso):
+--   lancamentos (BP/DRE, ativos e arquivados, correcoes manuais)
+--   importacoes (historico de uploads)        despesas_admin_itens
+--   relatorios_gerados (log de PDFs)          projecoes, projecoes_ajustes
+--   eventos_sistema (log de erros/eventos)
+--   NF: nf_manifesto_import, nf_conciliacao, nf_import_historico,
+--       nf_bills_orfaos  (notas importadas, conferencias e pendencias)
+--   Erik.AI: chat_mensagem (memoria), chat_acao (trilha de acoes)
+--
+-- MANTEM (configuracao / referencia -- nao e' "dado de teste"):
+--   empresas, textos_relatorio, config_relatorio (assinaturas/CPF/etc.),
+--   contexto_fiscal, nf_debtor_empresa (mapa credor->empresa),
+--   nf_bills_sync e nf_creditors_sync (espelho do Sienge; so' recarrega
+--   no botao "Atualizar do Sienge"), contatos_relatorio.
+--   -> Se quiser zerar tambem algum desses, descomente a linha no
+--      bloco "OPCIONAIS" logo abaixo.
+--
+-- Os contadores (ids) voltam a 1. As tabelas que ainda nao existirem no
+-- seu banco sao ignoradas (nao da erro). Tudo roda numa transacao: se
+-- algo falhar, nada e' apagado. Ao final aparece a contagem de cada
+-- tabela (tem que ser tudo 0 nas apagadas).
+-- =====================================================================
+
+BEGIN;
+
+DO $$
+DECLARE
+  apagar text[] := ARRAY[
+    'lancamentos', 'importacoes', 'despesas_admin_itens', 'relatorios_gerados',
+    'projecoes', 'projecoes_ajustes', 'eventos_sistema',
+    'nf_manifesto_import', 'nf_conciliacao', 'nf_import_historico', 'nf_bills_orfaos',
+    'chat_mensagem', 'chat_acao'
+    -- OPCIONAIS (descomente colocando virgula na linha de cima):
+    -- , 'contatos_relatorio'      -- assinantes cadastrados (administrador/contador)
+    -- , 'nf_debtor_empresa'       -- mapa credor -> empresa (reaprende sozinho)
+    -- , 'nf_bills_sync', 'nf_creditors_sync'   -- cache do Sienge (recarrega no botao)
+  ];
+  existentes text[] := '{}';
+  t text;
+BEGIN
+  FOREACH t IN ARRAY apagar LOOP
+    IF to_regclass('egc.' || t) IS NOT NULL THEN
+      existentes := existentes || ('egc.' || t);
+    END IF;
+  END LOOP;
+  -- 1 unico TRUNCATE (resolve as FKs entre elas, ex. conciliacao -> manifesto).
+  -- Sem CASCADE de proposito: se alguma tabela MANTIDA depender destas, da erro
+  -- (e a transacao inteira volta) em vez de apagar o que nao devia.
+  EXECUTE 'TRUNCATE TABLE ' || array_to_string(existentes, ', ') || ' RESTART IDENTITY';
+  RAISE NOTICE 'Zeradas: %', array_to_string(existentes, ', ');
+END $$;
+
+COMMIT;
+
+-- Conferencia: todas as linhas abaixo tem que mostrar 0 (as "mantidas" mostram quanto ficou).
+SELECT 'APAGADA' AS situacao, 'lancamentos' AS tabela, count(*) AS linhas FROM egc.lancamentos
+UNION ALL SELECT 'APAGADA', 'importacoes', count(*) FROM egc.importacoes
+UNION ALL SELECT 'APAGADA', 'relatorios_gerados', count(*) FROM egc.relatorios_gerados
+UNION ALL SELECT 'APAGADA', 'eventos_sistema', count(*) FROM egc.eventos_sistema
+UNION ALL SELECT 'APAGADA', 'projecoes', count(*) FROM egc.projecoes
+UNION ALL SELECT 'APAGADA', 'projecoes_ajustes', count(*) FROM egc.projecoes_ajustes
+UNION ALL SELECT 'APAGADA', 'despesas_admin_itens', count(*) FROM egc.despesas_admin_itens
+UNION ALL SELECT 'APAGADA', 'nf_manifesto_import', count(*) FROM egc.nf_manifesto_import
+UNION ALL SELECT 'APAGADA', 'nf_conciliacao', count(*) FROM egc.nf_conciliacao
+UNION ALL SELECT 'APAGADA', 'nf_import_historico', count(*) FROM egc.nf_import_historico
+UNION ALL SELECT 'APAGADA', 'chat_mensagem', count(*) FROM egc.chat_mensagem
+UNION ALL SELECT 'APAGADA', 'chat_acao', count(*) FROM egc.chat_acao
+UNION ALL SELECT 'MANTIDA', 'empresas', count(*) FROM egc.empresas
+UNION ALL SELECT 'MANTIDA', 'textos_relatorio', count(*) FROM egc.textos_relatorio
+UNION ALL SELECT 'MANTIDA', 'config_relatorio', count(*) FROM egc.config_relatorio
+UNION ALL SELECT 'MANTIDA', 'contexto_fiscal', count(*) FROM egc.contexto_fiscal
+UNION ALL SELECT 'MANTIDA', 'contatos_relatorio', count(*) FROM egc.contatos_relatorio
+UNION ALL SELECT 'MANTIDA', 'nf_debtor_empresa', count(*) FROM egc.nf_debtor_empresa;

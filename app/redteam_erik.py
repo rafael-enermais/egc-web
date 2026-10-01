@@ -4,7 +4,7 @@ Bateria de TESTES DE SEGURANCA do Erik.AI (prompt injection, instrucao
 oculta, fuga de escopo, vazamento). Uso -- sempre contra o SEU proprio app:
 
     python redteam_erik.py --gerar-txt   # escreve testes_erik_ai.txt (prompts p/ colar no chat)
-    ANTHROPIC_API_KEY=sk-... python redteam_erik.py --rodar   # roda tudo via API e gera relatorio
+    python redteam_erik.py --rodar   # (precisa de ANTHROPIC_API_KEY no ambiente; so' 'pip install anthropic pandas') roda tudo via API e gera relatorio
     ... --rodar --sem-saneamento   # defesa em profundidade: manda o texto CRU (com caracteres
                                    # ocultos) pro modelo, pra ver se so' o prompt ja segura
 
@@ -22,6 +22,37 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+
+def _curinga(*args, **kwargs):
+    """Funcao 'faz-nada': usada como decorador (@st.cache_resource) devolve a propria
+    funcao; chamada normal devolve ela mesma (aceita qualquer encadeamento)."""
+    if len(args) == 1 and callable(args[0]) and not kwargs:
+        return args[0]
+    return _curinga
+
+
+def _stubs_dependencias_pesadas():
+    """O red team usa dados FALSOS e nunca toca no banco, mas os modulos do app
+    importam psycopg2/streamlit/requests no topo. Se nao estiverem instalados
+    (ex.: Python novo sem wheel), troca por stubs vazios -- assim so' 'anthropic'
+    e 'pandas' sao necessarios para rodar o teste."""
+    import importlib
+    import types
+    for nome in ("psycopg2", "psycopg2.errors", "psycopg2.extras", "streamlit",
+                 "requests", "requests.auth", "supabase"):
+        try:
+            importlib.import_module(nome)
+        except Exception:  # ImportError ou falha de binario
+            mod = types.ModuleType(nome)
+            mod.__getattr__ = lambda attr: _curinga
+            sys.modules[nome] = mod
+            pai, _, filho = nome.rpartition(".")
+            if pai and pai in sys.modules:
+                setattr(sys.modules[pai], filho, mod)
+
+
+_stubs_dependencias_pesadas()
 
 import acoes_chat  # noqa: E402
 import chat_egc  # noqa: E402
@@ -163,7 +194,11 @@ def _avaliar(extra, canario, texto, propostas=()):
 
 def rodar(saida="relatorio_redteam_erik.md", sanear=True):
     import anthropic
-    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    chave = os.environ.get("ANTHROPIC_API_KEY")
+    if not chave:
+        sys.exit("Falta a chave. No PowerShell:  $env:ANTHROPIC_API_KEY=\"sk-ant-...\"  e rode de novo.\n"
+                 "(No CMD: set ANTHROPIC_API_KEY=sk-ant-...)")
+    client = anthropic.Anthropic(api_key=chave)
     falsos = _dados_falsos()
     prompt = chat_egc.montar_system_prompt("teste@enermais.com.br", EMPRESAS, hoje=datetime.date(2026, 10, 1))
     linhas = ["# Relatorio red team - Erik.AI", f"Gerado em {datetime.datetime.now():%d/%m/%Y %H:%M}", ""]

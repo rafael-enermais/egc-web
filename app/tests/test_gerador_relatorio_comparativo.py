@@ -266,6 +266,23 @@ def test_grafico_evolucao_texto_do_valor_sempre_legivel():
     print("OK: cor do texto do valor independe do tom (claro) da barra e tem contraste >= 4,5:1")
 
 
+def test_grafico_evolucao_texto_do_valor_segue_a_cor_da_barra():
+    """v0.43.2: numero ao lado da barra tem a cor da barra; so' escurece (mesmo
+    matiz) quando a barra e' clara demais pra ler sobre o branco."""
+    for pal in (None, "laranja", "teal"):
+        for v in (100.0, -100.0):
+            for n in (1, 2, 3, 4):
+                for i in range(n):
+                    barra = B._cor_periodo(i, n, v, pal)
+                    txt = B._cor_texto_valor(v, pal, cor_barra=barra)
+                    assert B._contraste_sobre_branco(txt) >= B.CONTRASTE_MIN_TEXTO_VALOR - 0.05
+                    if B._contraste_sobre_branco(barra) >= B.CONTRASTE_MIN_TEXTO_VALOR:
+                        assert txt.upper() == barra.upper(), "barra ja legivel => cor identica"
+    # NAVY pleno (periodo recente) fica exatamente igual
+    assert B._cor_texto_valor(1.0, cor_barra=B.NAVY).upper() == B.NAVY.upper()
+    print("OK: texto do valor segue a cor da barra")
+
+
 def test_legenda_do_grafico_de_evolucao_e_neutra_e_descreve_a_regra_de_cor():
     import tempfile, os, pdfplumber
     from test_gerador_completo import PALAVRAS_PROIBIDAS

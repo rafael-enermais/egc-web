@@ -657,7 +657,8 @@ st.divider()
 st.subheader("Importações recentes")
 st.caption(
     "Histórico de gravações (todas as sessões, não só a atual). \"Desfazer\" arquiva "
-    "(não apaga) o período inteiro — reative depois em Arquivar/Recuperar se precisar."
+    "(não apaga) a versão atual do período e, se esse import tinha substituído uma versão anterior, "
+    "reativa a anterior. Nada é apagado."
 )
 # FIX_20260930d (Rafael: "tentei desfazer, o desfazer não acontece nada
 # la"): 2 causas reais. (1) st.success() seguido de st.rerun() na mesma
@@ -700,9 +701,7 @@ else:
         cod_ev = ev["empresa_codigo"]
         if cod_ev not in periodos_ativos_por_empresa:
             try:
-                periodos_ativos_por_empresa[cod_ev] = {
-                    d["periodo"] for d in db.listar_periodos_detalhado(conn, cod_ev, status="ATIVO")
-                }
+                periodos_ativos_por_empresa[cod_ev] = db.arquivos_ativos_por_periodo(conn, cod_ev)
             except Exception:
                 # nao trava a lista inteira por isso -- so' deixa de
                 # mostrar a situacao atual (fica "?" mais abaixo).
@@ -719,7 +718,13 @@ else:
         tipos_label = ", ".join(t for t, _msg in ev["tipos"]) or "?"
         _periodos_empresa = periodos_ativos_por_empresa.get(cod_ev)
         situacao_desconhecida = _periodos_empresa is None
-        ainda_ativo = (not situacao_desconhecida) and (periodo_ev in _periodos_empresa)
+        # v0.44.0: "ativo" = ESTE import (pelo nome do arquivo) e' a versao em uso. Se o
+        # log nao tem nome de arquivo (linha antiga), cai no criterio antigo (periodo).
+        _arqs_ativos = (_periodos_empresa or {}).get(periodo_ev, set())
+        _arqs_evento = set(ev.get("arquivos") or [])
+        ainda_ativo = (not situacao_desconhecida) and bool(_arqs_ativos) and (
+            (not _arqs_evento) or bool(_arqs_evento & _arqs_ativos) or ("" in _arqs_ativos)
+        )
         col_a, col_b = st.columns([4, 1])
         col_a.write(
             f"**{nome_ev}** — {periodo_ev.strftime('%m/%Y')} · {tipos_label} · "
@@ -737,16 +742,21 @@ else:
         if situacao_desconhecida:
             col_a.caption("❓ Situação atual indisponível agora")
         else:
-            col_a.caption("🟢 Ativo" if ainda_ativo else "🗄️ Já arquivado (sem lançamentos ativos pra este período)")
+            col_a.caption("🟢 Ativo" if ainda_ativo else "🗄️ Não está mais ativo (arquivado ou substituído por outra versão)")
         if ainda_ativo or situacao_desconhecida:
             if col_b.button("↩️ Desfazer", key=f"hist_desfazer_{cod_ev}_{periodo_ev}"):
                 conn = get_conn()
-                total = db.arquivar_periodo(conn, cod_ev, periodo_ev)
+                res_d = db.desfazer_importacao(conn, cod_ev, periodo_ev)
+                total = res_d["arquivados"]
                 if total:
+                    extra = ""
+                    if res_d["reativados"]:
+                        extra = (f" A versão anterior ({', '.join(res_d['reativados_arquivos']) or 'import anterior'}, "
+                                 f"{res_d['reativados']} lançamento(s)) voltou a ficar ATIVA.")
                     st.session_state["_desfazer_msg"] = (
                         "ok",
-                        f"✅ {total} lançamento(s) de {nome_ev} ({periodo_ev.strftime('%m/%Y')}) arquivado(s). "
-                        "Reative em Arquivar/Recuperar se precisar.",
+                        f"✅ {total} lançamento(s) de {nome_ev} ({periodo_ev.strftime('%m/%Y')}) arquivado(s)." + extra
+                        + ("" if res_d["reativados"] else " Reative em Arquivar/Recuperar se precisar."),
                     )
                 else:
                     st.session_state["_desfazer_msg"] = (

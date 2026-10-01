@@ -837,3 +837,15 @@ CREATE POLICY egc_app_full_access ON egc.chat_acao FOR ALL TO egc_app USING (tru
 
 -- Fim do bloco 20. Rodar so' este bloco no SQL Editor do Supabase
 -- (projeto radar-comercial) -- nao precisa rodar o arquivo inteiro de novo.
+
+-- =====================================================================
+-- BLOCO 21 — v0.44.0: "lote" (geracao) de cada import em egc.lancamentos
+-- Permite ao Desfazer reativar a versao anterior e ao Recuperar trazer UMA
+-- versao so' (antes: erro de chave duplicada quando havia 2 versoes arquivadas).
+-- Aditivo e idempotente; linhas antigas ficam com lote NULL (tratadas por
+-- fallback no app). Sem este bloco o app continua funcionando (so' sem o
+-- reativar-anterior).
+-- =====================================================================
+ALTER TABLE egc.lancamentos ADD COLUMN IF NOT EXISTS lote uuid;
+CREATE INDEX IF NOT EXISTS idx_lancamentos_lote ON egc.lancamentos (lote) WHERE lote IS NOT NULL;
+-- Fim do bloco 21. Rodar so' este bloco no SQL Editor do Supabase.
