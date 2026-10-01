@@ -303,9 +303,20 @@ def run():
     print("\nTODOS OS CENARIOS OK (dashboard sem chat, chat com client mockado)")
 
 
+def test_assistente_cenarios():
+    """Roda os 6 cenarios (script legado, agora coletado pelo pytest).
+    Fase 3.1: o codigo le periodos por *_detalhado (periodo+granularidade); os
+    cenarios ainda mockam db.listar_periodos / listar_periodos_grupo -- adapta."""
+    with patch.object(db, "listar_periodos_detalhado", side_effect=lambda conn, cod, status="ATIVO": [
+            {"periodo": d, "granularidade": ""} for d in db.listar_periodos(conn, cod, status)]), \
+         patch.object(db, "listar_periodos_grupo_detalhado", side_effect=lambda conn, cods, status="ATIVO": [
+            {"periodo": d, "granularidade": ""} for d in db.listar_periodos_grupo(conn, cods, status)]):
+        run()
+
+
 if __name__ == "__main__":
     try:
-        run()
+        test_assistente_cenarios()
         sys.exit(0)
     except AssertionError as e:
         print(f"FALHOU: {e}")

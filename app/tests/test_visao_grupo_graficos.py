@@ -80,3 +80,18 @@ def test_ticks_moeda_pt_br_e_inclui_zero():
     assert 0 in tv and "0" in tt
     assert any("mi" in t for t in tt) and not any("M" in t for t in tt)
     assert g._ticks_moeda([]) == ([], [])
+
+
+def test_linha_do_tempo_com_bases_misturadas_usa_rotulos_proprios():
+    """01/10/2026: anual 2025 + trimestral 2T/2026 no mesmo grafico, cada ponto com o
+    rotulo do seu documento (indice posicional, mesmo mes pode ter 2 bases)."""
+    dre = pd.DataFrame({"RECEITA OPERACIONAL LIQUIDA": [1000.0, 300.0], "LUCRO LIQUIDO DO EXERCICIO": [100.0, -20.0]})
+    ind = pd.DataFrame({"EBITDA": [150.0, -10.0], "Margem EBITDA": [0.15, -0.03], "Margem Líquida": [0.1, -0.06],
+                        "Capital de Giro": [50.0, -5.0], "Liquidez Corrente": [1.2, 0.9], "Endividamento Geral": [0.5, 0.6]})
+    rot = ["2025", "2T/2026"]
+    for dark in (True, False):
+        f1 = g.fig_resultado_por_periodo(dre, ind, "", dark, rotulos=rot)
+        assert list(f1.data[0].x) == rot
+        assert list(g.fig_margens(ind, "", dark, rotulos=rot).data[0].x) == rot
+        assert list(g.fig_capital_giro(ind, "", dark, rotulos=rot).data[0].x) == rot
+        assert list(g.fig_linha_unica(ind["Liquidez Corrente"], "Liq", "", dark, "x", 1.0, rotulos=rot).data[0].x) == rot

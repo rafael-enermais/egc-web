@@ -174,6 +174,71 @@ def consultar_bp_dre(
     }
 
 
+def _tabela_indicadores(conn, empresas_codigos: list[str], granularidade: Optional[str] = None):
+    """Carrega BP/DRE e calcula a tabela de indicadores (1 linha por periodo)
+    numa UNICA base. Devolve (tabela, g_usada, disponiveis, exigidas, hist_bp,
+    hist_dre, erro); `erro` e' um dict pronto pra devolver ao modelo (ou None)."""
+    if len(empresas_codigos) == 1:
+        cod = empresas_codigos[0]
+        hist_bp = db.listar_historico_grupo(conn, cod, "BP", status="ATIVO")
+        hist_dre = db.listar_historico_grupo(conn, cod, "DRE", status="ATIVO")
+        exigidas = None
+    else:
+        periodos = db.listar_periodos_grupo(conn, empresas_codigos, status="ATIVO")
+        hist_bp = db.listar_lancamentos_grupo_periodos(conn, periodos, "BP", empresas_codigos, status="ATIVO")
+        hist_dre = db.listar_lancamentos_grupo_periodos(conn, periodos, "DRE", empresas_codigos, status="ATIVO")
+        exigidas = list(empresas_codigos)
+
+    disponiveis = indicadores.granularidades_disponiveis(hist_bp, hist_dre)
+    if granularidade:
+        if granularidade not in disponiveis:
+            return None, None, disponiveis, exigidas, hist_bp, hist_dre, {
+                "erro": (
+                    f"Nao ha BP/DRE com granularidade '{granularidade}' pra essa(s) empresa(s). "
+                    "Escolha uma das disponiveis (ou omita o parametro pra usar a padrao)."
+                ),
+                "granularidades_disponiveis": [indicadores.rotulo_granularidade(g) for g in disponiveis],
+                "empresas_incluidas": empresas_codigos,
+            }
+        g_usada = granularidade
+    else:
+        g_usada = indicadores.granularidade_padrao(hist_bp, hist_dre, exigidas)
+
+    tabela = indicadores.calcular_indicadores(hist_bp, hist_dre, granularidade=g_usada)
+    if tabela.empty:
+        return None, g_usada, disponiveis, exigidas, hist_bp, hist_dre, {
+            "erro": "Sem BP/DRE suficiente pra calcular indicadores pra essa(s) empresa(s) ainda.",
+            "empresas_incluidas": empresas_codigos,
+        }
+    return tabela, g_usada, disponiveis, exigidas, hist_bp, hist_dre, None
+
+
+def consultar_evolucao_indicadores(conn, empresas_codigos: list[str], granularidade: Optional[str] = None,
+                                   indicadores_pedidos: Optional[list[str]] = None) -> dict:
+    """Serie historica dos indicadores (1 linha por periodo) numa UNICA base --
+    pra perguntas de evolucao/tendencia ("a margem melhorou?", "como evoluiu o
+    EBITDA do grupo?"). Mesma fonte de consultar_indicadores; nunca mistura bases."""
+    tabela, g_usada, disponiveis, _exigidas, _bp, _dre, erro = _tabela_indicadores(conn, empresas_codigos, granularidade)
+    if erro:
+        return erro
+    if indicadores_pedidos:
+        cols = [c for c in tabela.columns if c in indicadores_pedidos]
+        if cols:
+            tabela = tabela[cols]
+    linhas = []
+    for periodo, linha in tabela.sort_index().iterrows():
+        d = {"periodo": periodo.strftime("%Y-%m")}
+        d.update({col: (None if pd.isna(v) else float(v)) for col, v in linha.items()})
+        linhas.append(d)
+    return {
+        "empresas_incluidas": empresas_codigos,
+        "base_do_periodo": indicadores.rotulo_granularidade(g_usada),
+        "granularidades_disponiveis": [indicadores.rotulo_granularidade(g) for g in disponiveis],
+        "quantidade_periodos": len(linhas),
+        "evolucao": linhas,
+    }
+
+
 def consultar_indicadores(conn, empresas_codigos: list[str], granularidade: Optional[str] = None) -> dict:
     """
     Indicadores contabeis (Liquidez Corrente, Capital de Giro, Endividamento
@@ -200,38 +265,9 @@ def consultar_indicadores(conn, empresas_codigos: list[str], granularidade: Opti
     tem dado). A resposta sempre informa a granularidade usada
     ("base_do_periodo") e as outras disponiveis.
     """
-    if len(empresas_codigos) == 1:
-        cod = empresas_codigos[0]
-        hist_bp = db.listar_historico_grupo(conn, cod, "BP", status="ATIVO")
-        hist_dre = db.listar_historico_grupo(conn, cod, "DRE", status="ATIVO")
-        exigidas = None
-    else:
-        periodos = db.listar_periodos_grupo(conn, empresas_codigos, status="ATIVO")
-        hist_bp = db.listar_lancamentos_grupo_periodos(conn, periodos, "BP", empresas_codigos, status="ATIVO")
-        hist_dre = db.listar_lancamentos_grupo_periodos(conn, periodos, "DRE", empresas_codigos, status="ATIVO")
-        exigidas = list(empresas_codigos)
-
-    disponiveis = indicadores.granularidades_disponiveis(hist_bp, hist_dre)
-    if granularidade:
-        if granularidade not in disponiveis:
-            return {
-                "erro": (
-                    f"Nao ha BP/DRE com granularidade '{granularidade}' pra essa(s) empresa(s). "
-                    "Escolha uma das disponiveis (ou omita o parametro pra usar a padrao)."
-                ),
-                "granularidades_disponiveis": [indicadores.rotulo_granularidade(g) for g in disponiveis],
-                "empresas_incluidas": empresas_codigos,
-            }
-        g_usada = granularidade
-    else:
-        g_usada = indicadores.granularidade_padrao(hist_bp, hist_dre, exigidas)
-
-    tabela = indicadores.calcular_indicadores(hist_bp, hist_dre, granularidade=g_usada)
-    if tabela.empty:
-        return {
-            "erro": "Sem BP/DRE suficiente pra calcular indicadores pra essa(s) empresa(s) ainda.",
-            "empresas_incluidas": empresas_codigos,
-        }
+    tabela, g_usada, disponiveis, exigidas, hist_bp, hist_dre, erro = _tabela_indicadores(conn, empresas_codigos, granularidade)
+    if erro:
+        return erro
 
     periodo_atual = tabela.index.max()
     linha = tabela.loc[periodo_atual]
@@ -414,3 +450,82 @@ def consultar_visao_grupo(
         "quantidade_contas": len(linhas),
         "contas": linhas,
     }
+
+
+# ─────────────────────────────────────────────
+#  01/10/2026 (Erik.AI "consulta tudo") -- historico, notas por numero,
+#  correcoes manuais e relatorios gerados. Somente LEITURA.
+# ─────────────────────────────────────────────
+
+def _json_seguro(v):
+    """Decimal/date/datetime/UUID -> tipos JSON puros (o tool_result vira texto)."""
+    import decimal
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    if isinstance(v, decimal.Decimal):
+        return float(v)
+    if isinstance(v, (datetime.datetime, datetime.date)):
+        return v.strftime("%Y-%m-%d %H:%M") if isinstance(v, datetime.datetime) else v.strftime("%Y-%m-%d")
+    if isinstance(v, (list, tuple)):
+        return [_json_seguro(x) for x in v]
+    if hasattr(v, "item"):  # numpy
+        return v.item()
+    return str(v)
+
+
+def _linhas_seguras(linhas: list[dict]) -> list[dict]:
+    return [{k: _json_seguro(v) for k, v in l.items()} for l in linhas]
+
+
+def consultar_historico_importacoes(conn, empresa_codigo: Optional[str] = None, limite: int = 20) -> dict:
+    """Importacoes de PDF (BP/DRE) ja feitas: quando, quem, qual empresa/periodo,
+    resultado. Pergunta tipica: "quando foi importado o BP da SMG?"."""
+    limite = max(1, min(int(limite or 20), 50))
+    linhas = db.listar_importacoes_recentes(conn, limite=200)
+    if empresa_codigo:
+        linhas = [l for l in linhas if l.get("empresa_codigo") == empresa_codigo]
+    linhas = linhas[:limite]
+    if not linhas:
+        return {"importacoes": [], "quantidade": 0}
+    saida = [{
+        "empresa_codigo": l["empresa_codigo"], "periodo": _json_seguro(l["periodo"]), "tipo": l.get("tipo"),
+        "nivel": l.get("nivel"), "usuario": l.get("usuario"), "criado_em": _json_seguro(l.get("criado_em")),
+        "mensagem": (l.get("mensagem") or "")[:200], "arquivos": _json_seguro(l.get("arquivos") or []),
+    } for l in linhas]
+    return {"importacoes": saida, "quantidade": len(saida)}
+
+
+def consultar_nota_fiscal(conn, numero: Optional[str] = None, fornecedor: Optional[str] = None,
+                          cnpj: Optional[str] = None, empresa_codigo: Optional[str] = None) -> dict:
+    """Situacao de uma nota especifica (por numero, fornecedor ou CNPJ) na
+    conferencia Manifesto x Sienge, incluindo o status da pendencia."""
+    if not (numero or fornecedor or cnpj):
+        return {"erro": "Informe ao menos o numero da nota, o fornecedor ou o CNPJ."}
+    linhas = nf_sienge.buscar_notas(conn, numero, fornecedor, cnpj, empresa_codigo, limite=20)
+    if not linhas:
+        return {"notas": [], "quantidade": 0, "aviso": "Nenhuma nota encontrada no manifesto com esses dados."}
+    return {"notas": _linhas_seguras(linhas), "quantidade": len(linhas)}
+
+
+def consultar_correcoes_manuais(conn, empresas_codigos: list[str], limite: int = 30) -> dict:
+    """Contas BP/DRE corrigidas a mao (trilha de auditoria): valor atual x valor
+    original do PDF, quem e quando. Pergunta tipica: "o que foi editado na Energia?"."""
+    limite = max(1, min(int(limite or 30), 100))
+    linhas = db.buscar_lancamentos_manuais(conn, empresas_codigos, limite=limite)
+    if not linhas:
+        return {"correcoes": [], "quantidade": 0}
+    saida = [{
+        "empresa_codigo": l["empresa_codigo"], "tipo": l["tipo"], "periodo": _json_seguro(l["periodo"]),
+        "conta": l["conta"], "valor_atual": _json_seguro(l["valor"]), "valor_original_pdf": _json_seguro(l.get("pdf_original")),
+        "usuario": l.get("usuario"), "atualizado_em": _json_seguro(l.get("atualizado_em")),
+    } for l in linhas]
+    return {"correcoes": saida, "quantidade": len(saida)}
+
+
+def consultar_relatorios_gerados(conn, limite: int = 15) -> dict:
+    """Ultimos relatorios PDF gerados (quando, quem, empresas e periodos)."""
+    limite = max(1, min(int(limite or 15), 50))
+    linhas = db.listar_relatorios_gerados(conn, limite=limite)
+    if not linhas:
+        return {"relatorios": [], "quantidade": 0}
+    return {"relatorios": _linhas_seguras(linhas), "quantidade": len(linhas)}

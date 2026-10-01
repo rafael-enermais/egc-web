@@ -272,14 +272,16 @@ def test_filtrar_orfaos_bills_vazio_nao_quebra():
     assert r.empty
 
 
-def test_mapear_debtor_para_empresa_inequivoco():
+def test_mapear_debtor_para_empresa_inequivoco(monkeypatch):
+    monkeypatch.setattr(nf_sienge, "carregar_mapa_debtor_manual", lambda conn: {})
     cur = FakeCursor(fetchall_result=[(591, "ENERGIA", 12)])
     conn = FakeConn(cur)
     mapa = nf_sienge._mapear_debtor_para_empresa(conn)
     assert mapa == {591: "ENERGIA"}
 
 
-def test_mapear_debtor_para_empresa_ambiguo_fica_de_fora():
+def test_mapear_debtor_para_empresa_ambiguo_fica_de_fora(monkeypatch):
+    monkeypatch.setattr(nf_sienge, "carregar_mapa_debtor_manual", lambda conn: {})
     # Mesmo debtor_id ja' bateu LANCADA com 2 empresas diferentes em algum
     # momento do historico -- relacao ambigua, nao confia (nao deveria
     # acontecer, mas ja' teve mais de 1 bug de dado real neste projeto).
@@ -287,6 +289,24 @@ def test_mapear_debtor_para_empresa_ambiguo_fica_de_fora():
     conn = FakeConn(cur)
     mapa = nf_sienge._mapear_debtor_para_empresa(conn)
     assert mapa == {}
+
+
+def test_checar_empresa_do_lancamento_marca_outra_empresa_01_10():
+    r = dict(status="LANCADA", confianca="CHAVE", sienge_bill_id=100, sienge_valor=10.0, observacao=None)
+    novo = nf_sienge.checar_empresa_do_lancamento(r, "ENERGIA", 777, {591: "ENERGIA", 777: "SMG"})
+    assert novo["status"] == nf_sienge.STATUS_LANCADA_OUTRA_EMPRESA
+    assert "SMG" in novo["observacao"] and "ENERGIA" in novo["observacao"]
+    assert r["status"] == "LANCADA"  # nao muta o original
+
+
+def test_checar_empresa_do_lancamento_nao_alarma_sem_certeza_01_10():
+    r = dict(status="LANCADA", confianca="CHAVE", sienge_bill_id=100, sienge_valor=10.0, observacao=None)
+    mapa = {591: "ENERGIA"}
+    assert nf_sienge.checar_empresa_do_lancamento(r, "ENERGIA", 591, mapa)["status"] == "LANCADA"   # mesma empresa
+    assert nf_sienge.checar_empresa_do_lancamento(r, "ENERGIA", 999, mapa)["status"] == "LANCADA"   # debtor desconhecido
+    assert nf_sienge.checar_empresa_do_lancamento(r, "ENERGIA", None, mapa)["status"] == "LANCADA"  # sem debtor
+    pend = dict(r, status="NAO_ENCONTRADA")
+    assert nf_sienge.checar_empresa_do_lancamento(pend, "ENERGIA", 777, {777: "SMG"})["status"] == "NAO_ENCONTRADA"
 
 
 # ───────────────────── mock de conexao (DB-API) ─────────────────────

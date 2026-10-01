@@ -80,12 +80,21 @@ def rotulos_periodos(periodos, granularidade: str) -> list[str]:
     return [selecao_periodos.rotulo_coluna_padrao(pd.Timestamp(p).date(), granularidade) for p in periodos]
 
 
-def fig_resultado_por_periodo(serie_dre: pd.DataFrame, ind_grupo: pd.DataFrame, granularidade: str, dark: bool) -> go.Figure:
+def _rotulos(idx, granularidade: str, rotulos=None) -> list[str]:
+    """`rotulos` explicitos (linha do tempo com bases misturadas: cada ponto
+    traz o rotulo do seu proprio documento) ou derivados do periodo+base."""
+    if rotulos is not None:
+        return list(rotulos)
+    return rotulos_periodos(idx, granularidade)
+
+
+def fig_resultado_por_periodo(serie_dre: pd.DataFrame, ind_grupo: pd.DataFrame, granularidade: str, dark: bool,
+                              rotulos=None) -> go.Figure:
     """Barras agrupadas por periodo: Receita líquida, EBITDA e Resultado líquido
     (mesma unidade R$, 1 eixo)."""
     c = cores(dark)
     idx = list(serie_dre.index)
-    x = rotulos_periodos(idx, granularidade)
+    x = _rotulos(idx, granularidade, rotulos)
     series = [
         ("Receita líquida", serie_dre["RECEITA OPERACIONAL LIQUIDA"].tolist(), c["azul"]),
         ("EBITDA", ind_grupo["EBITDA"].reindex(serie_dre.index).tolist(), c["laranja"]),
@@ -107,12 +116,12 @@ def fig_resultado_por_periodo(serie_dre: pd.DataFrame, ind_grupo: pd.DataFrame, 
     return _base(fig, dark)
 
 
-def fig_margens(ind_grupo: pd.DataFrame, granularidade: str, dark: bool) -> go.Figure:
+def fig_margens(ind_grupo: pd.DataFrame, granularidade: str, dark: bool, rotulos=None) -> go.Figure:
     """Linhas de Margem EBITDA e Margem líquida (%), rótulo no último ponto.
     A margem bruta (~80%+) fica de fora de propósito: na mesma escala achatava
     as outras duas contra o zero -- ela aparece como cartão no 'Rentabilidade'."""
     c = cores(dark)
-    x = rotulos_periodos(list(ind_grupo.index), granularidade)
+    x = _rotulos(list(ind_grupo.index), granularidade, rotulos)
     fig = go.Figure()
     for nome, col, cor, pos in (("Margem EBITDA", "Margem EBITDA", c["laranja"], "top center"),
                                  ("Margem líquida", "Margem Líquida", c["aqua"], "bottom center")):
@@ -154,9 +163,9 @@ def fig_contribuicao(resumo_empresas: pd.DataFrame, coluna: str, nome_por_cod: d
     return _base(fig, dark, altura=max(220, 56 * len(nomes) + 60), legenda=False)
 
 
-def fig_capital_giro(ind_grupo: pd.DataFrame, granularidade: str, dark: bool) -> go.Figure:
+def fig_capital_giro(ind_grupo: pd.DataFrame, granularidade: str, dark: bool, rotulos=None) -> go.Figure:
     c = cores(dark)
-    x = rotulos_periodos(list(ind_grupo.index), granularidade)
+    x = _rotulos(list(ind_grupo.index), granularidade, rotulos)
     vals = ind_grupo["Capital de Giro"].tolist()
     fig = go.Figure(go.Bar(
         x=x, y=[None if pd.isna(v) else v for v in vals], name="Capital de giro",
@@ -171,11 +180,11 @@ def fig_capital_giro(ind_grupo: pd.DataFrame, granularidade: str, dark: bool) ->
 
 
 def fig_linha_unica(serie: pd.Series, nome: str, granularidade: str, dark: bool, formato: str = "x",
-                    referencia: float | None = None) -> go.Figure:
+                    referencia: float | None = None, rotulos=None) -> go.Figure:
     """Uma linha (ex.: liquidez corrente 'x' ou endividamento '%'), com linha
     de referência opcional (ex.: 1,0x) e rótulo no último ponto."""
     c = cores(dark)
-    x = rotulos_periodos(list(serie.index), granularidade)
+    x = _rotulos(list(serie.index), granularidade, rotulos)
     vals = serie.tolist()
     if formato == "pct":
         plot = [None if pd.isna(v) else v * 100.0 for v in vals]

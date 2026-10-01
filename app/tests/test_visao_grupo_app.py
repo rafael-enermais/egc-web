@@ -117,7 +117,7 @@ def test_visao_grupo_completo_kpis_multi_periodo_macro_especifica_1_empresa_sem_
         assert not at.exception, f"excecao com 1 empresa so' selecionada: {at.exception}"
 
         # item 9: 1 periodo so' -- KPIs continuam, grafico vira aviso, sem excecao
-        at.multiselect(key="grupo_periodos_sel").set_value([P_JUN])
+        at.multiselect(key="grupo_periodos_sel").set_value([(P_JUN, "")])
         at.run(timeout=30)
         assert not at.exception, f"excecao com 1 periodo so': {at.exception}"
         textos_1periodo = " ".join(c.value for c in at.caption)
@@ -165,17 +165,23 @@ def test_2_granularidades_mesmo_periodo_fim_seletor_de_detalhe_separa():
         # Fase 4 (30/09/2026): "Base do período" explicita -- as 2 granularidades
         # viram opcoes do seletor de base (nao mais 2 periodos de detalhe), e a
         # tabela/KPIs so' usam a base escolhida.
-        sel_base = at.selectbox(key="grupo_base_sel")
-        assert len(sel_base.options) == 2, f"esperava 2 bases (trimestral e semestral), veio {len(sel_base.options)}"
-        assert sel_base.value == "semestral", "default = base mais abrangente do periodo mais recente (so' ENERGIA selecionada aqui tem as 2)"
+        # 01/10/2026: base e periodo viraram UM seletor de documentos (periodo+base).
+        sel_per = at.multiselect(key="grupo_periodos_sel")
+        assert len(sel_per.options) == 2, f"esperava 2 documentos (trimestral e semestral), veio {len(sel_per.options)}"
+        assert sel_per.value == [(P_JUN, "semestral")], "default = so' a base mais abrangente"
+        at.button(key="grupo_btn_todos").click().run(timeout=30)   # "Selecionar todos" (mistura bases)
+        assert not at.exception, f"excecao com bases misturadas: {at.exception}"
+        assert len(at.multiselect(key="grupo_periodos_sel").value) == 2
+        assert len(at.get("plotly_chart")) >= 2, "esperava os graficos de evolucao com 2 documentos do mesmo mes"
 
-        sel_base.set_value("trimestral").run(timeout=30)
+        foco = at.selectbox(key="grupo_periodo_detalhe_sel")
+        foco.set_value((P_JUN, "trimestral")).run(timeout=30)
         assert not at.exception, f"excecao ao escolher trimestral: {at.exception}"
         tabela_bp = at.dataframe[1].value  # [0] = tabela comparativa por empresa
         assert list(tabela_bp["VALOR CONSOLIDADO"]) == ["R$ 100,00"], (
             f"esperava só a linha do trimestral (R$ 100,00) na tabela de detalhe, veio {list(tabela_bp['VALOR CONSOLIDADO'])}"
         )
-        sel_base.set_value("semestral").run(timeout=30)
+        at.selectbox(key="grupo_periodo_detalhe_sel").set_value((P_JUN, "semestral")).run(timeout=30)
         tabela_bp = at.dataframe[1].value  # [0] = tabela comparativa por empresa
         assert list(tabela_bp["VALOR CONSOLIDADO"]) == ["R$ 600,00"], "semestral tem que mostrar so' a linha do semestral"
         print("OK: 2 granularidades no mesmo periodo_fim — seletor de base separa, tabela nunca mistura os 2 documentos")
@@ -210,7 +216,8 @@ def test_resumo_do_grupo_mostra_ebitda_margens_e_indicadores_da_base_escolhida()
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
         assert not at.exception, at.exception
-        at.selectbox(key="grupo_base_sel").set_value("trimestral").run(timeout=30)
+        at.button(key="grupo_btn_todos").click().run(timeout=30)
+        at.selectbox(key="grupo_periodo_detalhe_sel").set_value((P, "trimestral")).run(timeout=30)
         assert not at.exception, at.exception
         m = {x.label: x.value for x in at.metric}
         for rotulo in ("Receita Líquida", "Lucro Bruto", "EBITDA", "Resultado Líquido", "Margem Bruta",
@@ -226,7 +233,7 @@ def test_resumo_do_grupo_mostra_ebitda_margens_e_indicadores_da_base_escolhida()
         assert m["Alavancagem"] == "1,00x"             # 1000/1000
         assert m["ROE"] == "8,0%"
         # base semestral: numeros do OUTRO documento
-        at.selectbox(key="grupo_base_sel").set_value("semestral").run(timeout=30)
+        at.selectbox(key="grupo_periodo_detalhe_sel").set_value((P, "semestral")).run(timeout=30)
         assert not at.exception, at.exception
         m2 = {x.label: x.value for x in at.metric}
         assert m2["Receita Líquida"] == "R$ 3.000,00" and m2["EBITDA"] == "R$ 900,00"

@@ -45,74 +45,16 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from auth import usuario_atual  # noqa: E402
 from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS  # noqa: E402
+import acoes_chat  # noqa: E402
 import chat_egc  # noqa: E402
+import chat_memoria  # noqa: E402
+import chat_visual  # noqa: E402
 import consultas_chat  # noqa: E402
 import db  # noqa: E402
 import formatacao  # noqa: E402
 
 NOME_POR_COD = {cod: nome for cod, nome, _cnpj in EMPRESAS_FIXAS}
 EMPRESAS_CODIGOS = [cod for cod, _nome, _cnpj in EMPRESAS_FIXAS]
-
-def _grafico_contas_por_grupo(df_contas: pd.DataFrame):
-    """
-    Barra horizontal com o total por GRUPO (Ativo Circulante, Passivo
-    Circulante etc) -- funciona tanto pra consultar_bp_dre (coluna
-    "valor") quanto consultar_visao_grupo (colunas "VALOR CONSOLIDADO",
-    "ENERMAIS ENERGIA" etc), igual ao fix de formatacao acima: nunca
-    assume 1 nome fixo, pega a 1a coluna de dinheiro disponivel.
-    Erik.AI (23/09/2026) -- pedido do Rafael de reusar o padrao do
-    TIA.go (go.Bar + st.plotly_chart) no dashboard do chat.
-    """
-    cols_dinheiro = [
-        c for c in df_contas.columns
-        if c not in ("grupo", "conta") and not str(c).strip().startswith("%")
-    ]
-    if not cols_dinheiro:
-        return None
-    col = "valor" if "valor" in cols_dinheiro else (
-        "VALOR CONSOLIDADO" if "VALOR CONSOLIDADO" in cols_dinheiro else cols_dinheiro[0]
-    )
-    agrupado = df_contas.groupby("grupo")[col].sum().sort_values()
-    fig = go.Figure(go.Bar(x=agrupado.values, y=agrupado.index, orientation="h", name=col))
-    fig.update_layout(height=320, margin=dict(t=20, l=10))
-    return fig
-
-
-def _grafico_periodos_por_empresa(linhas_periodos: list[dict]):
-    """Barra Empresa x Qtde de períodos ativos -- consultar_periodos."""
-    if not linhas_periodos:
-        return None
-    df = pd.DataFrame(linhas_periodos)
-    fig = go.Figure(go.Bar(x=df["Empresa"], y=df["Qtde"], name="Períodos"))
-    fig.update_layout(height=300, margin=dict(t=20))
-    return fig
-
-
-def _grafico_completude(linhas_completude: list[dict]):
-    """
-    Barra empilhada Completas x Pendentes por período -- extrai os 2
-    números do texto "Status" (ex.: "✅ Completo (6/6)"), sem mudar o
-    formato que visao_grupo.resumir_completude_por_periodo devolve.
-    """
-    if not linhas_completude:
-        return None
-    periodos, completas, pendentes = [], [], []
-    for l in linhas_completude:
-        m = re.search(r"\((\d+)/(\d+)\)", str(l.get("Status", "")))
-        if not m:
-            continue
-        n_completas, n_total = int(m.group(1)), int(m.group(2))
-        periodos.append(l.get("Período"))
-        completas.append(n_completas)
-        pendentes.append(n_total - n_completas)
-    if not periodos:
-        return None
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=periodos, y=completas, name="Completas"))
-    fig.add_trace(go.Bar(x=periodos, y=pendentes, name="Pendentes"))
-    fig.update_layout(barmode="stack", height=300, margin=dict(t=20))
-    return fig
-
 
 st.title("🤖 Erik.AI")
 
@@ -121,9 +63,9 @@ sidebar_contexto(usuario)  # so' rodape -- ver nota em conexao.sidebar_contexto
 conn = get_conn()
 
 st.caption(
-    "Pergunte sobre BP, DRE, Visão Grupo, indicadores, completude dos dados e conferência de "
-    "Notas Fiscais das 6 empresas — o assistente só lê e só responde com dado que já está "
-    "no sistema, nunca inventa número. Ele não grava nem corrige nada."
+    "Pergunte sobre BP, DRE, Visão Grupo, indicadores, evolução, completude, importações, correções e "
+    "Notas Fiscais das 6 empresas. A Erik.AI só responde com dado que já está no sistema e nunca grava "
+    "sozinha: quando você pedir uma alteração, ela só propõe, e nada muda até você clicar em Aprovar."
 )
 
 
@@ -144,6 +86,11 @@ def _cliente_anthropic():
     return anthropic.Anthropic(api_key=chave)
 
 
+# Memória da conversa (Supabase, por usuário, janela limitada) -- carrega UMA vez por sessão.
+if "assistente_mensagens" not in st.session_state:
+    st.session_state.assistente_mensagens = chat_memoria.carregar_historico(conn, usuario)
+    st.session_state["assistente_memoria_carregada"] = len(st.session_state.assistente_mensagens)
+
 col_dash, col_chat = st.columns([3, 2])
 
 # ─────────────────────────────────────────────
@@ -152,112 +99,107 @@ col_dash, col_chat = st.columns([3, 2])
 with col_dash:
     st.subheader("Dashboard")
 
-    ultima = st.session_state.get("assistente_ultima_ferramenta")
-    if ultima:
+    # ── Ações propostas pela Erik.AI (aguardando aprovação humana) ──────────
+    _propostas = st.session_state.setdefault("assistente_propostas", [])
+    _msg_acao = st.session_state.pop("assistente_acao_msg", None)
+    if _msg_acao:
+        (st.success if _msg_acao[0] else st.warning)(_msg_acao[1])
+    for _pr in list(_propostas):
+        with st.container(border=True):
+            st.markdown(f"**✋ Aguardando sua aprovação — {_pr['titulo']}**")
+            if _pr.get("motivo"):
+                st.caption(f"Motivo informado: {_pr['motivo']}")
+            _linhas = pd.DataFrame(
+                [(k, formatacao.moeda_br(v) if isinstance(v, float) and k.lower().startswith(("valor", "novo valor")) else v)
+                 for k, v in _pr["resumo"]], columns=["Campo", "Valor"],
+            )
+            st.dataframe(_linhas.astype({"Valor": str}), hide_index=True, use_container_width=True)
+            _ed = {}
+            _edit = _pr.get("editaveis") or {}
+            if "novo_status" in _edit:
+                _op = _edit["novo_status"]
+                _ed["novo_status"] = st.selectbox(
+                    "Novo status (pode ajustar)", _op, index=_op.index(_pr["parametros"]["novo_status"]),
+                    key=f"acao_status_{_pr['id']}")
+            if "novo_valor" in _edit:
+                _ed["novo_valor"] = st.number_input(
+                    "Novo valor (pode ajustar)", value=float(_pr["parametros"]["novo_valor"]), step=0.01, format="%.2f",
+                    key=f"acao_valor_{_pr['id']}")
+            st.caption("Reversível: o histórico fica registrado (trilha de auditoria) e nada é apagado.")
+            _b1, _b2, _ = st.columns([1.2, 1, 2])
+            if _b1.button("✅ Aprovar e executar", key=f"acao_ok_{_pr['id']}", type="primary"):
+                _ok, _txt = acoes_chat.executar_proposta(conn, _pr, usuario, EMPRESAS_CODIGOS, edicoes=_ed)
+                _propostas[:] = [p for p in _propostas if p["id"] != _pr["id"]]
+                st.session_state["assistente_acao_msg"] = (_ok, _txt)
+                _nota = ("✅ Ação aprovada e executada: " if _ok else "⚠️ Ação aprovada, mas NÃO executada: ") + _txt
+                st.session_state.setdefault("assistente_mensagens", []).append({"role": "assistant", "content": _nota})
+                chat_memoria.salvar_mensagem(conn, usuario, "assistant", _nota)
+                st.rerun()
+            if _b2.button("Rejeitar", key=f"acao_no_{_pr['id']}"):
+                acoes_chat.registrar_rejeicao(conn, _pr, usuario)
+                _propostas[:] = [p for p in _propostas if p["id"] != _pr["id"]]
+                _nota = f"Ação rejeitada por você: {_pr['titulo']}."
+                st.session_state.setdefault("assistente_mensagens", []).append({"role": "assistant", "content": _nota})
+                chat_memoria.salvar_mensagem(conn, usuario, "assistant", _nota)
+                st.rerun()
+
+    # ── Resultado do chat: tabela / gráfico / relatório ───────────────────
+    _resultados = st.session_state.get("assistente_resultados") or []
+    if _resultados:
         with st.container(border=True):
             c1, c2 = st.columns([5, 1])
-            c1.markdown(f"**Última consulta do chat** — `{ultima['nome']}`")
-            if c2.button("✕", key="assistente_limpar_ultima", help="Limpar"):
+            _ordem = list(range(len(_resultados) - 1, -1, -1))
+            _idx = c1.selectbox(
+                "Consulta do chat", _ordem, key=f"assistente_consulta_sel_{len(_resultados)}",
+                format_func=lambda i: f"{i + 1}. {chat_visual.TITULOS.get(_resultados[i]['nome'], _resultados[i]['nome'])}"
+                                      + ("  (mais recente)" if i == len(_resultados) - 1 else ""),
+            )
+            if c2.button("✕", key="assistente_limpar_ultima", help="Limpar consultas do painel"):
                 st.session_state.assistente_ultima_ferramenta = None
+                st.session_state.assistente_resultados = []
                 st.rerun()
+            ultima = _resultados[_idx]
             resultado = ultima["resultado"]
+            prep = chat_visual.preparar(ultima["nome"], resultado, NOME_POR_COD)
             if "erro" in resultado:
                 st.warning(resultado["erro"])
                 if resultado.get("periodos_disponiveis"):
                     st.caption("Períodos disponíveis: " + ", ".join(resultado["periodos_disponiveis"]))
-            elif "contas" in resultado and resultado["contas"]:
-                # Fix 23/09/2026 (mesmo achado do Rafael de formatacao
-                # americana): pre-formata em BR antes de exibir, sem mexer
-                # no resultado numerico original (usado so' pra exibicao
-                # aqui, o modelo ja recebeu o numero cru via tool_result).
-                #
-                # BUG real 23/09/2026 (2a leva, reportado ao vivo: KeyError
-                # 'valor' quebrando a pagina inteira): "contas" tem 2 formatos
-                # bem diferentes dependendo de qual ferramenta rodou --
-                # consultar_bp_dre devolve {grupo, conta, valor} (1 coluna de
-                # dinheiro, minuscula), consultar_visao_grupo devolve
-                # {grupo, conta, "VALOR CONSOLIDADO", "ENERMAIS ENERGIA",
-                # "% ENERGIA", "EMPRESAS CONSOLIDADORAS", "% CONSOLIDADORAS"}
-                # (varias colunas de dinheiro MAIUSCULAS + colunas de % --
-                # ver visao_grupo.visao_macro/visao_especifica). O fix
-                # anterior assumia cegamente 1 coluna "valor", quebrando com
-                # KeyError sempre que o chat rodava consultar_visao_grupo.
-                # Fix: formata cada coluna numerica pelo NOME dela (%  vira
-                # pct_br, resto vira moeda_br), nunca assume um nome fixo.
-                df_contas = pd.DataFrame(resultado["contas"])
-                for col in df_contas.columns:
-                    if col in ("grupo", "conta"):
-                        continue
-                    if col.strip().startswith("%"):
-                        df_contas[col] = df_contas[col].apply(formatacao.pct_br)
-                    else:
-                        df_contas[col] = df_contas[col].apply(formatacao.moeda_br)
-                fig_contas = _grafico_contas_por_grupo(df_contas)
-                if fig_contas is not None:
-                    st.plotly_chart(fig_contas, width="stretch")
-                st.dataframe(df_contas, hide_index=True, use_container_width=True)
-            elif "periodos_por_empresa" in resultado:
-                # Fix 23/09/2026 (achado real do Rafael testando ao vivo): antes
-                # disto era st.json() cru -- funcionava, mas parecia "bugado" do
-                # lado do dashboard (JSON bruto recolhivel) do lado do resultado
-                # limpo que o proprio chat mostra em texto (mesma consulta,
-                # 2 aparencias bem diferentes). Agora usa a mesma tabela
-                # Empresa/Periodos/Qtde que o modelo ja monta em prosa na
-                # resposta de texto -- consistente, sem mudar nenhuma ferramenta
-                # nem o formato que consultas_chat.consultar_periodos devolve.
-                linhas_periodos = [
-                    {
-                        "Empresa": NOME_POR_COD.get(cod, cod),
-                        "Períodos disponíveis": ", ".join(sorted(periodos)) if periodos else "—",
-                        "Qtde": len(periodos),
-                    }
-                    for cod, periodos in resultado["periodos_por_empresa"].items()
-                ]
-                fig_periodos = _grafico_periodos_por_empresa(linhas_periodos)
-                if fig_periodos is not None:
-                    st.plotly_chart(fig_periodos, width="stretch")
-                st.dataframe(pd.DataFrame(linhas_periodos), hide_index=True, use_container_width=True)
-            elif "indicadores" in resultado:
-                # Erik.AI (23/09/2026) -- nova ferramenta consultar_indicadores.
-                # Mesmo mapeamento de formato por indicador que a Início usa
-                # (app.py, _fmt) -- x/R$/pct por coluna, nunca genérico.
-                FORMATO_INDICADOR = {
-                    "Liquidez Corrente": "x", "Capital de Giro": "R$", "Endividamento Geral": "pct",
-                    "Margem Bruta": "pct", "Margem Líquida": "pct", "ROA": "pct", "ROE": "pct",
-                    "EBITDA": "R$", "Margem EBITDA": "pct",
-                }
-                st.caption(
-                    f"Período: {resultado['periodo']} · Base do período: {resultado.get('base_do_periodo', '—')} · "
-                    f"Empresas: {', '.join(resultado['empresas_incluidas'])}"
-                )
+            elif prep is None:
+                st.caption("Sem dado pra exibir dessa consulta.")
+            else:
                 if resultado.get("aviso_consolidado_parcial"):
                     st.warning(resultado["aviso_consolidado_parcial"])
-                linhas_ind = []
-                for nome_ind, valor in resultado["indicadores"].items():
-                    fmt = FORMATO_INDICADOR.get(nome_ind, "R$")
-                    if fmt == "x":
-                        texto = formatacao.numero_br(valor, sufixo="x")
-                    elif fmt == "pct":
-                        texto = formatacao.pct_br(valor)
-                    else:
-                        texto = formatacao.moeda_br(valor)
-                    linhas_ind.append({"Indicador": nome_ind, "Valor": texto})
-                st.dataframe(pd.DataFrame(linhas_ind), hide_index=True, use_container_width=True)
-            elif "completude_por_periodo" in resultado:
-                # Erik.AI (23/09/2026) -- nova ferramenta consultar_completude,
-                # mesma tabela do painel de pendências da Início (texto puro,
-                # sem coluna numérica pra formatar).
-                if not resultado["completude_por_periodo"]:
-                    st.caption("Sem período nenhum encontrado pra essas empresas.")
-                else:
-                    fig_completude = _grafico_completude(resultado["completude_por_periodo"])
-                    if fig_completude is not None:
-                        st.plotly_chart(fig_completude, width="stretch")
-                    st.dataframe(
-                        pd.DataFrame(resultado["completude_por_periodo"]), hide_index=True, use_container_width=True,
-                    )
-            else:
-                st.caption("Sem dado pra exibir dessa consulta.")
+                st.markdown(f"**{prep['titulo']}**" + (f" — {prep['subtitulo']}" if prep["subtitulo"] else ""))
+                _modos = ["Tabela"] + (["Gráfico"] if prep["graficos"] else []) + ["Relatório"]
+                modo = st.radio("Ver como", _modos, horizontal=True, key="assistente_visao", label_visibility="collapsed")
+                _graf_sel = tipo_graf = ys_sel = None
+                if modo == "Tabela":
+                    st.dataframe(chat_visual.tabela_exibicao(prep), hide_index=True, use_container_width=True)
+                if modo in ("Gráfico", "Relatório") and prep["graficos"]:
+                    _nomes_g = list(prep["graficos"])
+                    cg1, cg2 = st.columns([3, 2])
+                    nome_g = cg1.selectbox("Gráfico", _nomes_g, key="assistente_graf_nome") if len(_nomes_g) > 1 else _nomes_g[0]
+                    _graf_sel = prep["graficos"][nome_g]
+                    tipo_graf = cg2.selectbox("Tipo", chat_visual.TIPOS_GRAFICO, key="assistente_graf_tipo")
+                    _opc_y = [c for c in _graf_sel["df"].columns if c != _graf_sel["x"]]
+                    if len(_opc_y) > 1:
+                        ys_sel = st.multiselect("Séries", _opc_y, default=_graf_sel["ys"], key=f"assistente_graf_ys_{nome_g}",
+                                                max_selections=3) or _graf_sel["ys"]
+                    if modo == "Gráfico":
+                        st.plotly_chart(chat_visual.figura(_graf_sel, tipo_graf, True, ys_sel),
+                                        use_container_width=True, config={"displaylogo": False})
+                        st.caption("Gráfico direto do resultado consultado — passe o mouse para ver o valor completo em R$.")
+                if modo == "Relatório":
+                    st.caption("Baixe o resultado como planilha (números reais, abre no Excel) ou PDF (com o gráfico escolhido acima).")
+                    _origem = f"Erik.AI · {ultima['nome']}"
+                    _slug = re.sub(r"[^a-z0-9]+", "_", prep["titulo"].lower()).strip("_")[:40] or "consulta"
+                    d1, d2 = st.columns(2)
+                    d1.download_button("⬇️ Excel (.xlsx)", chat_visual.excel_bytes(prep, usuario, _origem),
+                                       file_name=f"erik_{_slug}.xlsx", key="assistente_dl_xlsx",
+                                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                    d2.download_button("⬇️ PDF", chat_visual.pdf_bytes(prep, usuario, _origem, _graf_sel, tipo_graf or "Barras", ys_sel),
+                                       file_name=f"erik_{_slug}.pdf", key="assistente_dl_pdf", mime="application/pdf")
         st.divider()
 
     st.markdown("**Consulta rápida**")
@@ -300,6 +242,22 @@ with col_dash:
 with col_chat:
     st.subheader("Chat")
 
+    _mem = chat_memoria.disponivel(conn)
+    if _mem is False:
+        st.caption("⚠️ Memória da conversa indisponível (rode o bloco 20 do schema.sql no Supabase) — o chat funciona, "
+                   "mas não guarda o histórico entre sessões.")
+    elif _mem:
+        with st.expander(f"🧠 Memória: últimas {chat_memoria.JANELA_HISTORICO_CHAT} mensagens ficam salvas só para você"):
+            st.caption("A conversa é guardada por usuário. Só essa janela volta ao abrir o chat e vai como contexto — "
+                       "números nunca são reaproveitados do histórico: a Erik.AI reconsulta o sistema.")
+            _conf = st.checkbox("Confirmo apagar meu histórico", key="assistente_apagar_conf")
+            if st.button("Apagar meu histórico", disabled=not _conf, key="assistente_apagar_hist"):
+                chat_memoria.apagar_historico(conn, usuario)
+                st.session_state.assistente_mensagens = []
+                st.session_state.assistente_resultados = []
+                st.session_state.assistente_ultima_ferramenta = None
+                st.rerun()
+
     client = _cliente_anthropic()
     if client is None:
         st.warning(
@@ -308,9 +266,6 @@ with col_chat:
             "dashboard ao lado funciona normalmente sem isso."
         )
         st.stop()
-
-    if "assistente_mensagens" not in st.session_state:
-        st.session_state.assistente_mensagens = []
 
     # 23/09/2026 (feedback ao vivo): height="stretch" ficou pior -- caixa
     # nasce vazia lá em cima e cresce infinito conforme o chat cresce, em
@@ -357,6 +312,7 @@ with col_chat:
             )
         if pergunta_limpa.strip():
             st.session_state.assistente_mensagens.append({"role": "user", "content": pergunta_limpa})
+            chat_memoria.salvar_mensagem(conn, usuario, "user", pergunta_limpa)
         st.rerun()
     _aviso = st.session_state.pop("assistente_aviso", None)
     if _aviso:
@@ -380,6 +336,15 @@ with col_chat:
                 # detalhe tecnico (pode ter id de organizacao/trecho de requisicao) fica so' no log
                 r = {"texto": "Não consegui responder agora (erro ao falar com o assistente). Tente de novo em instantes.", "ferramentas_usadas": []}
         st.session_state.assistente_mensagens.append({"role": "assistant", "content": r["texto"]})
+        chat_memoria.salvar_mensagem(conn, usuario, "assistant", r["texto"], [f["nome"] for f in r["ferramentas_usadas"]] or None)
         if r["ferramentas_usadas"]:
             st.session_state.assistente_ultima_ferramenta = r["ferramentas_usadas"][-1]
+            _res = st.session_state.setdefault("assistente_resultados", [])
+            _res.extend(r["ferramentas_usadas"])
+            del _res[:-8]  # painel guarda as 8 consultas mais recentes
+        if r.get("propostas"):
+            _pend = st.session_state.setdefault("assistente_propostas", [])
+            _ids = {p["id"] for p in _pend}
+            _pend.extend(p for p in r["propostas"] if p["id"] not in _ids)
+            del _pend[:-chat_egc.MAX_PROPOSTAS_POR_RESPOSTA * 2]
         st.rerun()

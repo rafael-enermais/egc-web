@@ -464,6 +464,61 @@ def test_importar_pdf_trimestral_e_semestral_no_mesmo_lote_nao_conflitam_01_10()
         print("OK: Importar PDF — trimestral e semestral coexistem no lote")
 
 
+def _bp_energia(nome, n=35):
+    d = _bp(nome, n)
+    d["meta"] = [("Enermais Energia Ltda", "47.040.664/0001-48", "30/06/2026", nome, "BP", "SPED", None, None)]
+    return d
+
+
+def test_importar_pdf_bp_semestral_e_trimestral_do_mesmo_periodo_usam_nome_do_arquivo_01_10():
+    # Print do Rafael (01/10/2026): Energia com BP "1º Semestre (1)" + BP "2º Trimestre" +
+    # os 2 DREs correspondentes no MESMO lote -> antes: "mais de 1 DRE... nao consigo decidir"
+    # + erro "2 arquivos com o MESMO BP". Agora o nome do arquivo decide.
+    bp_s = _bp_energia("Energia - Balanço Patrimonial - 1º Semestre 2026 (1).pdf")
+    bp_t = _bp_energia("Energia - Balanço Patrimonial - 2º Trimestre 2026.pdf")
+    dre_s = _dre("Energia - DRE - 1º Semestre 2026 (1).pdf", "01/01/2026", "semestral")
+    dre_t = _dre("Energia - DRE - 2º Trimestre 2026.pdf", "01/04/2026", "trimestral")
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_importacoes_recentes", return_value=[]), \
+         patch.object(db, "listar_documentos_ativos", return_value=[]), \
+         patch.object(db, "inativar_periodo_existente", return_value=0), \
+         patch.object(db, "inserir_lancamentos", return_value=1) as mock_inserir, \
+         patch.object(db, "registrar_importacao", return_value=None):
+        at = AppTest.from_file(PAGE)
+        at.session_state["import_resultados"] = [bp_s, bp_t, dre_s, dre_t]
+        at.run(timeout=30)
+        assert not at.exception, at.exception
+        assert at.selectbox(key=f"granularidade_bp_{assinatura_item(bp_s)}").value == "semestral"
+        assert at.selectbox(key=f"granularidade_bp_{assinatura_item(bp_t)}").value == "trimestral"
+        assert not any("MESMO" in e.value for e in at.error), [e.value for e in at.error]
+        assert not any("mais de 1 DRE" in w.value for w in at.warning), [w.value for w in at.warning]
+        botao = [b for b in at.button if "Gravar" in b.label][0]
+        assert not botao.disabled
+        botao.click().run(timeout=30)
+        grans = sorted((c.args[2] if len(c.args) > 2 else None, c.kwargs.get("granularidade")) for c in mock_inserir.call_args_list)
+        assert sorted(c.kwargs.get("granularidade") for c in mock_inserir.call_args_list) == ["semestral", "semestral", "trimestral", "trimestral"]
+
+
+def test_importar_pdf_bp_sem_dica_no_nome_pode_ser_definido_manualmente_01_10():
+    bp = _bp_energia("Energia - Balanço Patrimonial.pdf")
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_importacoes_recentes", return_value=[]), \
+         patch.object(db, "listar_documentos_ativos", return_value=[]), \
+         patch.object(db, "inativar_periodo_existente", return_value=0), \
+         patch.object(db, "inserir_lancamentos", return_value=1) as mock_inserir, \
+         patch.object(db, "registrar_importacao", return_value=None):
+        at = AppTest.from_file(PAGE)
+        at.session_state["import_resultados"] = [bp]
+        at.run(timeout=30)
+        sel = at.selectbox(key=f"granularidade_bp_{assinatura_item(bp)}")
+        assert sel.value == ""
+        sel.set_value("semestral").run(timeout=30)
+        [b for b in at.button if "Gravar" in b.label][0].click().run(timeout=30)
+        assert mock_inserir.call_args.kwargs.get("granularidade") == "semestral"
+
+
 if __name__ == "__main__":
     testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
     falhas = 0

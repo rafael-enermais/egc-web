@@ -114,6 +114,39 @@ if col_btn.button("🔄 Atualizar do Sienge", key="nf_btn_sync"):
             st.error(f"Falha ao sincronizar com o Sienge: {exc}")
             _log_erro("Falha na sincronização com o Sienge", detalhe=str(exc), empresa_codigo=cod_empresa)
 
+# ───────────── Empresa de cada devedor do Sienge (confere lançamento na empresa certa) ─────────────
+with st.expander("🏢 Empresa de cada devedor do Sienge — confere se a nota foi lançada na empresa certa"):
+    st.caption(
+        "O Sienge é uma conta só das 6 empresas: o **devedor** do título diz em qual empresa a nota foi "
+        "lançada. Confirme abaixo a empresa de cada devedor (o app sugere pelo histórico). Na conferência, "
+        "nota que consta no manifesto de uma empresa mas está lançada no devedor de OUTRA aparece como "
+        "**LANCADA_OUTRA_EMPRESA** (pendência). Devedor sem empresa confirmada/sugerida não gera alerta."
+    )
+    try:
+        _deb = nf_sienge.listar_debtors_sienge(conn)
+    except Exception as exc:
+        _deb = None
+        st.info(f"Não consegui listar os devedores agora: {exc}")
+    if _deb is not None and _deb.empty:
+        st.caption("Nenhum título NFE/NF sincronizado ainda.")
+    elif _deb is not None:
+        _opcoes = ["(sem confirmação)"] + [cod for cod, _n, _c in EMPRESAS_FIXAS]
+        for _, d in _deb.iterrows():
+            c1, c2, c3, c4 = st.columns([1, 1, 2, 1])
+            c1.markdown(f"**Devedor {int(d['debtor_id'])}**")
+            c2.caption(f"{int(d['titulos'])} título(s)")
+            atual = d["empresa_confirmada"] if isinstance(d["empresa_confirmada"], str) else "(sem confirmação)"
+            sug = d["empresa_aprendida"] if isinstance(d["empresa_aprendida"], str) else None
+            c3.caption(f"Sugestão do histórico: {sug or '—'}")
+            nova = c4.selectbox("Empresa", _opcoes, index=_opcoes.index(atual) if atual in _opcoes else 0,
+                                key=f"nf_debtor_{int(d['debtor_id'])}", label_visibility="collapsed")
+            if nova != atual:
+                try:
+                    nf_sienge.salvar_mapa_debtor(conn, int(d["debtor_id"]), None if nova == _opcoes[0] else nova, usuario)
+                    st.success(f"Devedor {int(d['debtor_id'])} → {nova}. Rode a conferência de novo para reaplicar.")
+                except Exception as exc:
+                    st.error(f"Não consegui salvar (o bloco 20 do schema já foi rodado?): {exc}")
+
 st.divider()
 
 # ─────────────────────────── 2. Upload do manifesto ───────────────────────────

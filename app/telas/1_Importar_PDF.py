@@ -52,7 +52,7 @@ from parser_egc import processar_pdf, extrair_despesas_admin_itens  # noqa: E402
 from validacoes import checar_fechamento_bp, formatar_br  # noqa: E402
 from importacoes_ui import (  # noqa: E402
     chave_ordenacao_previa, agrupar_historico_importacoes, detectar_conflitos_lote, chave_documento_item,
-    assinatura_item,
+    assinatura_item, inferir_granularidade_nome,
 )
 import formatacao  # noqa: E402
 
@@ -178,6 +178,14 @@ if resultados:
     st.subheader("2. Pré-visualização — confira antes de gravar")
 
     algum_erro = False
+    # Pre-leitura: granularidade DETECTADA dos DREs do lote por (CNPJ, periodo) --
+    # serve de sugestao para o BP do mesmo fechamento (o BP nao declara intervalo).
+    _gran_dre_lote: dict = {}
+    for _r in resultados:
+        if _r.get("meta") and _r.get("dre_rows"):
+            _m = _r["meta"][0]
+            if _m[7]:
+                _gran_dre_lote.setdefault((_m[1], _m[2]), set()).add(_m[7])
     for i, r in enumerate(resultados):
         with st.expander(f"📄 {r['arquivo']}", expanded=True):
             # FIX_20260929 (Rafael testando o reset: subiu por engano um
@@ -251,9 +259,30 @@ if resultados:
                     )
                     r["_granularidade_confirmada"] = granularidade_escolhida
                 else:
-                    # BP: sem selector -- fica sempre "" (nunca declarada),
-                    # consistente com parser_egc.calcular_granularidade.
-                    r["_granularidade_confirmada"] = ""
+                    # BP: o PDF nao declara intervalo (e' foto de 1 data), mas o NOME do
+                    # arquivo costuma dizer ("1º Semestre", "2º Trimestre"). Sugestao:
+                    # nome do arquivo -> DRE irmao do lote (se inequivoco) -> "".
+                    # A contadora confirma/corrige no seletor (pedido do Rafael 01/10/2026:
+                    # "nem consigo setar o balanço patrimonial pra qual período é").
+                    g_nome = inferir_granularidade_nome(r["arquivo"])
+                    irmaos = _gran_dre_lote.get((cnpj, periodo), set())
+                    if g_nome:
+                        sugerida, origem = g_nome, "pelo nome do arquivo"
+                    elif len(irmaos) == 1:
+                        sugerida, origem = next(iter(irmaos)), "pelo DRE do mesmo fechamento neste lote"
+                    else:
+                        sugerida, origem = "", None
+                    if origem:
+                        st.caption(f"📅 O BP não declara o intervalo — sugeri **{indicadores_rotulo(sugerida)}** {origem}. Confirme ou corrija:")
+                    else:
+                        st.caption("📅 O BP não declara o intervalo e o nome do arquivo não diz — escolha a que fechamento ele pertence:")
+                    r["_granularidade_confirmada"] = st.selectbox(
+                        "Fechamento a que este BP pertence",
+                        list(_OPCOES_GRANULARIDADE.keys()),
+                        index=list(_OPCOES_GRANULARIDADE.keys()).index(sugerida if sugerida in _OPCOES_GRANULARIDADE else ""),
+                        format_func=lambda g: _OPCOES_GRANULARIDADE[g],
+                        key=f"granularidade_bp_{r['_sig']}",
+                    )
 
                 resolucao = empresa_por_cnpj(cnpj)
                 if resolucao:
@@ -362,6 +391,8 @@ if resultados:
     for r in resultados:
         if not r.get("meta") or not r.get("bp_rows") or r.get("dre_rows"):
             continue  # so' propaga pra BP "puro" (arquivo so' com BP)
+        if r.get("_granularidade_confirmada"):
+            continue  # BP ja' tem fechamento definido (nome do arquivo ou escolha da contadora)
         _e, _c, periodo_str, _n, _t, _f, _pi, _g = r["meta"][0]
         chave = (r.get("_cod"), periodo_str)
         if chave in ambiguos_periodo:

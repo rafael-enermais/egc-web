@@ -774,3 +774,66 @@ CREATE INDEX IF NOT EXISTS idx_despesas_admin_itens_busca
 -- (projeto radar-comercial) -- nao precisa rodar o arquivo inteiro de novo.
 -- Bimestral (mesmo pacote): NAO precisa de migracao -- granularidade e'
 -- text livre, sem CHECK constraint em egc.lancamentos.
+
+-- =====================================================================
+-- BLOCO 20 — Notas Fiscais: empresa do lancamento + memoria/acoes do Erik.AI
+--
+--   (a) egc.nf_debtor_empresa: de-para "devedor (debtor_id) do Sienge ->
+--       empresa do grupo" CONFIRMADO pela contadora (o Sienge e' uma conta
+--       so' das 6 empresas; o debtor do titulo diz a qual empresa a nota
+--       foi lancada). Serve pra detectar nota lancada na empresa errada.
+--   (b) nf_conciliacao.status ganha 'LANCADA_OUTRA_EMPRESA'.
+--   (c) egc.chat_mensagem: memoria da conversa do Erik.AI POR USUARIO
+--       (padrao Viaj.AI). So' uma janela fixa vai pra API; o log fica.
+--   (d) egc.chat_acao: trilha das acoes que o Erik.AI PROPOS e a pessoa
+--       aprovou/rejeitou (a IA nunca grava sozinha).
+--   O codigo funciona antes deste bloco rodar (sem a funcionalidade nova).
+-- =====================================================================
+
+CREATE TABLE IF NOT EXISTS egc.nf_debtor_empresa (
+  debtor_id       bigint PRIMARY KEY,
+  empresa_codigo  text NOT NULL REFERENCES egc.empresas(codigo),
+  atualizado_por  text,
+  atualizado_em   timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE egc.nf_conciliacao DROP CONSTRAINT IF EXISTS nf_conciliacao_status_check;
+ALTER TABLE egc.nf_conciliacao ADD CONSTRAINT nf_conciliacao_status_check
+  CHECK (status IN ('LANCADA','NAO_ENCONTRADA','VALOR_DIVERGENTE','NUMERO_DIVERGENTE','LANCADA_OUTRA_EMPRESA'));
+
+CREATE TABLE IF NOT EXISTS egc.chat_mensagem (
+  id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  usuario     text NOT NULL,
+  papel       text NOT NULL CHECK (papel IN ('user','assistant')),
+  conteudo    text NOT NULL,
+  ferramentas text[],
+  criado_em   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_chat_mensagem_usuario ON egc.chat_mensagem (usuario, criado_em DESC);
+
+CREATE TABLE IF NOT EXISTS egc.chat_acao (
+  id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  usuario      text NOT NULL,
+  tipo         text NOT NULL,
+  parametros   jsonb NOT NULL,
+  status       text NOT NULL CHECK (status IN ('APROVADA','REJEITADA','ERRO')),
+  resultado    text,
+  criado_em    timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_chat_acao_usuario ON egc.chat_acao (usuario, criado_em DESC);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON egc.nf_debtor_empresa, egc.chat_mensagem, egc.chat_acao TO egc_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA egc TO egc_app;
+
+ALTER TABLE egc.nf_debtor_empresa ENABLE ROW LEVEL SECURITY;
+ALTER TABLE egc.chat_mensagem     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE egc.chat_acao         ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS egc_app_full_access ON egc.nf_debtor_empresa;
+CREATE POLICY egc_app_full_access ON egc.nf_debtor_empresa FOR ALL TO egc_app USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS egc_app_full_access ON egc.chat_mensagem;
+CREATE POLICY egc_app_full_access ON egc.chat_mensagem FOR ALL TO egc_app USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS egc_app_full_access ON egc.chat_acao;
+CREATE POLICY egc_app_full_access ON egc.chat_acao FOR ALL TO egc_app USING (true) WITH CHECK (true);
+
+-- Fim do bloco 20. Rodar so' este bloco no SQL Editor do Supabase
+-- (projeto radar-comercial) -- nao precisa rodar o arquivo inteiro de novo.
