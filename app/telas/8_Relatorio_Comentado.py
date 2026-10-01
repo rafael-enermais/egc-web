@@ -76,7 +76,6 @@ v0.40.0 -- o que mudou nesta tela (ver selecao_periodos.py):
 """
 import sys
 from pathlib import Path
-from datetime import date, datetime
 
 import streamlit as st
 

@@ -4,9 +4,14 @@ Tela ARQUIVAR / RECUPERAR — equivalente a ArquivarImportacao/
 RecuperarImportacao do VBA (PROJETO_EGC_v3.0.md secao 8).
 
 Regra preservada: os dois botões só ALTERNAM o status (ATIVO <-> INATIVO)
-da empresa+período escolhido — nunca apagam nada. "Desfazer última
-importação" foi removido do sistema antigo por decisão de segurança
-(risco de exclusão permanente) e não existe aqui também, de propósito.
+da empresa+período escolhido — nunca apagam nada. (O "Desfazer última
+importação" do sistema antigo apagava de vez e foi removido; o "↩️ Desfazer"
+do Importar PDF, desde a v0.44.0, também só arquiva e reativa a versão anterior.)
+
+v0.44.0/0.44.1: cada gravação de PDF é uma VERSÃO (coluna `lote`). "Recuperar" lista só
+o que está arquivado SEM versão ativa (db.listar_periodos_recuperaveis) e reativa UMA
+versão (a mais recente) por tipo; versões antigas substituídas por reimportação ficam
+guardadas e se voltam pelo "↩️ Desfazer" do Importar PDF.
 
 Melhoria em relação ao VBA: como aqui pdf_original vive na mesma linha
 de egc.lancamentos (não numa aba separada), um ciclo Arquivar -> Recuperar
@@ -90,6 +95,16 @@ def _log_seguro(nivel, mensagem, periodo=None, detalhe=None):
         pass
 
 
+
+def _flash(nivel, texto):
+    """Mensagem que sobrevive ao st.rerun() (sem isso o st.success sumia antes de ser lido --
+    mesmo gotcha ja' corrigido no Desfazer do Importar PDF)."""
+    st.session_state.setdefault("_arq_msgs", []).append((nivel, texto))
+
+
+for _nivel, _texto in st.session_state.pop("_arq_msgs", []):
+    {"ok": st.success, "warn": st.warning, "erro": st.error}[_nivel](_texto)
+
 col_arq, col_rec = st.columns(2)
 
 with col_arq:
@@ -120,20 +135,22 @@ with col_arq:
                 except Exception as exc:
                     erros.append((p, str(exc)))
                     _log_seguro("ERRO", "Falha ao arquivar período", periodo=p, detalhe=str(exc))
+            if not total and not erros:
+                _flash('warn', "Nada foi arquivado — o período pode já ter sido arquivado em outra aba/sessão.")
             if total:
                 _log_seguro("INFO", f"{total} lançamento(s) arquivado(s) em {len(escolhidos) - len(erros)} período(s)")
-                st.success(f"{total} lançamento(s) arquivado(s) em {len(escolhidos) - len(erros)} período(s).")
+                _flash('ok', f"{total} lançamento(s) arquivado(s) em {len(escolhidos) - len(erros)} período(s).")
             if erros:
-                st.error(f"{len(erros)} período(s) NÃO foram arquivados (erro no banco) — ver log de eventos: "
+                _flash('erro', f"{len(erros)} período(s) NÃO foram arquivados (erro no banco) — ver log de eventos: "
                          + "; ".join(f"{p.strftime('%m/%Y')}: {e}" for p, e in erros))
             st.rerun()
 
 with col_rec:
     st.subheader("Recuperar")
     st.caption(f"Períodos ARQUIVADOS de **{nome_empresa}** — reativa.")
-    inativos = _marcar_ambiguos(db.listar_periodos_detalhado(conn, cod_empresa, status="INATIVO"))
+    inativos = _marcar_ambiguos(db.listar_periodos_recuperaveis(conn, cod_empresa))
     if not inativos:
-        st.info("Nenhum período arquivado.")
+        st.info("Nenhum período arquivado para recuperar.")
     else:
         escolhidos_r = st.multiselect(
             "Selecione o(s) período(s) para recuperar",
@@ -151,10 +168,12 @@ with col_rec:
                 except Exception as exc:
                     erros.append((p, str(exc)))
                     _log_seguro("ERRO", "Falha ao recuperar período", periodo=p, detalhe=str(exc))
+            if not total and not erros:
+                _flash('warn', "Nada foi recuperado — já existe versão ativa desse período (use ↩️ Desfazer em Importar PDF para voltar a uma versão anterior).")
             if total:
                 _log_seguro("INFO", f"{total} lançamento(s) recuperado(s) em {len(escolhidos_r) - len(erros)} período(s)")
-                st.success(f"{total} lançamento(s) recuperado(s) em {len(escolhidos_r) - len(erros)} período(s).")
+                _flash('ok', f"{total} lançamento(s) recuperado(s) em {len(escolhidos_r) - len(erros)} período(s).")
             if erros:
-                st.error(f"{len(erros)} período(s) NÃO foram recuperados (erro no banco) — ver log de eventos: "
+                _flash('erro', f"{len(erros)} período(s) NÃO foram recuperados (erro no banco) — ver log de eventos: "
                          + "; ".join(f"{p.strftime('%m/%Y')}: {e}" for p, e in erros))
             st.rerun()

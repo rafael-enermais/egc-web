@@ -215,7 +215,7 @@ if idx_detalhe > 0:
 with cab_titulo:
     st.subheader(f"Resumo do grupo — {periodo_detalhe.strftime('%m/%Y')} · {indicadores.rotulo_granularidade(base_sel)}")
     st.caption(
-        f"Cada número vem de um único documento (período + granularidade); períodos de outras bases não entram nas "
+        "Cada número vem de um único documento (período + granularidade); períodos de outras bases não entram nas "
         "contas nem nos deltas. "
         + (f"Variações vs {periodo_anterior.strftime('%m/%Y')} (período anterior da seleção, mesma base)."
            if periodo_anterior is not None else "Sem período anterior na seleção — sem variação.")

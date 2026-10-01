@@ -131,7 +131,7 @@ def test_painel_tabela_grafico_relatorio_sem_excecao():
         at.chat_input[0].set_value("bp da smg").run()
         assert not at.exception, at.exception
         assert at.radio(key="assistente_visao").options == ["Tabela", "Gráfico", "Relatório"]
-        assert any("CLIENTES" in list(df.value.get("conta", [])) for df in at.dataframe)
+        assert any("CLIENTES" in list(df.value.get("Conta", [])) for df in at.dataframe)
         for modo in ("Gráfico", "Relatório", "Tabela"):
             at.radio(key="assistente_visao").set_value(modo).run()
             assert not at.exception, (modo, at.exception)

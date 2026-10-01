@@ -227,8 +227,10 @@ def _mapa(lancamentos: list) -> dict:
     (não quebra o relatório -- dado ruim não pode travar produção, mas
     precisa aparecer) sempre que houver conta duplicada nas linhas ATIVAS
     recebidas."""
-    contagem = Counter(l["conta"] for l in lancamentos)
-    duplicadas = [conta for conta, n in contagem.items() if n > 1]
+    # v0.44.1: duplicata = mesma (grupo, conta). Contas de BP com o mesmo nome em grupos
+    # diferentes (Circulante x Nao Circulante) sao NORMAIS e geravam aviso falso em todo relatorio.
+    contagem = Counter((l.get("grupo"), l["conta"]) for l in lancamentos)
+    duplicadas = [conta for (_g, conta), n in contagem.items() if n > 1]
     if duplicadas:
         warnings.warn(
             f"_mapa: conta(s) duplicada(s) entre os lançamentos ATIVOS recebidos: {duplicadas} -- "
@@ -310,6 +312,15 @@ def _montar_anexo(bp_periodo: list, lado: str, incluir_subconta: bool = True) ->
     return linhas
 
 
+def _orientar_itens(itens_admin: list):
+    """-> ([(nome, valor)], soma_absoluta). Orienta o sinal pelo SOMATORIO dos itens (soma < 0 =
+    despesas guardadas como negativo, o padrao do DRE): despesa fica positiva e credito
+    (estorno/reembolso/ajuste a favor) fica negativo. Independe da convencao de sinal gravada."""
+    soma = sum(float(v) for _n, v in itens_admin)
+    fator = -1.0 if soma < 0 else 1.0
+    return [(n, float(v) * fator) for n, v in itens_admin], abs(soma)
+
+
 def _montar_despesas_admin_itens(itens_admin: list, despesas_administrativas: float, top_n: int = 6) -> list:
     """[(nome, valor_positivo, pct_0_a_100), ...] ordenado desc pelo
     valor -- formato que gerador_relatorio_comentado espera pro grafico
@@ -329,12 +340,25 @@ def _montar_despesas_admin_itens(itens_admin: list, despesas_administrativas: fl
     anterior (referência real tinha "Demais contas (43)" nessa página).
     Só agrega quando sobra mais de 1 item de cauda -- com exatamente
     top_n+1 contas não vale a pena resumir 1 item só."""
-    itens = [(nome, abs(float(valor))) for nome, valor in itens_admin]
-    itens.sort(key=lambda t: t[1], reverse=True)
-
-    if len(itens) > top_n + 1:
-        topo, resto = itens[:top_n], itens[top_n:]
-        itens = topo + [(f"Demais contas ({len(resto)})", sum(v for _, v in resto))]
+    # v0.44.1 (BUG REAL, Rafael: alerta "ranking nao incluido" em TODO relatorio com a
+    # Energia): o DRE tem itens de CREDITO dentro de Administrativas (ex.: Ajuste de
+    # Exercicios Anteriores +1,86 mi, Reembolso de Despesas +0,29 mi). Tratar |valor| de
+    # cada item inflava a soma (23,0 mi x total 18,7 mi) e o ranking mostraria esses
+    # creditos como se fossem despesa. Agora o sinal e' orientado pelo total (despesa =
+    # positivo, credito = negativo): so' despesas entram no ranking individual; creditos
+    # abatem na linha agregada "Demais contas", e a soma continua batendo com o total.
+    itens, _soma = _orientar_itens(itens_admin)
+    despesas = sorted([(n, v) for n, v in itens if v > 0], key=lambda t: t[1], reverse=True)
+    creditos = [(n, v) for n, v in itens if v <= 0]
+    topo, cauda = despesas[:top_n], despesas[top_n:]
+    if len(cauda) == 1 and not creditos:
+        topo, cauda = topo + cauda, []
+    cauda = cauda + creditos
+    itens = list(topo)
+    if cauda:
+        liquido = sum(v for _, v in cauda)
+        if liquido > 0:
+            itens.append((f"Demais contas ({len(cauda)})", liquido))
 
     out = []
     for nome, valor_abs in itens:
@@ -481,7 +505,7 @@ def _itens_admin_coerentes(itens: list, despesas_administrativas: float, avisos:
     REGRA: match obrigatorio de periodo + granularidade)."""
     if not itens:
         return []
-    soma = sum(abs(float(v)) for _n, v in itens)
+    _o, soma = _orientar_itens(itens)  # soma LIQUIDA (creditos abatem), como o total do DRE
     ref = abs(float(despesas_administrativas))
     if ref == 0 or abs(soma - ref) <= max(1.0, ref * _TOL_ITENS_ADMIN):
         return itens

@@ -44,9 +44,14 @@ def _det(*periodos_granul):
     return [{"periodo": p, "granularidade": g} for p, g in periodos_granul]
 
 
+# v0.44.1: o "Recuperar" lista db.listar_periodos_recuperaveis (arquivado SEM versao ativa)
+_REC = _det((datetime.date(2026, 3, 31), ""))
+
+
 def test_carrega_sem_excecao_com_periodos_ativos_e_arquivados():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos_recuperaveis", return_value=_REC), \
          patch.object(db, "listar_periodos_detalhado", side_effect=lambda conn, cod, status="ATIVO": (
              _det((P2, ""), (P1, "")) if status == "ATIVO" else _det((datetime.date(2026, 3, 31), ""))
          )):
@@ -59,6 +64,7 @@ def test_carrega_sem_excecao_com_periodos_ativos_e_arquivados():
 def test_arquivar_sucesso_nao_registra_erro():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos_recuperaveis", return_value=_REC), \
          patch.object(db, "listar_periodos_detalhado", side_effect=lambda conn, cod, status="ATIVO": (
              _det((P2, ""), (P1, "")) if status == "ATIVO" else []
          )), \
@@ -94,6 +100,7 @@ def test_arquivar_falha_parcial_loga_erro_e_nao_quebra_pagina():
 
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos_recuperaveis", return_value=_REC), \
          patch.object(db, "listar_periodos_detalhado", side_effect=lambda conn, cod, status="ATIVO": (
              _det((P2, ""), (P1, "")) if status == "ATIVO" else []
          )), \
@@ -131,6 +138,7 @@ def test_arquivar_2_granularidades_mesmo_periodo_fim_so_arquiva_a_escolhida():
     """
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos_recuperaveis", return_value=_REC), \
          patch.object(db, "listar_periodos_detalhado", side_effect=lambda conn, cod, status="ATIVO": (
              _det((P2, "trimestral"), (P2, "semestral")) if status == "ATIVO" else []
          )), \
