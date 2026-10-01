@@ -22,15 +22,15 @@ import formatacao
 # (registro_id, origem) nunca aparecem pra contadora.
 ROTULOS = {
     "numero_nota": "Nº da nota",
+    "sienge_bill_id": "Título Sienge",
+    "sienge_documento": "Documento no Sienge",
+    "status": "Status",
     "cfop": "CFOP",
     "data_emissao": "Emissão",
     "valor": "Valor (manifesto)",
     "fornecedor_nome": "Fornecedor",
     "fornecedor_cnpj": "CNPJ do fornecedor",
-    "status": "Status",
     "confianca": "Critério do match",
-    "sienge_bill_id": "Título Sienge",
-    "sienge_documento": "Documento no Sienge",
     "sienge_valor": "Valor (Sienge)",
     "observacao": "Observação",
     "pendencia_status": "Acompanhamento",

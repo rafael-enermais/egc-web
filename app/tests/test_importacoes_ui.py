@@ -199,3 +199,13 @@ if __name__ == "__main__":
             print(f"FALHOU: {t.__name__} — {e}")
     print(f"\n{len(testes) - falhas}/{len(testes)} testes passaram")
     sys.exit(1 if falhas else 0)
+
+
+def test_assinatura_item_muda_com_arquivo_e_granularidade():
+    from importacoes_ui import assinatura_item
+    def _r(nome, gran):
+        return {"arquivo": nome, "bp_rows": [], "dre_rows": [("A", 1.0, "R", "PDF")],
+                "meta": [("E", "1", "30/06/2026", nome, "DRE", "SPED", "01/01/2026", gran)]}
+    a, b, c = _r("a.pdf", "trimestral"), _r("a.pdf", "semestral"), _r("b.pdf", "trimestral")
+    assert assinatura_item(a) == assinatura_item(dict(a))
+    assert len({assinatura_item(a), assinatura_item(b), assinatura_item(c)}) == 3
