@@ -209,3 +209,13 @@ def test_assinatura_item_muda_com_arquivo_e_granularidade():
     a, b, c = _r("a.pdf", "trimestral"), _r("a.pdf", "semestral"), _r("b.pdf", "trimestral")
     assert assinatura_item(a) == assinatura_item(dict(a))
     assert len({assinatura_item(a), assinatura_item(b), assinatura_item(c)}) == 3
+
+
+def test_inferir_granularidade_nome_01_10():
+    from importacoes_ui import inferir_granularidade_nome as f
+    assert f("Energia - Balanço Patrimonial - 1º Semestre 2026 (1).pdf") == "semestral"
+    assert f("Energia - Balanço Patrimonial - 2º Trimestre 2026.pdf") == "trimestral"
+    assert f("SMG Soluções - DRE - 2º Trimestre 2026.pdf") == "trimestral"
+    assert f("Balanço Mensal Julho.pdf") == "mensal"
+    assert f("Energia - Balanço Patrimonial - 2025.pdf") == ""          # nome nao diz
+    assert f("Trimestre e Semestre.pdf") == ""                          # conflitante: nao adivinha

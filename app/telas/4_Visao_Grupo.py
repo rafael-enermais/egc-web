@@ -97,7 +97,7 @@ nomes_emp = [f"{nome} ({cod})" for cod, nome, _cnpj in EMPRESAS_FIXAS]
 # boa, dinâmica, fluida"): filtros numa linha só no topo; o resto vira dashboard
 # (leitura rápida + KPIs de destaque + abas). A logica de dados (base unica de
 # periodo+granularidade, match obrigatorio) continua a MESMA.
-f_emp, f_base, f_per = st.columns([2.4, 1.1, 2.0])
+f_emp, f_per = st.columns([2.4, 3.1])
 with f_emp:
     idxs_sel = st.multiselect(
         "Empresa(s) no consolidado", range(len(EMPRESAS_FIXAS)),
@@ -130,30 +130,60 @@ bases_disponiveis = sorted(
 base_padrao = indicadores.granularidade_padrao(_lancs_bp_todos, _lancs_dre_todos, cods_selecionados)
 if base_padrao not in bases_disponiveis:
     base_padrao = bases_disponiveis[0]
-with f_base:
-    base_sel = st.selectbox(
-        "Base do período", bases_disponiveis, index=bases_disponiveis.index(base_padrao),
-        format_func=indicadores.rotulo_granularidade, key="grupo_base_sel",
-        help="Abrangência do documento (ex. trimestral x semestral fechando na mesma data). "
-             "KPIs, gráficos e tabela abaixo usam só esta base.",
-    )
 
-periodos_disponiveis = sorted({d["periodo"] for d in periodos_detalhados if d["granularidade"] == base_sel})
-# Trocar a base muda quais periodos existem -- zera a selecao pra "todos da
-# nova base" (evita um valor guardado que nao esta nas opcoes novas).
-if "grupo_periodos_sel" not in st.session_state or st.session_state.get("_grupo_base_anterior", base_sel) != base_sel:
-    st.session_state["grupo_periodos_sel"] = list(periodos_disponiveis)
-st.session_state["_grupo_base_anterior"] = base_sel
+# 01/10/2026 (Rafael: "essa base periodo conseguimos mesclar com periodo de
+# analise tb? ... como o ano de 2026 nao ta completo, nao consigo estender ate'
+# a atualidade ... como se fosse um selecionar todos"). Base e periodo viraram UM
+# seletor de documentos (periodo + base): da' pra marcar 12/2023, 12/2024, 12/2025
+# (anuais) e 06/2026 (trimestral) juntos. Regra de integridade mantida: cada
+# numero vem de UM documento; contas, deltas e tabelas usam so' a base do
+# "Periodo em foco"; a linha do tempo dos graficos mostra cada documento no seu
+# proprio rotulo (ex. "2025" x "2T/2026"), sem somar bases diferentes.
+def _pr(g):
+    return indicadores._PRIORIDADE_GRANULARIDADE.get(g, -1)
+
+
+pares_todos = sorted({(d["periodo"], d["granularidade"]) for d in periodos_detalhados}, key=lambda t: (t[0], _pr(t[1])))
+
+
+def _rot_par(par):
+    return f"{par[0].strftime('%m/%Y')} · {indicadores.rotulo_granularidade(par[1])}"
+
+
+def _pares_da_base(base):
+    return [t for t in pares_todos if t[1] == base]
+
+
+if "grupo_periodos_sel" not in st.session_state:
+    st.session_state["grupo_periodos_sel"] = _pares_da_base(base_padrao)
+else:  # empresas mudaram -> descarta o que nao existe mais nas opcoes
+    _validos = [t for t in st.session_state["grupo_periodos_sel"] if t in pares_todos]
+    st.session_state["grupo_periodos_sel"] = _validos or _pares_da_base(base_padrao)
+
+
+def _sel_todos():
+    st.session_state["grupo_periodos_sel"] = list(pares_todos)
+
+
+def _sel_base_padrao():
+    st.session_state["grupo_periodos_sel"] = _pares_da_base(base_padrao)
+
+
 with f_per:
-    periodos_sel = st.multiselect(
-        "Período(s) da análise",
-        periodos_disponiveis, format_func=lambda d: d.strftime("%m/%Y"),
-        key="grupo_periodos_sel",
+    pares_sel = st.multiselect(
+        "Período(s) da análise (documento = período + base)",
+        pares_todos, format_func=_rot_par, key="grupo_periodos_sel",
+        help="Cada opção é um documento: período + abrangência (anual, trimestral...). Pode misturar bases "
+             "para ver a evolução até a atualidade; as contas e variações de cada período usam só o seu documento.",
     )
-if not periodos_sel:
+    bt1, bt2, _bt3 = st.columns([1, 1.4, 2])
+    bt1.button("Selecionar todos", on_click=_sel_todos, key="grupo_btn_todos", use_container_width=True)
+    bt2.button(f"Só {indicadores.rotulo_granularidade(base_padrao).lower()}", on_click=_sel_base_padrao,
+               key="grupo_btn_base_padrao", use_container_width=True)
+if not pares_sel:
     st.info("Selecione ao menos 1 período.")
     st.stop()
-periodos_sel = sorted(periodos_sel)
+pares_sel = sorted(pares_sel, key=lambda t: (t[0], _pr(t[1])))
 
 # ─────────────────────── Dashboard do grupo ────────────────────────────────
 def _tema_escuro() -> bool:
@@ -169,11 +199,14 @@ DARK = _tema_escuro()
 st.divider()
 cab_titulo, cab_foco = st.columns([3, 1.3])
 with cab_foco:
-    periodo_detalhe = st.selectbox(
-        "Período em foco", list(reversed(periodos_sel)),
-        format_func=lambda d: d.strftime("%m/%Y"), key="grupo_periodo_detalhe_sel",
-        help="Período usado nos cartões, na leitura rápida, no ranking por empresa e na tabela de detalhe.",
+    _foco = st.selectbox(
+        "Período em foco", list(reversed(pares_sel)),
+        format_func=_rot_par, key="grupo_periodo_detalhe_sel",
+        help="Documento usado nos cartões, na leitura rápida, no ranking por empresa e na tabela de detalhe.",
     )
+periodo_detalhe, base_sel = _foco
+# períodos da MESMA base do foco: cartões, variações e tabelas só usam estes
+periodos_sel = sorted(p for p, b in pares_sel if b == base_sel)
 granularidade_detalhe = base_sel
 periodo_anterior = None
 idx_detalhe = periodos_sel.index(periodo_detalhe)
@@ -221,6 +254,42 @@ if _faltando_detalhe:
 ind_grupo = visao_grupo.montar_indicadores_grupo(
     lancs_bp_multi, lancs_dre_multi, cods_selecionados, periodos_sel, base_sel,
 )
+
+
+def _montar_linha_do_tempo():
+    """Series para os GRAFICOS de evolucao: cada documento (periodo+base) da
+    selecao vira um ponto, ordenado por data; o rotulo traz a propria base
+    ("2025" x "2T/2026"). Cada ponto e' calculado so' com o seu documento (sem
+    somar bases). Indice = posicao (0..n-1) porque o mesmo mes pode ter 2 bases."""
+    import selecao_periodos
+    partes_dre, partes_ind, rotulos = [], [], []
+    for base in sorted({b for _p, b in pares_sel}, key=_pr):
+        ps = sorted(p for p, b in pares_sel if b == base)
+        lb = [r for r in _lancs_bp_todos if r["periodo"] in ps and (r.get("granularidade") or "") == base]
+        ld = [r for r in _lancs_dre_todos if r["periodo"] in ps and (r.get("granularidade") or "") == base]
+        s_dre = visao_grupo.montar_serie_kpis_grupo(ld, cods_selecionados, visao_grupo.CONTAS_KPI_DRE, ps, granularidade=base)
+        s_ind = visao_grupo.montar_indicadores_grupo(lb, ld, cods_selecionados, ps, base)
+        for p in ps:
+            ts = pd.Timestamp(p)
+            partes_dre.append((ts, _pr(base), s_dre.loc[[ts]] if ts in s_dre.index else None))
+            partes_ind.append((ts, _pr(base), s_ind.loc[[ts]] if ts in s_ind.index else None))
+            rotulos.append((ts, _pr(base), selecao_periodos.rotulo_coluna_padrao(p, base)))
+    ordem = sorted(range(len(rotulos)), key=lambda i: (rotulos[i][0], rotulos[i][1]))
+    linhas_dre = [partes_dre[i][2] for i in ordem if partes_dre[i][2] is not None]
+    linhas_ind = [partes_ind[i][2] for i in ordem if partes_ind[i][2] is not None]
+    rot = [rotulos[i][2] for i in ordem if partes_dre[i][2] is not None]
+    if not linhas_dre:
+        return serie_dre, ind_grupo, None
+    t_dre = pd.concat(linhas_dre).reset_index(drop=True)
+    t_ind = pd.concat(linhas_ind).reset_index(drop=True)
+    return t_dre, t_ind, rot
+
+
+_bases_na_selecao = {b for _p, b in pares_sel}
+if len(_bases_na_selecao) > 1:
+    tl_dre, tl_ind, tl_rotulos = _montar_linha_do_tempo()
+else:  # 1 base so': comportamento anterior (rotulos derivados da base)
+    tl_dre, tl_ind, tl_rotulos = serie_dre, ind_grupo, None
 resumo_empresas = visao_grupo.montar_resumo_por_empresa(
     lancs_bp_multi, lancs_dre_multi, cods_selecionados, periodo_detalhe, base_sel,
 )
@@ -321,14 +390,18 @@ with tab_geral:
     gg1, gg2 = st.columns([3, 2])
     with gg1:
         st.markdown("**Receita, EBITDA e resultado por período**")
-        st.plotly_chart(graficos.fig_resultado_por_periodo(serie_dre, ind_grupo, base_sel, DARK),
+        st.plotly_chart(graficos.fig_resultado_por_periodo(tl_dre, tl_ind, base_sel, DARK, rotulos=tl_rotulos),
                         width="stretch", config={"displayModeBar": False})
     with gg2:
         st.markdown("**Margens (%)**")
-        st.plotly_chart(graficos.fig_margens(ind_grupo, base_sel, DARK),
+        st.plotly_chart(graficos.fig_margens(tl_ind, base_sel, DARK, rotulos=tl_rotulos),
                         width="stretch", config={"displayModeBar": False})
-    if len(periodos_sel) < 2:
+    if len(pares_sel) < 2:
         st.caption("Com 2+ períodos selecionados os gráficos mostram a evolução; com 1 só, o valor do período.")
+    elif len(_bases_na_selecao) > 1:
+        st.caption("Evolução com bases misturadas: cada ponto vem do seu próprio documento (rótulo mostra a base, "
+                   "ex.: 2025 anual × 2T/2026 trimestral). Valores de bases diferentes não são somados nem comparados "
+                   "como variação — acumulado de 12 meses e de 3 meses não são diretamente comparáveis.")
     st.markdown("**Rentabilidade**")
     r2 = st.columns(3)
     _metric(r2[0], serie_dre, "LUCRO BRUTO", "Lucro Bruto", periodo_detalhe, periodo_anterior)
@@ -378,14 +451,14 @@ with tab_estrutura:
     sp1, sp2, sp3 = st.columns(3)
     with sp1:
         st.markdown("**Capital de giro**")
-        st.plotly_chart(graficos.fig_capital_giro(ind_grupo, base_sel, DARK), width="stretch", config={"displayModeBar": False})
+        st.plotly_chart(graficos.fig_capital_giro(tl_ind, base_sel, DARK, rotulos=tl_rotulos), width="stretch", config={"displayModeBar": False})
     with sp2:
         st.markdown("**Liquidez corrente**")
-        st.plotly_chart(graficos.fig_linha_unica(ind_grupo["Liquidez Corrente"], "Liquidez corrente", base_sel, DARK, "x", 1.0),
+        st.plotly_chart(graficos.fig_linha_unica(tl_ind["Liquidez Corrente"], "Liquidez corrente", base_sel, DARK, "x", 1.0, rotulos=tl_rotulos),
                         width="stretch", config={"displayModeBar": False})
     with sp3:
         st.markdown("**Endividamento geral**")
-        st.plotly_chart(graficos.fig_linha_unica(ind_grupo["Endividamento Geral"], "Endividamento geral", base_sel, DARK, "pct"),
+        st.plotly_chart(graficos.fig_linha_unica(tl_ind["Endividamento Geral"], "Endividamento geral", base_sel, DARK, "pct", rotulos=tl_rotulos),
                         width="stretch", config={"displayModeBar": False})
     st.caption("Liquidez abaixo de 1,0x = ativo circulante menor que o passivo circulante. Endividamento: passivo exigível / ativo.")
 

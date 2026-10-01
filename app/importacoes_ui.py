@@ -119,6 +119,28 @@ def agrupar_historico_importacoes(
     return [eventos_por_chave[c] for c in ordem_chaves]
 
 
+def inferir_granularidade_nome(nome_arquivo: str) -> str:
+    """Granularidade pelo NOME do arquivo ("Energia - Balanço Patrimonial - 1º
+    Semestre 2026 (1).pdf" -> semestral). O BP nao declara intervalo no PDF, mas
+    quase sempre o nome diz de que fechamento ele e'. Devolve '' quando o nome
+    nao diz (ou diz coisas conflitantes) -- nunca adivinha."""
+    import re
+    import unicodedata
+    t = unicodedata.normalize("NFKD", str(nome_arquivo or "")).encode("ascii", "ignore").decode().lower()
+    achados = set()
+    if re.search(r"\bsemestr", t):
+        achados.add("semestral")
+    if re.search(r"\btrimestr", t):
+        achados.add("trimestral")
+    if re.search(r"\bbimestr", t):
+        achados.add("bimestral")
+    if re.search(r"\bmensal\b|\bmes de\b", t):
+        achados.add("mensal")
+    if re.search(r"\banual\b|\bexercicio\b", t):
+        achados.add("anual")
+    return next(iter(achados)) if len(achados) == 1 else ""
+
+
 def assinatura_item(r: dict) -> str:
     """Assinatura estavel de 1 PDF da previa (arquivo + periodo + tipo +
     granularidade DETECTADA + tamanho). Usada como sufixo das keys dos

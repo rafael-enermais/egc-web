@@ -34,6 +34,7 @@ escrever este código (não suposição):
 """
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import date
 from typing import Optional
@@ -365,9 +366,20 @@ def _classificar_nota(row, bills: pd.DataFrame) -> dict:
 # reverso so' funciona pra empresa que ja' teve pelo menos 1 nota
 # encontrada no Sienge alguma vez -- nao afeta o restante do fluxo.
 
-def _mapear_debtor_para_empresa(conn) -> dict:
-    """Devolve {debtor_id: empresa_codigo} só para debtor_id que bateu
-    SEMPRE com a mesma empresa em todo o histórico de matches LANCADA."""
+STATUS_LANCADA_OUTRA_EMPRESA = "LANCADA_OUTRA_EMPRESA"
+
+
+def _mapear_debtor_para_empresa(conn, excluir_import_id: Optional[str] = None) -> dict:
+    """Devolve {debtor_id: empresa_codigo}.
+
+    Duas fontes (a manual vence):
+      1) APRENDIDA -- debtor_id que bateu SEMPRE com a mesma empresa em todo
+         o historico de matches LANCADA (sem contar `excluir_import_id`, pra
+         a rodada que esta' sendo recalculada nao se auto-confirmar);
+      2) MANUAL -- egc.nf_debtor_empresa, confirmada pela contadora na tela
+         ("o app segue o que o Sienge dita": o debtor do titulo diz a
+         qual empresa ele foi lancado).
+    """
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -376,14 +388,81 @@ def _mapear_debtor_para_empresa(conn) -> dict:
             JOIN egc.nf_manifesto_import m ON m.id = c.manifesto_id
             JOIN egc.nf_bills_sync b ON b.bill_id = c.sienge_bill_id
             WHERE c.status = 'LANCADA' AND b.debtor_id IS NOT NULL
+              AND (%s::uuid IS NULL OR c.import_id <> %s::uuid)
             GROUP BY b.debtor_id, m.empresa_codigo
-            """
+            """,
+            (excluir_import_id, excluir_import_id),
         )
         linhas = cur.fetchall()
     por_debtor: dict = {}
     for debtor_id, empresa_codigo, _n in linhas:
         por_debtor.setdefault(debtor_id, set()).add(empresa_codigo)
-    return {debtor_id: next(iter(empresas)) for debtor_id, empresas in por_debtor.items() if len(empresas) == 1}
+    mapa = {debtor_id: next(iter(empresas)) for debtor_id, empresas in por_debtor.items() if len(empresas) == 1}
+    mapa.update(carregar_mapa_debtor_manual(conn))
+    return mapa
+
+
+def carregar_mapa_debtor_manual(conn) -> dict:
+    """{debtor_id: empresa_codigo} confirmado manualmente (bloco 19 do schema).
+    Tabela ainda inexistente -> {} (comportamento anterior)."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT debtor_id, empresa_codigo FROM egc.nf_debtor_empresa")
+            return {int(d): e for d, e in cur.fetchall()}
+    except psycopg2.errors.UndefinedTable:
+        return {}
+
+
+def listar_debtors_sienge(conn) -> pd.DataFrame:
+    """Um debtor_id por linha, com quantos titulos NFE/NF ele tem, a empresa
+    que o historico sugere (aprendida) e a confirmada manualmente."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT debtor_id, COUNT(*) AS titulos FROM egc.nf_bills_sync
+               WHERE debtor_id IS NOT NULL AND UPPER(TRIM(document_identification_id)) IN ('NFE','NF')
+               GROUP BY debtor_id ORDER BY COUNT(*) DESC"""
+        )
+        df = pd.DataFrame(cur.fetchall(), columns=["debtor_id", "titulos"])
+    manual = carregar_mapa_debtor_manual(conn)
+    aprendido = _mapear_debtor_para_empresa(conn)
+    aprendido = {d: e for d, e in aprendido.items() if d not in manual}
+    df["empresa_aprendida"] = df["debtor_id"].map(lambda d: aprendido.get(int(d)))
+    df["empresa_confirmada"] = df["debtor_id"].map(lambda d: manual.get(int(d)))
+    return df
+
+
+def salvar_mapa_debtor(conn, debtor_id: int, empresa_codigo: Optional[str], usuario: str) -> None:
+    """Confirma (ou, com empresa_codigo=None, remove a confirmacao de) o de-para."""
+    with conn.cursor() as cur:
+        if empresa_codigo is None:
+            cur.execute("DELETE FROM egc.nf_debtor_empresa WHERE debtor_id = %s", (int(debtor_id),))
+        else:
+            cur.execute(
+                """INSERT INTO egc.nf_debtor_empresa (debtor_id, empresa_codigo, atualizado_por, atualizado_em)
+                   VALUES (%s, %s, %s, now())
+                   ON CONFLICT (debtor_id) DO UPDATE SET empresa_codigo = EXCLUDED.empresa_codigo,
+                       atualizado_por = EXCLUDED.atualizado_por, atualizado_em = now()""",
+                (int(debtor_id), empresa_codigo, usuario),
+            )
+
+
+def checar_empresa_do_lancamento(resultado: dict, empresa_manifesto: str, debtor_id, mapa_debtor: dict) -> dict:
+    """Verificacao "foi lancado na empresa errada?": o titulo casou com a nota
+    do manifesto de `empresa_manifesto` (a Receita diz que a nota e' dela),
+    mas o debtor do titulo no Sienge pertence a OUTRA empresa. Funcao pura.
+    So' age em LANCADA; debtor desconhecido/ambiguo nao gera alarme."""
+    if resultado.get("status") != "LANCADA" or debtor_id is None or pd.isna(debtor_id):
+        return resultado
+    empresa_sienge = mapa_debtor.get(int(debtor_id))
+    if not empresa_sienge or empresa_sienge == empresa_manifesto:
+        return resultado
+    novo = dict(resultado)
+    novo["status"] = STATUS_LANCADA_OUTRA_EMPRESA
+    novo["observacao"] = (
+        f"Nota do manifesto de {empresa_manifesto}, mas o título {resultado.get('sienge_bill_id')} está lançado no "
+        f"Sienge na empresa {empresa_sienge} (devedor {int(debtor_id)}) — possível lançamento na empresa errada."
+    )
+    return novo
 
 
 def _filtrar_bills_orfaos(bills: pd.DataFrame, mapa_debtor: dict, empresa_codigo: str,
@@ -518,9 +597,14 @@ def conciliar_import(conn, import_id: str) -> dict:
         cols = [d[0] for d in cur.description]
         manifesto = pd.DataFrame(cur.fetchall(), columns=cols)
 
-    resumo = {"total": len(manifesto), "lancadas": 0, "pendencias": 0, "orfaos_sienge": 0}
+    resumo = {"total": len(manifesto), "lancadas": 0, "pendencias": 0, "orfaos_sienge": 0, "outra_empresa": 0}
     if manifesto.empty:
         return resumo
+    # de-para debtor -> empresa (sem contar esta propria rodada) e debtor de cada titulo
+    mapa_debtor = _mapear_debtor_para_empresa(conn, import_id)
+    debtor_por_bill = {}
+    if not bills.empty and "debtor_id" in bills.columns:
+        debtor_por_bill = {int(b): d for b, d in zip(bills["bill_id"], bills["debtor_id"])}
 
     with conn.cursor() as cur:
         # Preserva status de acompanhamento manual (pendencia_status) já
@@ -536,6 +620,12 @@ def conciliar_import(conn, import_id: str) -> dict:
 
         for _, row in manifesto.iterrows():
             resultado = _classificar_nota(row, bills)
+            if resultado.get("sienge_bill_id") is not None:
+                resultado = checar_empresa_do_lancamento(
+                    resultado, row["_empresa_codigo"], debtor_por_bill.get(int(resultado["sienge_bill_id"])), mapa_debtor,
+                )
+            if resultado["status"] == STATUS_LANCADA_OUTRA_EMPRESA:
+                resumo["outra_empresa"] += 1
             if resultado["status"] == "LANCADA":
                 resumo["lancadas"] += 1
                 pendencia_status = None
@@ -543,16 +633,24 @@ def conciliar_import(conn, import_id: str) -> dict:
                 resumo["pendencias"] += 1
                 pendencia_status = status_preservados.get(row["id"], "PENDENTE")
 
-            cur.execute(
-                """
+            sql_ins = """
                 INSERT INTO egc.nf_conciliacao
                     (import_id, manifesto_id, status, sienge_bill_id, sienge_valor,
                      confianca, observacao, pendencia_status, atualizado_em)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
-                """,
-                (import_id, row["id"], resultado["status"], resultado["sienge_bill_id"],
-                 resultado["sienge_valor"], resultado["confianca"], resultado["observacao"], pendencia_status),
-            )
+                """
+            params = (import_id, row["id"], resultado["status"], resultado["sienge_bill_id"],
+                      resultado["sienge_valor"], resultado["confianca"], resultado["observacao"], pendencia_status)
+            try:
+                cur.execute(sql_ins, params)
+            except psycopg2.errors.CheckViolation:
+                # CHECK de status ainda sem LANCADA_OUTRA_EMPRESA (bloco 19 do
+                # schema nao rodado): grava como LANCADA mantendo o alerta na
+                # observacao -- nunca perde a nota nem quebra a conferencia.
+                resumo["outra_empresa"] -= 1
+                resumo["lancadas"] += 1
+                resumo["pendencias"] -= 1
+                cur.execute(sql_ins, params[:2] + ("LANCADA",) + params[3:7] + (None,))
 
     # FIX_20260928f -- direção reversa (Sienge sem nota no manifesto),
     # roda depois do matching normal (usa o resultado dele: bill já
@@ -638,6 +736,22 @@ _COLUNAS_ORFAOS_SIENGE = [
 ]
 
 
+def _observacao_orfao(r) -> str:
+    base = "Título lançado no Sienge sem nota correspondente no manifesto desta rodada."
+    emp = r.get("mx_empresa")
+    if emp is None or (not isinstance(emp, str)):
+        return base
+    valor = r.get("mx_valor")
+    txt_valor = f", valor R$ {float(valor):,.2f}" if valor is not None and not pd.isna(valor) else ""
+    cfop = r.get("mx_cfop")
+    txt_cfop = f", CFOP {cfop}" if cfop and not pd.isna(cfop) else ""
+    if emp != r.get("empresa_orfao"):
+        return (f"A mesma nota (CNPJ + nº) consta no manifesto de {emp} ({r.get('mx_periodo')}){txt_cfop}{txt_valor} "
+                f"— possível lançamento na empresa errada no Sienge.")
+    return (f"A mesma nota (CNPJ + nº) consta em outro manifesto de {emp} ({r.get('mx_periodo')}){txt_cfop}{txt_valor} "
+            f"— confira período/valor.")
+
+
 def listar_orfaos_sienge(conn, import_id: str) -> pd.DataFrame:
     """
     FIX_20260928f -- órfãos (bloco 14) desta rodada, no MESMO formato de
@@ -652,10 +766,20 @@ def listar_orfaos_sienge(conn, import_id: str) -> pd.DataFrame:
             """
             SELECT o.id AS registro_id, o.bill_id, o.document_number, o.issue_date,
                    o.total_invoice_amount, o.creditor_nome, o.creditor_cnpj,
-                   o.pendencia_status, o.atualizado_em,
-                   NULLIF(TRIM(CONCAT_WS(' ', TRIM(b.document_identification_id), o.document_number)), '') AS sienge_documento
+                   o.pendencia_status, o.atualizado_em, o.empresa_codigo AS empresa_orfao,
+                   NULLIF(TRIM(CONCAT_WS(' ', TRIM(b.document_identification_id), o.document_number)), '') AS sienge_documento,
+                   mx.cfop AS mx_cfop, mx.valor AS mx_valor, mx.emp AS mx_empresa, mx.per AS mx_periodo
             FROM egc.nf_bills_orfaos o
             LEFT JOIN egc.nf_bills_sync b ON b.bill_id = o.bill_id
+            LEFT JOIN LATERAL (
+                SELECT mm.cfop, mm.valor, mm.empresa_codigo AS emp, mm.periodo_referencia AS per
+                FROM egc.nf_manifesto_import mm
+                WHERE mm.cnpj_normalizado = regexp_replace(COALESCE(o.creditor_cnpj, ''), '\\D', '', 'g')
+                  AND mm.numero_normalizado = COALESCE(
+                        NULLIF(ltrim(regexp_replace(COALESCE(o.document_number, ''), '\\D', '', 'g'), '0'), ''), '0')
+                ORDER BY (mm.import_id = o.import_id) DESC, (mm.empresa_codigo = o.empresa_codigo) DESC, mm.criado_em DESC
+                LIMIT 1
+            ) mx ON true
             WHERE o.import_id = %s
             """,
             (import_id,),
@@ -665,16 +789,20 @@ def listar_orfaos_sienge(conn, import_id: str) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=_COLUNAS_ORFAOS_SIENGE)
     df["numero_nota"] = df["document_number"].apply(lambda n: f"[Sienge] nº {n}" if n else "[Sienge] (sem nº)")
-    df["cfop"] = None
+    # CFOP/valor "do manifesto": o orfao nao casou com nenhuma nota da rodada,
+    # mas a MESMA nota (CNPJ do fornecedor + numero) pode constar em outro
+    # manifesto ja' enviado (outra empresa/periodo) -- e' o que a contadora
+    # precisa pra cruzar (e indica lancamento na empresa errada).
+    df["cfop"] = df["mx_cfop"]
     df["data_emissao"] = df["issue_date"]
-    df["valor"] = None  # nao existe valor do lado do manifesto -- e' exatamente isso que falta
+    df["valor"] = df["mx_valor"]
     df["fornecedor_nome"] = df["creditor_nome"]
     df["fornecedor_cnpj"] = df["creditor_cnpj"]
     df["status"] = "SIENGE_SEM_MANIFESTO"
     df["confianca"] = None
     df["sienge_bill_id"] = df["bill_id"]
     df["sienge_valor"] = df["total_invoice_amount"]
-    df["observacao"] = "Título lançado no Sienge sem nota correspondente no manifesto da Receita."
+    df["observacao"] = df.apply(_observacao_orfao, axis=1)
     df["origem"] = "SIENGE_ORFAO"
     return df[_COLUNAS_ORFAOS_SIENGE]
 
@@ -708,7 +836,8 @@ def listar_pendencias_abertas(conn, empresa_codigo: Optional[str] = None, limite
             )
             SELECT m.empresa_codigo, m.periodo_referencia, m.numero_nota, m.cfop, m.data_emissao,
                    m.valor, m.fornecedor_nome, m.fornecedor_cnpj, c.status, c.observacao,
-                   c.pendencia_status, c.atualizado_em
+                   c.pendencia_status, c.atualizado_em, c.manifesto_id AS registro_id,
+                   'MANIFESTO' AS origem
             FROM egc.nf_conciliacao c
             JOIN egc.nf_manifesto_import m ON m.id = c.manifesto_id
             JOIN ultimo_import ui ON ui.import_id = m.import_id
@@ -758,11 +887,21 @@ def listar_orfaos_abertos(conn, empresa_codigo: Optional[str] = None, limite: in
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT o.empresa_codigo, m.periodo_referencia, o.document_number, o.issue_date,
+            SELECT o.empresa_codigo, h.periodo_referencia, o.document_number, o.issue_date,
                    o.total_invoice_amount, o.creditor_nome, o.creditor_cnpj,
-                   o.pendencia_status, o.atualizado_em
+                   o.pendencia_status, o.atualizado_em, o.id AS registro_id,
+                   mx.cfop AS mx_cfop, mx.valor AS mx_valor, mx.emp AS mx_empresa, mx.per AS mx_periodo
             FROM egc.nf_bills_orfaos o
-            JOIN egc.nf_manifesto_import m ON m.import_id = o.import_id
+            LEFT JOIN egc.nf_import_historico h ON h.import_id = o.import_id
+            LEFT JOIN LATERAL (
+                SELECT mm.cfop, mm.valor, mm.empresa_codigo AS emp, mm.periodo_referencia AS per
+                FROM egc.nf_manifesto_import mm
+                WHERE mm.cnpj_normalizado = regexp_replace(COALESCE(o.creditor_cnpj, ''), '\\D', '', 'g')
+                  AND mm.numero_normalizado = COALESCE(
+                        NULLIF(ltrim(regexp_replace(COALESCE(o.document_number, ''), '\\D', '', 'g'), '0'), ''), '0')
+                ORDER BY (mm.import_id = o.import_id) DESC, (mm.empresa_codigo = o.empresa_codigo) DESC, mm.criado_em DESC
+                LIMIT 1
+            ) mx ON true
             WHERE (o.pendencia_status IS NULL OR o.pendencia_status IN ('PENDENTE','ENVIADO_SUPRIMENTOS'))
               AND (%s IS NULL OR o.empresa_codigo = %s)
             ORDER BY o.issue_date DESC
@@ -774,11 +913,91 @@ def listar_orfaos_abertos(conn, empresa_codigo: Optional[str] = None, limite: in
         df = pd.DataFrame(cur.fetchall(), columns=cols)
     if df.empty:
         return df
-    df["cfop"] = None  # titulo orfao nao tem CFOP (so' existe no manifesto)
+    df["empresa_orfao"] = df["empresa_codigo"]
+    df["cfop"] = df["mx_cfop"]  # CFOP da mesma nota em algum manifesto ja' enviado (se houver)
+    df["observacao"] = df.apply(_observacao_orfao, axis=1)
+    df = df.drop(columns=["mx_cfop", "mx_valor", "mx_empresa", "mx_periodo", "empresa_orfao"])
     df = df.rename(columns={
         "document_number": "numero_nota", "issue_date": "data_emissao",
         "total_invoice_amount": "valor", "creditor_nome": "fornecedor_nome", "creditor_cnpj": "fornecedor_cnpj",
     })
     df["status"] = "SIENGE_SEM_MANIFESTO"
-    df["observacao"] = "Título lançado no Sienge sem nota correspondente no manifesto da Receita."
+    df["origem"] = "SIENGE_ORFAO"
     return df
+
+
+def buscar_notas(conn, numero: Optional[str] = None, fornecedor: Optional[str] = None,
+                 cnpj: Optional[str] = None, empresa_codigo: Optional[str] = None, limite: int = 20) -> list[dict]:
+    """Busca nota(s) fiscal(is) do manifesto com o resultado da conferencia
+    (qualquer rodada, a mais recente primeiro). Filtros opcionais e combinaveis:
+    numero (sem zeros a esquerda), trecho do nome do fornecedor, CNPJ. Usada pelo
+    chat ("a nota 1234 do fornecedor X foi lancada?")."""
+    filtros, params = [], []
+    if numero:
+        n = re.sub(r"\D", "", str(numero)).lstrip("0") or "0"
+        filtros.append("m.numero_normalizado = %s")
+        params.append(n)
+    if cnpj:
+        filtros.append("m.cnpj_normalizado = %s")
+        params.append(re.sub(r"\D", "", str(cnpj)))
+    trecho = str(fornecedor or "").strip()[:60].replace("%", "").replace("_", " ").strip()
+    if trecho:  # curinga puro ("%") nao pode virar "todas as notas"
+        filtros.append("m.fornecedor_nome ILIKE %s")
+        params.append("%" + trecho + "%")
+    if empresa_codigo:
+        filtros.append("m.empresa_codigo = %s")
+        params.append(empresa_codigo)
+    if not filtros:
+        return []
+    where = " AND ".join(filtros)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT m.empresa_codigo, m.periodo_referencia, m.numero_nota, m.cfop, m.data_emissao, m.valor,
+                   m.fornecedor_nome, m.fornecedor_cnpj, c.status, c.observacao, c.pendencia_status,
+                   c.sienge_bill_id, c.sienge_valor, c.manifesto_id AS registro_id
+            FROM egc.nf_manifesto_import m
+            LEFT JOIN egc.nf_conciliacao c ON c.manifesto_id = m.id
+            WHERE {where}
+            ORDER BY m.criado_em DESC, m.data_emissao DESC
+            LIMIT %s
+            """,
+            tuple(params) + (max(1, min(int(limite), 50)),),
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+STATUS_PENDENCIA_VALIDOS = ("PENDENTE", "ENVIADO_SUPRIMENTOS", "RESOLVIDO", "DESCARTADO")
+
+
+def obter_registro_pendencia(conn, origem: str, registro_id: int) -> Optional[dict]:
+    """Dados de UMA pendencia (nota do manifesto ou titulo orfao do Sienge) pra
+    mostrar na tela de aprovacao do chat antes de qualquer gravacao. None se nao existe."""
+    with conn.cursor() as cur:
+        if origem == "SIENGE_ORFAO":
+            cur.execute(
+                """
+                SELECT o.empresa_codigo, o.document_number, o.creditor_nome, o.total_invoice_amount,
+                       o.pendencia_status
+                FROM egc.nf_bills_orfaos o WHERE o.id = %s
+                """,
+                (registro_id,),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT m.empresa_codigo, m.numero_nota, m.fornecedor_nome, m.valor, c.pendencia_status
+                FROM egc.nf_manifesto_import m
+                JOIN egc.nf_conciliacao c ON c.manifesto_id = m.id
+                WHERE m.id = %s
+                ORDER BY c.atualizado_em DESC NULLS LAST
+                LIMIT 1
+                """,
+                (registro_id,),
+            )
+        row = cur.fetchone()
+    if not row:
+        return None
+    return {"empresa_codigo": row[0], "numero_nota": row[1], "fornecedor": row[2],
+            "valor": float(row[3]) if row[3] is not None else None, "pendencia_status": row[4] or "PENDENTE"}

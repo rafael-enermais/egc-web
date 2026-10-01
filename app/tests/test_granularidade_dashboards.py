@@ -204,7 +204,8 @@ def test_visao_grupo_base_trimestral_kpis_do_trimestral():
         at = AppTest.from_file(PAGE_GRUPO)
         at.run(timeout=60)
         assert not at.exception, at.exception
-        assert at.selectbox(key="grupo_base_sel").value == "trimestral"
+        # 01/10/2026: base e periodo viraram UM seletor (periodo+base); o foco inicial e' a base padrao
+        assert at.selectbox(key="grupo_periodo_detalhe_sel").value[1] == "trimestral"
         receita = next(m for m in at.metric if m.label == "Receita Líquida")
         assert receita.value == formatacao.moeda_br(23874026.45)   # grupo trimestral, 06/2026
 
