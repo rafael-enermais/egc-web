@@ -122,12 +122,23 @@ def test_consultar_bp_dre_ambiguo_pede_granularidade_sem_adivinhar():
 
 def test_consultar_bp_dre_ambiguo_resolvido_com_granularidade():
     with patch.object(db, "listar_periodos_detalhado", return_value=_det((_p(2026, 6), "trimestral"), (_p(2026, 6), "semestral"))), \
-         patch.object(db, "listar_lancamentos", return_value=[]) as m_lanc:
+         patch.object(db, "listar_lancamentos", return_value=[{"grupo": "ATIVO", "conta": "TOTAL DO ATIVO", "valor": Decimal("1.00")}]) as m_lanc:
         r = cc.consultar_bp_dre(conn=None, empresa_codigo="SMG", tipo="BP", periodo_texto="2026-06", granularidade="semestral")
         checar("ambiguo" not in r, "consultar_bp_dre -- com granularidade certa, resolve sem ambiguidade")
         checar(r["granularidade"] == "semestral", "consultar_bp_dre -- ecoa a granularidade resolvida")
         checar(m_lanc.call_args.kwargs.get("granularidade") == "semestral",
                "consultar_bp_dre -- passa a granularidade resolvida pro db.listar_lancamentos")
+
+
+def test_consultar_bp_dre_tipo_sem_lancamento_no_periodo_devolve_erro_claro():
+    # v0.44.2: periodo existe (so' DRE importado) mas BP nao -- antes devolvia
+    # "0 contas" como sucesso e a Consulta rapida do Erik.AI quebrava (KeyError 'valor').
+    with patch.object(db, "listar_periodos_detalhado", return_value=_det((_p(2025, 12), "anual"))), \
+         patch.object(db, "listar_lancamentos", return_value=[]):
+        r = cc.consultar_bp_dre(conn=None, empresa_codigo="CONST", tipo="BP")
+        checar("erro" in r and "BP" in r["erro"], "consultar_bp_dre -- tipo sem lancamento no periodo vira erro claro")
+        checar(r["periodos_disponiveis"] == ["2025-12"], "consultar_bp_dre -- lista periodos disponiveis no erro")
+        checar("contas" not in r, "consultar_bp_dre -- sem 'contas' vazio disfarçado de sucesso")
 
 
 def test_consultar_visao_grupo_macro():

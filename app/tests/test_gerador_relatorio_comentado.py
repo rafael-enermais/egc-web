@@ -14,8 +14,6 @@ cobria o caso "prejuizo".
 Rodar: python3 tests/test_gerador_relatorio_comentado.py
 """
 import sys
-import tempfile
-import os
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -42,15 +40,6 @@ DADOS_PREJUIZO = dict(
     complemento_despesas="96,0% administrativas",
     callout_estrutura_capital="Estrutura de capital: liquidez corrente de 0,99.",
 )
-
-
-def test_gerar_pdf_piloto_nao_quebra_e_gera_arquivo_nao_vazio():
-    with tempfile.TemporaryDirectory() as tmp:
-        caminho = os.path.join(tmp, "piloto.pdf")
-        g.gerar_pdf_piloto(DADOS_PREJUIZO, caminho)
-        assert os.path.exists(caminho)
-        assert os.path.getsize(caminho) > 1000
-    print("OK: gerar_pdf_piloto gera arquivo PDF não vazio, sem exceção")
 
 
 import re

@@ -46,7 +46,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from auth import usuario_atual  # noqa: E402
-from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS, empresa_por_cnpj  # noqa: E402
+from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS, empresa_por_cnpj, flash, mostrar_flash  # noqa: E402
 import db  # noqa: E402
 from parser_egc import processar_pdf, extrair_despesas_admin_itens  # noqa: E402
 from validacoes import checar_fechamento_bp, formatar_br  # noqa: E402
@@ -83,6 +83,7 @@ st.title("📥 Importar PDF")
 
 usuario = usuario_atual()
 sidebar_contexto(usuario)  # so' pro layout/rodape -- nao usa o retorno aqui
+mostrar_flash()
 
 st.caption(
     "A empresa de cada PDF é identificada automaticamente pelo CNPJ (confirme na prévia "
@@ -650,7 +651,9 @@ if resultados:
                 msg_final = f"{grupo['nome']}: {total_gravado} lançamento(s) gravado(s)."
                 if pulados:
                     msg_final += f" {len(pulados)} arquivo(s) pulado(s): {', '.join(pulados)}."
-                st.success(msg_final)
+                # v0.44.2: flash -- st.success + st.rerun() perdia a confirmacao (e o
+                # aviso de arquivos pulados) antes de a contadora ler.
+                flash("warn" if pulados else "ok", msg_final)
                 st.rerun()
 
 st.divider()

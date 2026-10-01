@@ -31,7 +31,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from auth import usuario_atual  # noqa: E402
-from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS  # noqa: E402
+from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS, flash, mostrar_flash  # noqa: E402
 import db  # noqa: E402
 import nf_parser  # noqa: E402
 import nf_sienge  # noqa: E402
@@ -45,6 +45,7 @@ sidebar_contexto(usuario)
 
 st.title("Notas Fiscais × Sienge")
 st.caption("Concilia o manifesto de NF-e (planilha da Receita Federal) contra o Contas a Pagar do Sienge.")
+mostrar_flash()
 
 conn = get_conn()
 
@@ -379,7 +380,7 @@ else:
                         nf_sienge.atualizar_status_orfao_sienge(conn, int(linha["registro_id"]), novo_status, usuario)
                     else:
                         nf_sienge.atualizar_status_pendencia(conn, int(linha["registro_id"]), novo_status, usuario)
-                    st.success(f"Nota {nota_sel} marcada como {novo_status}.")
+                    flash("ok", f"Nota {nota_sel} marcada como {novo_status}.")
                     _log_info(f"Pendência nota {nota_sel} -> {novo_status}", cod_empresa)
                     st.rerun()
 

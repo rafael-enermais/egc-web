@@ -59,7 +59,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from auth import usuario_atual  # noqa: E402
-from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS  # noqa: E402
+from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS, flash, mostrar_flash  # noqa: E402
 import db  # noqa: E402
 from validacoes import montar_detalhe_correcoes  # noqa: E402
 import formatacao  # noqa: E402
@@ -71,6 +71,7 @@ st.title("✏️ Revisão / Correção manual")
 usuario = usuario_atual()
 sidebar_contexto(usuario)  # so' rodape -- ver nota em conexao.sidebar_contexto
 conn = get_conn()
+mostrar_flash()
 
 st.caption(
     "Selecione 1 ou mais empresas e 1 ou mais períodos pra revisar/corrigir junto — não "
@@ -301,10 +302,10 @@ if st.button("💾 Salvar correções", type="primary"):
             )
     if alterados:
         st.session_state["revisao_editor_versao"] = st.session_state.get("revisao_editor_versao", 0) + 1
-        st.success(f"{alterados} conta(s) corrigida(s) e gravada(s).")
+        flash("ok", f"{alterados} conta(s) corrigida(s) e gravada(s).")
     if erros:
-        st.error(f"{len(erros)} conta(s) NÃO foram salvas (erro no banco) — ver detalhe no log de eventos: "
-                 + "; ".join(f"{c}: {e}" for c, e in erros))
+        flash("erro", f"{len(erros)} conta(s) NÃO foram salvas (erro no banco) — ver detalhe no log de eventos: "
+              + "; ".join(f"{c}: {e}" for c, e in erros))
     if alterados or erros:
         st.rerun()
     elif not erros:
@@ -322,7 +323,7 @@ if adicionar:
             )
             _log_seguro("INFO", f"Conta ausente adicionada: '{nova_conta.strip()}' ({tipo_add})",
                         empresa_codigo=cod_add, periodo=periodo_add)
-            st.success(f"Conta '{nova_conta}' adicionada em {NOME_POR_COD.get(cod_add, cod_add)} — {tipo_add}.")
+            flash("ok", f"Conta '{nova_conta}' adicionada em {NOME_POR_COD.get(cod_add, cod_add)} — {tipo_add}.")
             st.rerun()
         except Exception as exc:
             _log_seguro("ERRO", f"Falha ao adicionar conta ausente '{nova_conta.strip()}'",

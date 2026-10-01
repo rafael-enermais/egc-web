@@ -17,7 +17,7 @@ import psycopg2
 # (mesma regra de sempre, so' que agora com 1 casa a mais de folga antes
 # do "1.0" oficial). Reiniciado em 0.1.0 nesta mudanca (era "0.7"/"0.8"/
 # "0.9" de 1 casa so').
-APP_VERSION = "0.44.1"
+APP_VERSION = "0.44.2"
 
 EMPRESAS_FIXAS = [
     ("ENERGIA", "Enermais Energia Ltda", "47.040.664/0001-48"),
@@ -81,6 +81,21 @@ def get_conn():
 
     conn.autocommit = True
     return conn
+
+
+def flash(nivel: str, texto: str) -> None:
+    """Mensagem que SOBREVIVE ao st.rerun() (v0.44.2). `st.success(...)` seguido de
+    `st.rerun()` na mesma execucao some antes de ser lida (o rerun descarta o que
+    foi desenhado) -- a contadora ficava sem confirmacao de gravacao/erro. Guarda no
+    session_state e `mostrar_flash()` desenha na proxima execucao.
+    nivel: "ok" | "warn" | "erro" | "info"."""
+    st.session_state.setdefault("_flash_msgs", []).append((nivel, texto))
+
+
+def mostrar_flash() -> None:
+    """Desenha (e consome) as mensagens guardadas por flash(). Chamar logo abaixo do titulo."""
+    for nivel, texto in st.session_state.pop("_flash_msgs", []):
+        {"ok": st.success, "warn": st.warning, "erro": st.error}.get(nivel, st.info)(texto)
 
 
 def sidebar_contexto(usuario_logado: str) -> None:

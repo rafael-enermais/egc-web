@@ -518,17 +518,6 @@ def pagina_destaques(c, dados, pagina: int, total_paginas: int):
     _footer(c, pagina, total_paginas)
 
 
-def gerar_pdf_piloto(dados: dict, caminho_saida: str) -> str:
-    """Gera um PDF de 1 pagina (Destaques) -- piloto de validacao do
-    pipeline (24/09/2026). `total_paginas` fixo em 9 pra bater com o
-    rodape do modelo final (relatorio completo tera 9 paginas)."""
-    _registrar_fontes()
-    c = canvas.Canvas(caminho_saida, pagesize=(PAGE_W, PAGE_H))
-    pagina_destaques(c, dados, pagina=2, total_paginas=9)
-    c.save()
-    return caminho_saida
-
-
 # ============================================================================
 # Paginas 1, 3-9 (25/09/2026) -- montagem completa das 9 paginas do modelo,
 # apos aceite do Rafael da pagina 2 (Destaques). Mesmo principio da pagina 2:
