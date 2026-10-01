@@ -448,7 +448,7 @@ def test_tipo_gerencial_chama_pipeline_com_variante_gerencial_e_nome_de_arquivo_
         print("OK: Relatório Comentado — tipo 'Demonstrativo Comentado Gerencial' + botão único passa variante='gerencial'")
 
 
-def test_botao_padrao_continua_passando_variante_padrao_sem_regressao():
+def test_tipo_padrao_removido_da_tela_e_default_e_gerencial_01_10():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=[PERIODO]), \
@@ -461,13 +461,13 @@ def test_botao_padrao_continua_passando_variante_padrao_sem_regressao():
         botao = next(b for b in at.button if b.label == "Gerar relatório")
         botao.click().run(timeout=30)
         assert not at.exception
-        assert m_montar.call_args.kwargs.get("variante") == "padrao", (
-            f"botão padrão deveria continuar passando variante='padrao', veio {m_montar.call_args.kwargs.get('variante')!r}"
-        )
-        print("OK: Relatório Comentado — botão padrão ('Gerar relatório') continua passando variante='padrao'")
+        # 01/10/2026: "Demonstrativo Comentado" (padrao) saiu da tela -- era
+        # igual ao Fornecedor (so' mudava o selo). Default = 1o da lista.
+        assert m_montar.call_args.kwargs.get("variante") == "gerencial", m_montar.call_args.kwargs.get("variante")
+        print("OK: Relatório Comentado — padrao removido; default gera variante='gerencial'")
 
 
-def test_seletor_de_tipo_tem_4_opcoes_e_um_unico_botao_gerar():
+def test_seletor_de_tipo_tem_3_opcoes_e_um_unico_botao_gerar():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=PERIODOS_COMPARATIVO), \
@@ -476,16 +476,16 @@ def test_seletor_de_tipo_tem_4_opcoes_e_um_unico_botao_gerar():
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
         assert at.radio(key="relatorio_tipo").options == [
-            "Demonstrativo Comentado", "Demonstrativo Comentado Gerencial",
+            "Demonstrativo Comentado Gerencial",
             "Demonstrativo Comentado Fornecedor", "Comparativo / Evolução",
         ]
-        assert at.radio(key="relatorio_tipo").value == "Demonstrativo Comentado", "padrão = período único"
+        assert at.radio(key="relatorio_tipo").value == "Demonstrativo Comentado Gerencial", "default = período único"
         for tipo in at.radio(key="relatorio_tipo").options:
             at.radio(key="relatorio_tipo").set_value(tipo).run(timeout=30)
             assert not at.exception
             assert len([b for b in at.button if b.label == "Gerar relatório"]) == 1, tipo
             assert not any("Gerencial" in b.label for b in at.button), "botões antigos por variante não existem mais"
-        print("OK: Relatório Comentado — seletor de 4 tipos e um único botão 'Gerar relatório' em todos")
+        print("OK: Relatório Comentado — seletor de 3 tipos e um único botão 'Gerar relatório' em todos")
 
 
 def test_tipo_fornecedor_v040_gera_com_variante_fornecedor_sem_em_breve():

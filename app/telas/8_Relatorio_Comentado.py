@@ -243,20 +243,26 @@ st.divider()
 # os campos abaixo se adaptam (periodos multiplos so' no Comparativo).
 # v0.40.0: o tipo "Fornecedor" foi construido (mesmo conteudo do padrao,
 # capa com selo FORNECEDOR) -- sai o "(em breve)".
-TIPO_PADRAO = "Demonstrativo Comentado"
+# 01/10/2026 (Rafael: "o demonstrativo comentado e o fornecedor sao o msm?
+# ... pode apagar 1"): confirmado no codigo -- "padrao" e "fornecedor"
+# geram o MESMO conteudo (sem a pagina de despesas), so' muda titulo/selo da
+# capa. Sai a opcao "Demonstrativo Comentado" da tela (os 3 tipos que o
+# Rafael definiu: Gerencial, Fornecedor, Comparativo); a variante interna
+# "padrao" continua existindo no gerador (dados/testes antigos), so' nao e'
+# mais oferecida aqui.
 TIPO_GERENCIAL = "Demonstrativo Comentado Gerencial"
 TIPO_FORNECEDOR = "Demonstrativo Comentado Fornecedor"
 TIPO_COMPARATIVO = "Comparativo / Evolução"
-tipo_relatorio = st.radio(
-    "Tipo de relatório", [TIPO_PADRAO, TIPO_GERENCIAL, TIPO_FORNECEDOR, TIPO_COMPARATIVO],
-    key="relatorio_tipo", horizontal=True,
-)
+_TIPOS_RELATORIO = [TIPO_GERENCIAL, TIPO_FORNECEDOR, TIPO_COMPARATIVO]
+if st.session_state.get("relatorio_tipo") not in _TIPOS_RELATORIO:
+    st.session_state.pop("relatorio_tipo", None)  # valor guardado de antes da remocao do "padrao"
+tipo_relatorio = st.radio("Tipo de relatório", _TIPOS_RELATORIO, key="relatorio_tipo", horizontal=True)
 # "modo" (Periodo unico x Comparativo) continua sendo o eixo dos campos
 # abaixo; "variante" (padrao/gerencial/fornecedor) so' vale no Periodo unico.
 modo = "Comparativo" if tipo_relatorio == TIPO_COMPARATIVO else "Período único"
 variante_selecionada = {
     TIPO_GERENCIAL: "gerencial", TIPO_FORNECEDOR: "fornecedor",
-}.get(tipo_relatorio, "padrao")
+}.get(tipo_relatorio, "gerencial")
 SUFIXO_ARQUIVO_VARIANTE = {"padrao": "", "gerencial": "_GERENCIAL", "fornecedor": "_FORNECEDOR"}
 
 periodo_sel = None

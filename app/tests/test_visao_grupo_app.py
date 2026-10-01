@@ -98,19 +98,18 @@ def test_visao_grupo_completo_kpis_multi_periodo_macro_especifica_1_empresa_sem_
         at.run(timeout=30)
         assert not at.exception, f"excecao na carga default (todas empresas, todos periodos): {at.exception}"
         # default: 2 periodos selecionados -> deveria aparecer o par de graficos, nao o aviso "selecione 2+"
-        textos = " ".join(c.value for c in at.caption)
-        assert "Evolução patrimonial (BP)" in textos
-        assert "Evolução de resultado (DRE)" in textos
+        # 01/10/2026: dashboard novo -- graficos plotly (resultado por periodo + margens)
+        assert len(at.get("plotly_chart")) >= 2, "esperava os graficos do dashboard"
         # BP e DRE aparecem JUNTOS (sem radio de tipo) -- item 9
         markdowns = " ".join(m.value for m in at.markdown)
         assert "**BP**" in markdowns and "**DRE**" in markdowns
-        assert len(at.dataframe) == 2, "esperava 2 tabelas (BP + DRE) do periodo de detalhe, juntas na mesma tela"
+        assert len(at.dataframe) == 3, "esperava 3 tabelas: comparativa por empresa + BP + DRE do periodo de detalhe"
 
         # troca pra visao Especifica -- sem excecao
         at.radio(key="grupo_visao_sel").set_value("Específica (empresas abertas)")
         at.run(timeout=30)
         assert not at.exception, f"excecao na visao Especifica: {at.exception}"
-        assert len(at.dataframe) == 2
+        assert len(at.dataframe) == 3
 
         # item 9: 1 empresa so' (sem o minimo de 2 de antes) -- nao pode travar
         at.multiselect(key="grupo_empresas_sel").set_value([0])  # so' ENERGIA (indice 0 em EMPRESAS_FIXAS)
@@ -122,7 +121,7 @@ def test_visao_grupo_completo_kpis_multi_periodo_macro_especifica_1_empresa_sem_
         at.run(timeout=30)
         assert not at.exception, f"excecao com 1 periodo so': {at.exception}"
         textos_1periodo = " ".join(c.value for c in at.caption)
-        assert "Selecione 2+ períodos" in textos_1periodo
+        assert "Com 2+ períodos selecionados" in textos_1periodo
 
     print(
         "OK: Visao Grupo Completo — KPIs+graficos multi-periodo, BP+DRE juntos, "
@@ -172,12 +171,12 @@ def test_2_granularidades_mesmo_periodo_fim_seletor_de_detalhe_separa():
 
         sel_base.set_value("trimestral").run(timeout=30)
         assert not at.exception, f"excecao ao escolher trimestral: {at.exception}"
-        tabela_bp = at.dataframe[0].value
+        tabela_bp = at.dataframe[1].value  # [0] = tabela comparativa por empresa
         assert list(tabela_bp["VALOR CONSOLIDADO"]) == ["R$ 100,00"], (
             f"esperava só a linha do trimestral (R$ 100,00) na tabela de detalhe, veio {list(tabela_bp['VALOR CONSOLIDADO'])}"
         )
         sel_base.set_value("semestral").run(timeout=30)
-        tabela_bp = at.dataframe[0].value
+        tabela_bp = at.dataframe[1].value  # [0] = tabela comparativa por empresa
         assert list(tabela_bp["VALOR CONSOLIDADO"]) == ["R$ 600,00"], "semestral tem que mostrar so' a linha do semestral"
         print("OK: 2 granularidades no mesmo periodo_fim — seletor de base separa, tabela nunca mistura os 2 documentos")
 

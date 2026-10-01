@@ -23,10 +23,14 @@ escrever este código (não suposição):
     /v1/creditors/{id}.cnpj) + número do documento + valor. A chave,
     quando presente dos dois lados, vira confirmação extra (maior
     confiança), nunca obrigatória.
-  - Universo primário: documentIdentificationId em ('NFE ', 'NF  ').
-    Sincroniza TODOS os tipos de título do período (não só esses dois),
-    pra permitir uma busca de segundo passe (fallback) sem tipo, cobrindo
-    o risco de uma nota ter sido lançada sob outro código por engano.
+  - Universo: documentIdentificationId em ('NFE ', 'NF  ').
+    01/10/2026 (Rafael + pedido da contadora): o snapshot passa a guardar
+    SÓ esses dois tipos. Antes guardava todos os tipos pra um fallback
+    "sem tipo" (nota lançada sob outro código por engano); o fallback foi
+    removido -- nota lançada sob outro tipo agora aparece como
+    NAO_ENCONTRADA (pendência real: o Suprimentos corrige o tipo no
+    Sienge). Motivo: títulos PPC (provisão) e a NFE que os substitui são o
+    mesmo lançamento visto 2x -- puxar o PPC duplicava o resultado.
 """
 from __future__ import annotations
 
@@ -41,6 +45,17 @@ from requests.auth import HTTPBasicAuth
 from psycopg2.extras import execute_values
 
 TIPOS_NOTA_FISCAL = ("NFE ", "NF  ")
+_CODIGOS_NOTA_FISCAL = {t.strip() for t in TIPOS_NOTA_FISCAL}  # {"NFE", "NF"}
+
+
+def eh_nota_fiscal(tipo_documento) -> bool:
+    """True se o documentIdentificationId do titulo e' NFE ou NF (a API
+    devolve com padding -- 'NFE ', 'NF  '; compara sem espacos, sem
+    diferenciar caixa). 01/10/2026 (Rafael: "so' puxar NF, nao os outros"):
+    PPC (provisao, 'substituido' pela NFE depois), RDV, NFS, FAT, GUIA...
+    ficam de fora do snapshot -- um PPC e a NFE que o substituiu eram o
+    MESMO lancamento visto 2x no Sienge."""
+    return (tipo_documento or "").strip().upper() in _CODIGOS_NOTA_FISCAL
 TOLERANCIA_VALOR = 0.01  # 1 centavo
 LIMITE_PAGINA = 200      # teto documentado da API REST do Sienge
 JANELA_DATA_ORFAOS_DIAS = 15  # FIX_20260928f -- ver identificar_e_gravar_bills_orfaos
@@ -67,9 +82,10 @@ def _sessao_sienge(base_url: str, usuario: str, senha: str):
 def sincronizar_bills(conn, base_url: str, usuario: str, senha: str,
                        data_inicio: date, data_fim: date, max_paginas: int = 50) -> int:
     """
-    Puxa TODOS os títulos (não só NFE/NF -- ver nota no topo do módulo
-    sobre o fallback) de /v1/bills no intervalo de datas e faz upsert em
-    egc.nf_bills_sync. Retorna quantos títulos foram sincronizados.
+    Puxa os títulos de /v1/bills no intervalo de datas e faz upsert em
+    egc.nf_bills_sync SÓ dos que são NFE/NF (desde 01/10/2026; antes
+    gravava todos os tipos pra alimentar um fallback sem tipo, removido --
+    ver eh_nota_fiscal). Retorna quantos títulos NFE/NF foram sincronizados.
 
     Upsert em LOTE (execute_values, 1 round-trip por página de até 200
     títulos) -- antes era 1 INSERT por título (o gargalo real dos ~10min
@@ -92,6 +108,10 @@ def sincronizar_bills(conn, base_url: str, usuario: str, senha: str,
             registros = data.get("results", data) if isinstance(data, dict) else data
             if not registros:
                 break
+            # 01/10/2026: so' NFE/NF entram no snapshot (ver eh_nota_fiscal).
+            # Filtra DEPOIS de ler a pagina -- a API nao tem filtro por tipo
+            # validado (nao dava pra confirmar o parametro sem a conta real);
+            # a paginacao abaixo continua olhando o tamanho CRU da pagina.
             linhas = [
                 (
                     b.get("id"), b.get("debtorId"), b.get("creditorId"),
@@ -99,8 +119,13 @@ def sincronizar_bills(conn, base_url: str, usuario: str, senha: str,
                     b.get("issueDate"), b.get("totalInvoiceAmount"),
                     b.get("accessKeyNumber"), b.get("status"),
                 )
-                for b in registros
+                for b in registros if eh_nota_fiscal(b.get("documentIdentificationId"))
             ]
+            if not linhas:
+                if len(registros) < LIMITE_PAGINA:
+                    break
+                offset += LIMITE_PAGINA
+                continue
             execute_values(
                 cur,
                 """
@@ -123,7 +148,7 @@ def sincronizar_bills(conn, base_url: str, usuario: str, senha: str,
                 linhas,
                 template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, now())",
             )
-            total += len(registros)
+            total += len(linhas)
             if len(registros) < LIMITE_PAGINA:
                 break
             offset += LIMITE_PAGINA
@@ -246,6 +271,7 @@ def _carregar_bills_creditores(conn) -> pd.DataFrame:
                    c.cnpj AS creditor_cnpj, c.nome AS creditor_nome
             FROM egc.nf_bills_sync b
             LEFT JOIN egc.nf_creditors_sync c ON c.creditor_id = b.creditor_id
+            WHERE UPPER(TRIM(b.document_identification_id)) IN ('NFE', 'NF')
             """
         )
         cols = [d[0] for d in cur.description]
@@ -309,17 +335,6 @@ def _classificar_nota(row, bills: pd.DataFrame) -> dict:
             return dict(status="NUMERO_DIVERGENTE", confianca="CNPJ_VALOR", sienge_bill_id=int(b["bill_id"]),
                         sienge_valor=float(b["total_invoice_amount"]),
                         observacao=f"Sienge tem nota nº {b['document_number']}, manifesto tem nº {row.get('Num')}")
-
-    # 3º passe (fallback): mesma busca, sem restringir o tipo de documento
-    # -- cobre nota lançada sob código diferente de NFE/NF por engano.
-    if not bills.empty:
-        candidatos_amplos = bills[(bills["cnpj_normalizado"] == cnpj) & (bills["numero_normalizado"] == numero)
-                                   & (bills["total_invoice_amount"].apply(_bate_valor))]
-        if not candidatos_amplos.empty:
-            b = candidatos_amplos.iloc[0]
-            return dict(status="LANCADA", confianca="NUMERO_CNPJ_VALOR_TIPO_DIVERGENTE", sienge_bill_id=int(b["bill_id"]),
-                        sienge_valor=float(b["total_invoice_amount"]),
-                        observacao=f"Achada, mas lançada como tipo '{b['document_identification_id']}', não NFE/NF")
 
     return dict(status="NAO_ENCONTRADA", confianca=None, sienge_bill_id=None, sienge_valor=None, observacao=None)
 
@@ -598,10 +613,13 @@ def listar_conciliacao(conn, import_id: str) -> pd.DataFrame:
         cur.execute(
             """
             SELECT m.numero_nota, m.cfop, m.data_emissao, m.valor, m.fornecedor_nome, m.fornecedor_cnpj,
-                   c.status, c.confianca, c.sienge_bill_id, c.sienge_valor, c.observacao,
+                   c.status, c.confianca, c.sienge_bill_id,
+                   NULLIF(TRIM(CONCAT_WS(' ', TRIM(b.document_identification_id), b.document_number)), '') AS sienge_documento,
+                   c.sienge_valor, c.observacao,
                    c.pendencia_status, c.atualizado_em, c.manifesto_id AS registro_id
             FROM egc.nf_conciliacao c
             JOIN egc.nf_manifesto_import m ON m.id = c.manifesto_id
+            LEFT JOIN egc.nf_bills_sync b ON b.bill_id = c.sienge_bill_id
             WHERE c.import_id = %s
             ORDER BY (c.status <> 'LANCADA') DESC, m.numero_nota
             """,
@@ -615,7 +633,7 @@ def listar_conciliacao(conn, import_id: str) -> pd.DataFrame:
 
 _COLUNAS_ORFAOS_SIENGE = [
     "numero_nota", "cfop", "data_emissao", "valor", "fornecedor_nome", "fornecedor_cnpj",
-    "status", "confianca", "sienge_bill_id", "sienge_valor", "observacao",
+    "status", "confianca", "sienge_bill_id", "sienge_documento", "sienge_valor", "observacao",
     "pendencia_status", "atualizado_em", "registro_id", "origem",
 ]
 
@@ -634,8 +652,10 @@ def listar_orfaos_sienge(conn, import_id: str) -> pd.DataFrame:
             """
             SELECT o.id AS registro_id, o.bill_id, o.document_number, o.issue_date,
                    o.total_invoice_amount, o.creditor_nome, o.creditor_cnpj,
-                   o.pendencia_status, o.atualizado_em
+                   o.pendencia_status, o.atualizado_em,
+                   NULLIF(TRIM(CONCAT_WS(' ', TRIM(b.document_identification_id), o.document_number)), '') AS sienge_documento
             FROM egc.nf_bills_orfaos o
+            LEFT JOIN egc.nf_bills_sync b ON b.bill_id = o.bill_id
             WHERE o.import_id = %s
             """,
             (import_id,),
@@ -652,6 +672,7 @@ def listar_orfaos_sienge(conn, import_id: str) -> pd.DataFrame:
     df["fornecedor_cnpj"] = df["creditor_cnpj"]
     df["status"] = "SIENGE_SEM_MANIFESTO"
     df["confianca"] = None
+    df["sienge_bill_id"] = df["bill_id"]
     df["sienge_valor"] = df["total_invoice_amount"]
     df["observacao"] = "Título lançado no Sienge sem nota correspondente no manifesto da Receita."
     df["origem"] = "SIENGE_ORFAO"

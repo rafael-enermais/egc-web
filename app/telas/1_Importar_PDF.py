@@ -50,7 +50,9 @@ from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS, empresa_por_cnpj
 import db  # noqa: E402
 from parser_egc import processar_pdf, extrair_despesas_admin_itens  # noqa: E402
 from validacoes import checar_fechamento_bp, formatar_br  # noqa: E402
-from importacoes_ui import chave_ordenacao_previa, agrupar_historico_importacoes  # noqa: E402
+from importacoes_ui import (  # noqa: E402
+    chave_ordenacao_previa, agrupar_historico_importacoes, detectar_conflitos_lote, chave_documento_item,
+)
 import formatacao  # noqa: E402
 
 NOME_POR_COD = {cod: nome for cod, nome, _cnpj in EMPRESAS_FIXAS}
@@ -71,6 +73,10 @@ _OPCOES_GRANULARIDADE = {
     "": "Não declarada", "mensal": "Mensal", "bimestral": "Bimestral", "trimestral": "Trimestral",
     "semestral": "Semestral", "anual": "Anual", "outra": "Outro intervalo",
 }
+
+def indicadores_rotulo(g: str) -> str:
+    return _OPCOES_GRANULARIDADE.get(g or "", g or "Não declarada")
+
 
 st.title("📥 Importar PDF")
 
@@ -432,12 +438,78 @@ if resultados:
                 if not st.session_state["import_resultados"]:
                     del st.session_state["import_resultados"]
                 st.rerun()
-            if st.button(f"✅ Gravar {grupo['nome']}", key=f"gravar_{cod_g}", type="primary", disabled=algum_erro):
+            # 01/10/2026 (Rafael: "o que acontece se eu upar os 2 BP e DRE do
+            # mesmo periodo ao mesmo tempo? ... podia gerar um aviso p
+            # confirmar"). Duas travas ANTES de gravar:
+            #  (1) CONFLITO NO LOTE: 2+ PDFs da mesma empresa com o mesmo
+            #      documento (tipo + periodo + granularidade). Antes, o
+            #      ultimo (ordem alfabetica do nome) substituia o primeiro
+            #      em silencio. Agora a contadora escolhe qual manter.
+            #  (2) SUBSTITUICAO: ja existe documento ATIVO igual no banco --
+            #      gravar arquiva o antigo; exige confirmacao explicita.
+            itens_incluidos = [x for x in grupo["itens"] if x.get("_incluir", True)]
+            excluidos_conflito: set = set()  # {(arquivo, tipo)} nao escolhidos
+            conflitos_abertos = 0
+            for cf in detectar_conflitos_lote(itens_incluidos):
+                rot_g = indicadores_rotulo(cf["granularidade"])
+                st.error(
+                    f"⚠️ {len(cf['arquivos'])} arquivos com o MESMO {cf['tipo']} de {cf['periodo']} ({rot_g}): "
+                    + "; ".join(f"{nome} ({n} contas)" for nome, n in cf["arquivos"])
+                    + ". Só um pode valer — os outros seriam arquivados."
+                )
+                opcoes_cf = ["-- escolha qual manter --"] + [nome for nome, _n in cf["arquivos"]]
+                escolha = st.selectbox(
+                    f"Manter qual {cf['tipo']} de {cf['periodo']}?", opcoes_cf,
+                    key=f"conflito_{cod_g}_{cf['tipo']}_{cf['periodo']}_{cf['granularidade']}",
+                )
+                if escolha == opcoes_cf[0]:
+                    conflitos_abertos += 1
+                else:
+                    for nome, _n in cf["arquivos"]:
+                        if nome != escolha:
+                            excluidos_conflito.add((nome, cf["tipo"]))
+
+            substituicoes = []  # [(tipo, periodo_str, rotulo, [docs ativos])]
+            try:
+                _vistos = set()
+                for x in itens_incluidos:
+                    for tipo_k, periodo_k, gran_k, _n in chave_documento_item(x):
+                        if (x["arquivo"], tipo_k) in excluidos_conflito or (tipo_k, periodo_k, gran_k) in _vistos:
+                            continue
+                        _vistos.add((tipo_k, periodo_k, gran_k))
+                        _dt_k = _dt.datetime.strptime(periodo_k, "%d/%m/%Y").date()
+                        existentes = db.listar_documentos_ativos(get_conn(), cod_g, _dt_k, tipo_k, gran_k)
+                        if existentes:
+                            substituicoes.append((tipo_k, periodo_k, indicadores_rotulo(gran_k), existentes))
+            except Exception:
+                substituicoes = []  # nao consegue checar -> nao bloqueia (comportamento anterior)
+            confirmou_substituir = True
+            if substituicoes:
+                for tipo_k, periodo_k, rot_k, existentes in substituicoes:
+                    st.warning(
+                        f"♻️ Já existe {tipo_k} ATIVO de {periodo_k} ({rot_k}) para esta empresa: "
+                        + "; ".join(
+                            f"{e['arquivo']} ({e['contas']} contas"
+                            + (f", gravado em {formatacao.hora_br(e['gravado_em'])}" if e.get("gravado_em") else "")
+                            + ")" for e in existentes
+                        )
+                        + ". Gravar arquiva (não apaga) o documento atual e passa a valer o novo."
+                    )
+                confirmou_substituir = st.checkbox(
+                    "Confirmo: substituir o(s) documento(s) acima pelo(s) novo(s)",
+                    key=f"confirma_subst_{cod_g}_{len(substituicoes)}",
+                )
+            bloqueado_por_duplicidade = conflitos_abertos > 0 or not confirmou_substituir
+
+            if st.button(f"✅ Gravar {grupo['nome']}", key=f"gravar_{cod_g}", type="primary",
+                         disabled=algum_erro or bloqueado_por_duplicidade):
                 conn = get_conn()
                 total_gravado = 0
                 pulados = []
                 for r in grupo["itens"]:
                     if not r["meta"]:
+                        continue
+                    if not r.get("_incluir", True):
                         continue
                     empresa_nome, cnpj, periodo, nome_arq, tipo_doc, fmt, periodo_inicio, granularidade = r["meta"][0]
                     try:
@@ -476,6 +548,8 @@ if resultados:
                     for tipo, rows in (("BP", r["bp_rows"]), ("DRE", r["dre_rows"])):
                         if not rows:
                             continue
+                        if (r["arquivo"], tipo) in excluidos_conflito:
+                            continue  # perdeu o desempate do conflito (nao escolhido)
                         try:
                             # Fase 3 (29/09/2026): so' inativa o que tem a MESMA
                             # granularidade -- um trimestral novo nao apaga mais
@@ -523,7 +597,9 @@ if resultados:
                                 pass
 
                 # remove so' os itens deste grupo da lista pendente
-                gravados_ids = {id(x) for x in grupo["itens"]}
+                # itens desmarcados em "Incluir" continuam pendentes na lista;
+                # o resto (gravado, ou que perdeu o desempate de conflito) sai.
+                gravados_ids = {id(x) for x in grupo["itens"] if x.get("_incluir", True)}
                 restante = [x for x in st.session_state["import_resultados"] if id(x) not in gravados_ids]
                 if restante:
                     st.session_state["import_resultados"] = restante
