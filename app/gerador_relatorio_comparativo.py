@@ -316,58 +316,63 @@ def pagina_resumo_evolucao(c, dados, pagina: int, total_paginas: int):
 
 
 # ------------------------------------------------------------------ pagina 3
-# FIX_20260930b (Rafael: "achou feia a escala de azuis -- #5A63D8 -> NAVY
-# e' um azul-violeta saturado demais"). Nova paleta alinhada a marca
-# (NAVY #171C60 / ORANGE #EA9527), 2 opcoes:
-#   "A" (padrao): periodos ANTERIORES em tons de navy dessaturados, do
-#       claro (mais antigo) ao escuro; o periodo MAIS RECENTE em ORANGE
-#       (destaque -- mesmo padrao do grafico de composicao das despesas).
-#   "B": todos em tons de navy; o MAIS RECENTE = NAVY pleno, os anteriores
-#       dessaturados e progressivamente mais claros; sem laranja.
-# Negativo continua RED_ACCENT nas 2. O texto do valor NAO usa a cor da
-# barra (tom claro ficaria ilegivel sobre o branco): ver `_cor_texto_valor`.
-_NAVY_DESSAT_CLARO = "#C4C8DC"
-_NAVY_DESSAT_ESCURO_A = "#4A5088"   # anteriores, opcao A
-_NAVY_DESSAT_ESCURO_B = "#6B7199"   # anteriores, opcao B (sobra contraste pro NAVY pleno)
-PALETA_EVOLUCAO_PADRAO = "A"
+# v0.40.0 (item E) -- paleta do grafico "Evolucao dos Principais
+# Indicadores". REGRA UNICA (vale p/ comentario e legenda):
+#     COR  = recencia do periodo + sinal do valor
+#     TAMANHO DA BARRA = valor (|v| / maior |v| da metrica)
+#   - valores positivos: rampa de NAVY -- o periodo mais antigo no tom
+#     mais claro/dessaturado e o mais recente no NAVY pleno (#171C60);
+#   - valores negativos: OUTRO matiz, em rampa propria -- familia laranja
+#     da marca (ORANGE #EA9527 pleno no periodo mais recente, tons mais
+#     claros nos anteriores). "teal" (verde-azulado escuro) e' a
+#     alternativa avaliada no preview paleta_preview_v2.png; troca por
+#     `dados["paleta_evolucao"]` (default "laranja").
+# (Historico: v0.39 usava "A" = anteriores em navy + mais recente em
+# ORANGE, e negativo em vermelho. Mudou: o laranja deixou de significar
+# "mais recente" e passou a significar "valor abaixo de zero".)
+_POSITIVO_CLARO = "#B4B9D6"   # periodo mais antigo (navy dessaturado)
+# nome -> (tom do periodo mais antigo, tom do periodo mais recente, cor do texto do valor)
+PALETAS_NEGATIVO = {
+    "laranja": ("#F7D6A8", ORANGE, "#9A5200"),
+    "teal": ("#A9D4D5", "#0F6B6E", "#0B5558"),
+}
+PALETA_EVOLUCAO_PADRAO = "laranja"
+
+
+def _paleta_negativa(paleta: str = None):
+    return PALETAS_NEGATIVO.get((paleta or PALETA_EVOLUCAO_PADRAO).lower(), PALETAS_NEGATIVO[PALETA_EVOLUCAO_PADRAO])
 
 
 def _cor_periodo(i: int, n_periodos: int, v: float, paleta: str = None) -> str:
-    """Cor da barra do período `i` (0 = mais antigo) num grupo de
-    `n_periodos`, pro grafico de evolucao. Extraída em função pura (mesmo
-    padrão de `_layout_tabela_evolucao` neste módulo) pra virar
-    regressão testável sem gerar PDF -- ver
-    test_grafico_evolucao_cores_periodos_positivos_sao_distintas.
-    `paleta`: "A" (anteriores em navy dessaturado + mais recente em
-    ORANGE) ou "B" (tudo navy, mais recente = NAVY); None = padrao."""
+    """Cor da barra do periodo `i` (0 = mais antigo) num grupo de
+    `n_periodos`. Cor = recencia + sinal (ver bloco acima); o tamanho da
+    barra e' decidido em `grafico_evolucao`, nao aqui. Funcao pura
+    (testavel sem gerar PDF)."""
+    eh_mais_recente = n_periodos <= 1 or i >= n_periodos - 1
+    t = 1.0 if n_periodos <= 1 else i / (n_periodos - 1)
     if v < 0:
-        return RED_ACCENT
-    paleta = (paleta or PALETA_EVOLUCAO_PADRAO).upper()
-    n_anteriores = max(0, n_periodos - 1)
-    eh_mais_recente = (i == n_periodos - 1)
-    if eh_mais_recente:
-        return ORANGE if paleta == "A" else NAVY
-    escuro = _NAVY_DESSAT_ESCURO_A if paleta == "A" else _NAVY_DESSAT_ESCURO_B
-    # 1 unico periodo anterior (n=2): tom medio-escuro em vez do mais claro
-    # (um tom palido sozinho ao lado do destaque parece "apagado").
-    t = 0.6 if n_anteriores == 1 else i / (n_anteriores - 1)
-    return _interp_cor(_NAVY_DESSAT_CLARO, escuro, t)
+        claro, pleno, _txt = _paleta_negativa(paleta)
+    else:
+        claro, pleno = _POSITIVO_CLARO, NAVY
+    return pleno if eh_mais_recente else _interp_cor(claro, pleno, t)
 
 
-def _cor_texto_valor(v: float) -> str:
+def _cor_texto_valor(v: float, paleta: str = None) -> str:
     """Cor do numero ao lado da barra -- sempre escura o bastante pra ler
-    sobre o fundo branco, independente do tom (claro) da barra."""
-    return "#9C4A61" if v < 0 else NAVY
+    sobre o fundo branco, independente do tom (claro) da barra. Valor
+    abaixo de zero usa a versao escura da familia da barra (contraste
+    >= 5:1 sobre o branco)."""
+    return _paleta_negativa(paleta)[2] if v < 0 else NAVY
 
 
 def grafico_evolucao(c, x0, x1, y0_top, metricas, periodos_labels, altura_grupo=58.0, paleta=None):
     """Mini-barras horizontais por periodo, 1 grupo por metrica, escala
     PROPRIA por metrica (nao dá pra comparar Receita e EBITDA na mesma
     escala sem achatar o EBITDA a nada) -- mesma logica de pequenos
-    multiplos do esboço validado com o Rafael em artifact. Cor mais clara
-    -> mais escura conforme o periodo fica mais recente; negativo sempre
-    RED_ACCENT (mesma convenção já usada nas cascatas do Modelo A).
-    Devolve o y_top final."""
+    multiplos do esboço validado com o Rafael em artifact. COR = recencia
+    do periodo + sinal do valor (tom mais claro = mais antigo; navy para
+    valores >= 0, familia laranja para valores < 0); TAMANHO DA BARRA =
+    valor. Ver bloco de paleta acima. Devolve o y_top final."""
     n_periodos = len(periodos_labels)
     col_label_w = 118
     col_valor_w = 78
@@ -398,7 +403,7 @@ def grafico_evolucao(c, x0, x1, y0_top, metricas, periodos_labels, altura_grupo=
             largura = largura_barra_max * (abs(v) / maior_abs)
             rect(c, bx0, y, bx0 + max(largura, 2), y + altura_barra, fill=cor)
             txt(c, bx0 + largura_barra_max + 8, y + altura_barra - 2, moeda_br(v, forcar_sinal=(v < 0)),
-                font="bold", size=8.5, color=_cor_texto_valor(v), align="left")
+                font="bold", size=8.5, color=_cor_texto_valor(v, paleta), align="left")
             y += altura_barra + espaco_barra
         y += 10
     return y
@@ -414,19 +419,18 @@ def pagina_grafico_evolucao(c, dados, pagina: int, total_paginas: int):
     txt(c, MARGEM, 134, f"{d.get('anexo_escopo_label', d['empresa_nome'])} · valores em R$",
         font="regular", size=9, color=GREY_TEXT)
 
-    paleta = (d.get("paleta_evolucao") or PALETA_EVOLUCAO_PADRAO).upper()
+    paleta = (d.get("paleta_evolucao") or PALETA_EVOLUCAO_PADRAO).lower()
     y_fim = grafico_evolucao(c, MARGEM, PAGE_W - MARGEM, 168, d.get("grafico_evolucao_metricas", []),
                               d["periodos_labels"], paleta=paleta)
 
-    if paleta == "A":
-        legenda_cor = ("O período mais recente aparece em laranja; os anteriores, em tons de azul do mais claro "
-                       "(mais antigo) ao mais escuro.")
-    else:
-        legenda_cor = "Barras em tom mais escuro representam os períodos mais recentes."
+    # Legenda neutra (sem adjetivo avaliativo): descreve so' o codigo visual.
+    nome_matiz = "verde-azulado" if paleta == "teal" else "laranja"
     paragrafo(
         c, MARGEM, y_fim + 10,
-        f"{legenda_cor} Valores negativos aparecem em "
-        "vermelho, independentemente do período — a cor marca o sinal do número, o texto não usa adjetivo.",
+        "Como ler: o comprimento da barra representa o valor. A cor indica o período e o sinal do valor: "
+        "valores iguais ou acima de zero em tons de azul; valores abaixo de zero em tons de "
+        f"{nome_matiz}, com sinal de menos antes do número. Em cada cor, o tom mais claro é o período mais "
+        "antigo e o tom mais escuro (ou mais intenso), o período mais recente.",
         CONTEUDO_W, font="regular", size=8, color=GREY_TEXT, leading=11,
     )
     _footer(c, pagina, total_paginas)

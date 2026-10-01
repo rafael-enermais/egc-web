@@ -82,7 +82,7 @@ def _patches(codigos_com_periodo=("ENERGIA", "SMG")):
         fonte = BP_GRUPO if tipo == "BP" else DRE_GRUPO
         return [x for x in fonte if x["empresa_codigo"] in cods]
 
-    def _listar_lancamentos_grupo_periodos(conn, periodos, tipo, cods, status="ATIVO"):
+    def _listar_lancamentos_grupo_periodos(conn, periodos, tipo, cods, status="ATIVO", granularidade=None):
         fonte = BP_GRUPO if tipo == "BP" else DRE_GRUPO
         return [dict(x, periodo=PERIODO, granularidade="") for x in fonte if x["empresa_codigo"] in cods]
 

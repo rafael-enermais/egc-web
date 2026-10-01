@@ -334,6 +334,54 @@ def test_resumir_completude_por_periodo_vazio_devolve_vazio():
     print("OK: resumir_completude_por_periodo — completude vazia devolve DataFrame vazio com colunas certas")
 
 
+def _lanc(emp, per, conta, valor, gran, grupo="X"):
+    return {"empresa_codigo": emp, "periodo": per, "grupo": grupo, "conta": conta, "valor": Decimal(str(valor)),
+            "granularidade": gran}
+
+
+def test_montar_indicadores_grupo_soma_empresas_e_respeita_a_base():
+    """v0.40.0: EBITDA/margens do GRUPO = razoes sobre os totais SOMADOS das
+    empresas, so' da base pedida (trimestral x semestral no mesmo periodo_fim
+    nunca se misturam)."""
+    P = datetime.date(2026, 6, 30)
+    dre, bp = [], []
+    # trimestral: A (rec 1000, LOL 100, D&A -20) + B (rec 500, LOL 50, D&A -10)
+    for emp, rec, lol, da in (("ENERGIA", 1000, 100, -20), ("SMG", 500, 50, -10)):
+        for conta, v in (("RECEITA OPERACIONAL LIQUIDA", rec), ("LUCRO OPERACIONAL LIQUIDO", lol),
+                         ("DEPRECIACOES", da), ("LUCRO LIQUIDO DO EXERCICIO", lol)):
+            dre.append(_lanc(emp, P, conta, v, "trimestral"))
+        bp.append(_lanc(emp, P, "TOTAL DO ATIVO", 2 * rec, "trimestral"))
+        bp.append(_lanc(emp, P, "TOTAL PATRIMONIO LIQUIDO", rec, "trimestral"))
+    # semestral (valores bem diferentes) -- NAO pode entrar na base trimestral
+    for conta, v in (("RECEITA OPERACIONAL LIQUIDA", 99999), ("LUCRO OPERACIONAL LIQUIDO", 88888)):
+        dre.append(_lanc("ENERGIA", P, conta, v, "semestral"))
+    bp.append(_lanc("ENERGIA", P, "TOTAL DO ATIVO", 77777, "semestral"))
+
+    tri = visao_grupo.montar_indicadores_grupo(bp, dre, ["ENERGIA", "SMG"], [P], "trimestral")
+    linha = tri.loc[pd.Timestamp(P)]
+    assert linha["EBITDA"] == 150 + 30                     # LOL somado + D&A de volta
+    assert abs(linha["Margem EBITDA"] - 180 / 1500) < 1e-9
+    assert abs(linha["Margem Líquida"] - 150 / 1500) < 1e-9
+    assert abs(linha["ROA"] - 150 / 3000) < 1e-9
+    sem = visao_grupo.montar_indicadores_grupo(bp, dre, ["ENERGIA", "SMG"], [P], "semestral")
+    assert sem.loc[pd.Timestamp(P), "EBITDA"] == 88888
+    # so' as empresas selecionadas entram
+    so_energia = visao_grupo.montar_indicadores_grupo(bp, dre, ["ENERGIA"], [P], "trimestral")
+    assert so_energia.loc[pd.Timestamp(P), "EBITDA"] == 120
+    print("OK: montar_indicadores_grupo — soma empresas, razoes sobre totais, base nunca mistura")
+
+
+def test_montar_indicadores_grupo_periodo_sem_dado_na_base_vira_nan_nao_zero():
+    P1, P2 = datetime.date(2026, 3, 31), datetime.date(2026, 6, 30)
+    dre = [_lanc("ENERGIA", P2, "RECEITA OPERACIONAL LIQUIDA", 100, "trimestral"),
+           _lanc("ENERGIA", P2, "LUCRO OPERACIONAL LIQUIDO", 10, "trimestral")]
+    ind = visao_grupo.montar_indicadores_grupo([], dre, ["ENERGIA"], [P1, P2], "trimestral")
+    assert list(ind.index) == [pd.Timestamp(P1), pd.Timestamp(P2)]
+    assert pd.isna(ind.loc[pd.Timestamp(P1), "EBITDA"])
+    assert ind.loc[pd.Timestamp(P2), "EBITDA"] == 10
+    print("OK: montar_indicadores_grupo — periodo sem documento na base fica NaN")
+
+
 if __name__ == "__main__":
     testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
     falhas = 0

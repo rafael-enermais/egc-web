@@ -45,6 +45,7 @@ CONTAS_KPI_DRE = ["RECEITA OPERACIONAL LIQUIDA", "LUCRO BRUTO", "LUCRO LIQUIDO D
 # vence quando 2 granularidades estao ATIVAS no mesmo periodo_fim):
 # anual > semestral > trimestral > bimestral > mensal > outra > "" (nao
 # declarada). Fonte unica em indicadores.py (Fase 4, 30/09/2026).
+import indicadores  # noqa: E402
 from indicadores import _PRIORIDADE_GRANULARIDADE  # noqa: E402
 
 
@@ -291,3 +292,26 @@ def montar_serie_kpis_grupo(
     agrupado.index = pd.to_datetime(agrupado.index)
     agrupado.index.name = "periodo"
     return agrupado
+
+
+def montar_indicadores_grupo(
+    lancs_bp: list[dict], lancs_dre: list[dict], cods_selecionados: list[str], periodos: list, granularidade: str,
+) -> pd.DataFrame:
+    """v0.40.0 -- indicadores do GRUPO (EBITDA, Margem EBITDA, Margem
+    Liquida, Alavancagem, Capital de Giro, ROA/ROE, Liquidez, Endividamento
+    ...) por periodo, calculados com `indicadores.calcular_indicadores` em
+    cima das contas SOMADAS das empresas selecionadas (consolidado simples,
+    sem eliminacoes entre empresas -- mesma base dos KPIs do "Resumo do
+    grupo"). Razoes (margens, ROA, alavancagem) sao calculadas sobre os
+    totais somados, NAO a media das razoes de cada empresa.
+
+    Match obrigatorio de granularidade (`granularidade`, inclusive "" =
+    nao declarada): so' linhas dessa base entram -- nunca mistura
+    trimestral com semestral. 1 linha por periodo pedido (linha de NaN
+    quando o periodo nao tem nenhum dado nessa base)."""
+    sel = set(cods_selecionados)
+    bp = [r for r in lancs_bp if r["empresa_codigo"] in sel]
+    dre = [r for r in lancs_dre if r["empresa_codigo"] in sel]
+    ind = indicadores.calcular_indicadores(bp, dre, granularidade=granularidade or "")
+    alvo = pd.DatetimeIndex(pd.to_datetime(sorted(periodos)), name="periodo")
+    return ind.reindex(alvo)

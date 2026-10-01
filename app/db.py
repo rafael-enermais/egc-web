@@ -96,6 +96,64 @@ def listar_periodos_detalhado(conn, empresa_codigo: str, status: str = "ATIVO") 
         return [{"periodo": row[0], "granularidade": row[1]} for row in cur.fetchall()]
 
 
+def listar_periodos_completos_detalhado(conn, empresa_codigo: str, status: str = "ATIVO") -> list[dict]:
+    """
+    v0.40.0: (periodo, granularidade) em que a empresa tem BP **E** DRE
+    com o status pedido. E' o que os seletores de periodo do Relatorio
+    Comentado usam: listar_periodos_detalhado devolve o par se existir
+    QUALQUER tipo (so' BP, por ex.), e a tela oferecia um periodo que a
+    geracao depois recusava ("nao tem DRE gravado").
+
+    Mesmo formato de listar_periodos_detalhado ([{"periodo", "granularidade"}],
+    mais recente primeiro; granularidade "" = nao declarada).
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT periodo, COALESCE(granularidade, '') AS granularidade
+            FROM egc.lancamentos
+            WHERE empresa_codigo = %s AND status = %s
+            GROUP BY periodo, COALESCE(granularidade, '')
+            HAVING bool_or(tipo = 'BP') AND bool_or(tipo = 'DRE')
+            ORDER BY periodo DESC, COALESCE(granularidade, '')
+            """,
+            (empresa_codigo, status),
+        )
+        return [{"periodo": row[0], "granularidade": row[1]} for row in cur.fetchall()]
+
+
+def listar_inicios_documento(
+    conn, empresa_codigo: str, periodo: date, granularidade: str, tipo: str = "DRE", status: str = "ATIVO",
+) -> list:
+    """
+    v0.40.0: valores DISTINTOS de `periodo_inicio` (inicio do intervalo
+    declarado no proprio PDF) das linhas ATIVAS do documento
+    (empresa, periodo_fim, granularidade). Usado para conferir que o
+    rotulo de granularidade gravado ("trimestral") bate com o intervalo
+    que o PDF realmente declarou (01/04 a 30/06 = trimestral; 01/01 a
+    30/06 = semestral) -- ver dados_relatorio_comentado.
+    validar_cobertura_documento. Lista vazia se o documento nao declarou
+    intervalo (BP, ou import anterior a 24/09/2026) ou se a coluna ainda
+    nao existe no banco (nunca levanta por isso).
+    """
+    with conn.cursor() as cur:
+        try:
+            cur.execute(
+                """
+                SELECT DISTINCT periodo_inicio
+                FROM egc.lancamentos
+                WHERE empresa_codigo = %s AND periodo = %s AND tipo = %s AND status = %s
+                  AND COALESCE(granularidade, '') = %s AND periodo_inicio IS NOT NULL
+                ORDER BY periodo_inicio
+                """,
+                (empresa_codigo, periodo, tipo, status, granularidade or ""),
+            )
+            return [row[0] for row in cur.fetchall()]
+        except psycopg2.errors.UndefinedColumn:
+            conn.rollback()
+            return []
+
+
 # ─────────────────────────────────────────────
 #  IMPORTACAO
 # ─────────────────────────────────────────────
@@ -603,7 +661,8 @@ def listar_periodos_grupo_detalhado(conn, empresas_codigos: list[str], status: s
 
 
 def listar_lancamentos_grupo_periodos(
-    conn, periodos: list[date], tipo: str, empresas_codigos: list[str], status: str = "ATIVO"
+    conn, periodos: list[date], tipo: str, empresas_codigos: list[str], status: str = "ATIVO",
+    granularidade: Optional[str] = None,
 ) -> list[dict]:
     """
     Mesma coisa que listar_lancamentos_grupo, mas pra VARIOS periodos de
@@ -624,16 +683,21 @@ def listar_lancamentos_grupo_periodos(
     periodo_fim como se fossem 1 so'. Quem so' precisa de periodo+conta
     (ex. indicadores.calcular_indicadores) ignora a coluna extra.
     """
+    sql = """
+        SELECT empresa_codigo, periodo, grupo, conta, valor, COALESCE(granularidade, '') AS granularidade
+        FROM egc.lancamentos
+        WHERE periodo = ANY(%s) AND tipo = %s AND status = %s AND empresa_codigo = ANY(%s)
+    """
+    params = [periodos, tipo, status, empresas_codigos]
+    if granularidade is not None:
+        # v0.40.0: filtro no proprio SQL (None = legado, traz tudo e quem
+        # chama resolve). Evita carregar -- e arriscar misturar -- os
+        # documentos de outras granularidades do mesmo periodo_fim.
+        sql += " AND COALESCE(granularidade, '') = %s"
+        params.append(granularidade)
+    sql += " ORDER BY periodo, grupo, conta"
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT empresa_codigo, periodo, grupo, conta, valor, COALESCE(granularidade, '') AS granularidade
-            FROM egc.lancamentos
-            WHERE periodo = ANY(%s) AND tipo = %s AND status = %s AND empresa_codigo = ANY(%s)
-            ORDER BY periodo, grupo, conta
-            """,
-            (periodos, tipo, status, empresas_codigos),
-        )
+        cur.execute(sql, tuple(params))
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 

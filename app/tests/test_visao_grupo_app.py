@@ -182,6 +182,58 @@ def test_2_granularidades_mesmo_periodo_fim_seletor_de_detalhe_separa():
         print("OK: 2 granularidades no mesmo periodo_fim — seletor de base separa, tabela nunca mistura os 2 documentos")
 
 
+def test_resumo_do_grupo_mostra_ebitda_margens_e_indicadores_da_base_escolhida():
+    """v0.40.0 (item F): EBITDA, Margem EBITDA, Margem Liquida, Alavancagem,
+    Capital de Giro, ROA/ROE, Liquidez e Endividamento no Resumo do grupo,
+    cada um da BASE escolhida (trimestral x semestral nao se misturam)."""
+    P = P_JUN
+    def _l(conta, v, gran):
+        return {"empresa_codigo": "ENERGIA", "periodo": P, "grupo": "X", "conta": conta, "valor": Decimal(str(v)),
+                "granularidade": gran}
+    dre = [_l("RECEITA OPERACIONAL LIQUIDA", 1000, "trimestral"), _l("LUCRO OPERACIONAL LIQUIDO", 100, "trimestral"),
+           _l("LUCRO LIQUIDO DO EXERCICIO", 80, "trimestral"), _l("DEPRECIACOES", -20, "trimestral"),
+           _l("RECEITA OPERACIONAL LIQUIDA", 3000, "semestral"), _l("LUCRO OPERACIONAL LIQUIDO", 900, "semestral"),
+           _l("LUCRO LIQUIDO DO EXERCICIO", 700, "semestral")]
+    bp = [_l("TOTAL DO ATIVO", 2000, "trimestral"), _l("TOTAL CIRCULANTE ATIVO", 800, "trimestral"),
+          _l("TOTAL CIRCULANTE PASSIVO", 400, "trimestral"), _l("TOTAL NAO CIRCULANTE PASSIVO", 600, "trimestral"),
+          _l("TOTAL PATRIMONIO LIQUIDO", 1000, "trimestral"), _l("TOTAL DO PASSIVO", 2000, "trimestral"),
+          _l("TOTAL DO ATIVO", 5000, "semestral")]
+
+    def _fake(conn, periodos, tipo, empresas_codigos, status="ATIVO", granularidade=None):
+        base = bp if tipo == "BP" else dre
+        return [r for r in base if r["periodo"] in periodos and r["empresa_codigo"] in empresas_codigos]
+
+    with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(db, "listar_periodos_grupo_detalhado", return_value=[
+             {"periodo": P, "granularidade": "trimestral"}, {"periodo": P, "granularidade": "semestral"}]), \
+         patch.object(db, "listar_lancamentos_grupo_periodos", side_effect=_fake):
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        assert not at.exception, at.exception
+        at.selectbox(key="grupo_base_sel").set_value("trimestral").run(timeout=30)
+        assert not at.exception, at.exception
+        m = {x.label: x.value for x in at.metric}
+        for rotulo in ("Receita Líquida", "Lucro Bruto", "EBITDA", "Resultado Líquido", "Margem Bruta",
+                       "Margem EBITDA", "Margem Líquida", "ROA", "ROE", "Total do Ativo", "Total do Passivo",
+                       "Capital de Giro", "Liquidez Corrente", "Endividamento Geral", "Alavancagem"):
+            assert rotulo in m, f"KPI '{rotulo}' ausente do Resumo do grupo: {sorted(m)}"
+        assert m["EBITDA"] == "R$ 120,00"              # 100 + 20 de depreciacao de volta
+        assert m["Margem EBITDA"] == "12,0%"
+        assert m["Margem Líquida"] == "8,0%"
+        assert m["Capital de Giro"] == "R$ 400,00"     # 800 - 400
+        assert m["Liquidez Corrente"] == "2,00x"
+        assert m["Endividamento Geral"] == "50,0%"     # (400+600)/2000
+        assert m["Alavancagem"] == "1,00x"             # 1000/1000
+        assert m["ROE"] == "8,0%"
+        # base semestral: numeros do OUTRO documento
+        at.selectbox(key="grupo_base_sel").set_value("semestral").run(timeout=30)
+        assert not at.exception, at.exception
+        m2 = {x.label: x.value for x in at.metric}
+        assert m2["Receita Líquida"] == "R$ 3.000,00" and m2["EBITDA"] == "R$ 900,00"
+    print("OK: Resumo do grupo — EBITDA/margens/alavancagem/capital de giro/ROA/ROE/liquidez/endividamento por base")
+
+
 if __name__ == "__main__":
     testes = [v for k, v in list(globals().items()) if k.startswith("test_")]
     falhas = 0

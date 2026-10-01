@@ -862,7 +862,7 @@ _ANEXO_Y_LIMITE = 758.0  # abaixo disso reserva espaco pro rodape (~pag+nota)
 
 
 def _paginar_bloco_anexo(c, dados, x, largura, y, pagina_atual, total_paginas,
-                          linhas, titulos_colunas, precisa_titulo, desenhar):
+                          linhas, titulos_colunas, precisa_titulo, desenhar, nova_pagina_no_inicio=False):
     """Desenha (ou só mede, se `desenhar=False`) um bloco de linhas do
     anexo (Ativo OU Passivo) com quebra de página automática -- usa
     `_linha_anexo(..., desenhar=False)` pra medir a altura real de cada
@@ -934,6 +934,13 @@ def _paginar_bloco_anexo(c, dados, x, largura, y, pagina_atual, total_paginas,
 
     topo_y_pagina = _ANEXO_Y_INICIO + (12 if (titulos_colunas and n_col > 1) else 0)
     primeiro_do_bloco = True
+    if nova_pagina_no_inicio and secoes:
+        # v0.40.0 (item C): este bloco (Passivo + PL) SEMPRE abre pagina
+        # nova, nunca continua logo abaixo do bloco anterior (Ativo). O
+        # fluxo continuo antigo deixava "Passivo" no rodape da pagina do
+        # Ativo e so' o Patrimonio Liquido (quase vazio) na pagina
+        # seguinte.
+        _quebrar_pagina()
     for secao in secoes:
         if precisa_titulo:
             _desenhar_titulos()
@@ -979,11 +986,12 @@ def _paginar_anexo_multi(c, dados, pagina_inicial, total_paginas, desenhar=True)
     for bloco_i, linhas in enumerate([d.get("anexo_ativo", []), d.get("anexo_passivo", [])]):
         if not linhas:
             continue
-        if bloco_i == 1:
-            y += 14
+        # Passivo + PL abre pagina propria (so' se o Ativo existe: sem
+        # bloco anterior nao ha o que separar).
+        nova_pagina = bloco_i == 1 and bool(d.get("anexo_ativo"))
         y, pagina_atual, precisa_titulo = _paginar_bloco_anexo(
             c, dados, MARGEM, CONTEUDO_W, y, pagina_atual, total_paginas,
-            linhas, titulos_colunas, precisa_titulo, desenhar,
+            linhas, titulos_colunas, precisa_titulo, desenhar, nova_pagina_no_inicio=nova_pagina,
         )
     return pagina_atual, y
 
@@ -1027,6 +1035,13 @@ def desenhar_bloco_empresa_capa(c, dados) -> float:
 
 
 # ------------------------------------------------------------------ pagina 1
+# v0.40.0: selo da capa por variante (padrao = sem selo).
+SELO_VARIANTE = {"gerencial": "GERENCIAL", "fornecedor": "FORNECEDOR"}
+# variantes que NAO incluem a pagina "Composicao das Despesas" (v0.40.0:
+# "fornecedor" = igual ao padrao, so' muda o titulo/selo/sufixo do arquivo)
+VARIANTES_SEM_PAGINA_DESPESAS = ("padrao", "fornecedor")
+
+
 def pagina_capa(c, dados, pagina: int, total_paginas: int):
     """Capa -- painel diagonal navy a direita, logo + titulo a esquerda,
     pilula laranja com o periodo.
@@ -1112,11 +1127,13 @@ def pagina_capa(c, dados, pagina: int, total_paginas: int):
     # (Destaques/Receita-Custos/Resultado/EBITDA/Balanço/Anexo/Fechamento)
     # e' o MESMO dado, so' a pagina de Despesas que soma/some (ver
     # `gerar_pdf_completo`).
-    if dados.get("variante") == "gerencial":
+    # v0.40.0: "fornecedor" usa o MESMO mecanismo do selo (texto proprio).
+    texto_selo = SELO_VARIANTE.get(dados.get("variante", "padrao"))
+    if texto_selo:
         x_selo0 = MARGEM + stringWidth("Comentado", FONT["heavy"], 30) + 14
-        largura_selo = stringWidth("GERENCIAL", FONT["bold"], 9) + 20
+        largura_selo = stringWidth(texto_selo, FONT["bold"], 9) + 20
         rect(c, x_selo0, 322, x_selo0 + largura_selo, 344, fill=ORANGE, radius=8)
-        txt(c, x_selo0 + largura_selo / 2, 337, "GERENCIAL", font="bold", size=9, color="#FFFFFF", align="center")
+        txt(c, x_selo0 + largura_selo / 2, 337, texto_selo, font="bold", size=9, color="#FFFFFF", align="center")
 
     # FIX_20260930b: bloco da empresa/grupo (ver desenhar_bloco_empresa_capa)
     # -- multi-CNPJ: "Grupo Enermais" em destaque + lista de nomes menor.
@@ -1741,8 +1758,9 @@ def gerar_pdf_completo(dados: dict, caminho_saida: str, incluir_pagina_resultado
     Gerencial", NAO no "Demonstrativo Comentado" padrão que a contadora
     já usa hoje): "padrao" (default, também o comportamento quando o
     campo está ausente -- 100% retrocompatível com todo dado montado
-    antes desta rodada) pula `pagina_despesas`; "gerencial" inclui, igual
-    a sempre. Extensível de propósito (string, não bool) -- uma 3ª
+    antes desta rodada) pula `pagina_despesas`; "fornecedor" (v0.40.0) tambem
+    pula (= padrao, com selo/titulo/sufixo proprios); "gerencial" inclui,
+    igual a sempre. Extensível de propósito (string, não bool) -- uma 3ª
     variante ("fornecedor", cogitada mas explicitamente adiada pelo
     Rafael) pode entrar depois sem reabrir esta assinatura; até lá,
     qualquer variante desconhecida cai no mesmo caminho de "gerencial"
@@ -1760,7 +1778,7 @@ def gerar_pdf_completo(dados: dict, caminho_saida: str, incluir_pagina_resultado
     _registrar_fontes()
     c = canvas.Canvas(caminho_saida, pagesize=(PAGE_W, PAGE_H))
     paginas = PAGINAS if incluir_pagina_resultado else [p for p in PAGINAS if p is not pagina_resultado]
-    if dados.get("variante", "padrao") == "padrao":
+    if dados.get("variante", "padrao") in VARIANTES_SEM_PAGINA_DESPESAS:
         paginas = [p for p in paginas if p is not pagina_despesas]
     # FIX_20260930: `pagina_balanco`/`_leitura_balanco` nao podem mais
     # adivinhar "tem pagina_resultado?" pelo NUMERO absoluto da pagina do

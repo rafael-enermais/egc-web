@@ -290,13 +290,34 @@ def test_anexo_multi_periodo_uniao_com_conta_nova_e_zero_fill():
     print("OK: _montar_anexo_multi_periodo — união das contas dos N períodos, conta nova entra com 0.0 no período ausente")
 
 
-def test_anexo_multi_periodo_preserva_ordem_do_primeiro_periodo():
+def test_anexo_multi_periodo_conta_nova_fica_dentro_do_grupo_antes_do_subtotal():
+    # v0.40.0 (item C): conta que so' existe em periodo posterior NAO vai
+    # mais pro fim da lista (depois do TOTAL): entra dentro do proprio
+    # grupo, em ordem alfabetica sem acento, antes do subtotal.
     linhas = drc._montar_anexo_multi_periodo([BP_2025, BP_2026], "ATIVO")
-    labels_na_ordem = [l[1] for l in linhas]
-    # Disponível (existe nos 2 períodos, aparece em BP_2025 primeiro) vem
-    # antes de Clientes (só aparece em BP_2026, entra no fim do grupo).
-    assert labels_na_ordem.index("Disponível") < labels_na_ordem.index("Clientes")
-    print("OK: _montar_anexo_multi_periodo — ordem das linhas segue o 1º período que tiver cada uma, novas no fim")
+    labels = [l[1] for l in linhas]
+    assert labels.index("Ativo Circulante") < labels.index("Clientes") < labels.index("Disponível") \
+        < labels.index("Total Ativo Circulante") < labels.index("TOTAL DO ATIVO")
+    assert labels[-1] == "TOTAL DO ATIVO"
+    print("OK: _montar_anexo_multi_periodo — conta nova entra no proprio grupo, antes do subtotal")
+
+
+def test_anexo_multi_periodo_nada_depois_do_total_geral():
+    def _bp(extra):
+        base = [
+            {"grupo": "ATIVO NAO CIRCULANTE", "conta": "IMOBILIZADO", "valor": 10.0},
+            {"grupo": "ATIVO NAO CIRCULANTE", "conta": "TOTAL NAO CIRCULANTE ATIVO", "valor": 10.0 + extra},
+            {"grupo": "TOTAL", "conta": "TOTAL DO ATIVO", "valor": 10.0 + extra},
+        ]
+        if extra:
+            base.insert(1, {"grupo": "ATIVO NAO CIRCULANTE", "conta": "IMOVEIS", "valor": extra})
+        return base
+    linhas = drc._montar_anexo_multi_periodo([_bp(0.0), _bp(5.0)], "ATIVO")
+    assert [l[1] for l in linhas] == [
+        "Ativo Não Circulante", "Imobilizado", "Imóveis", "Total Ativo Não Circulante", "TOTAL DO ATIVO",
+    ]
+    assert linhas[2] == ("conta", "Imóveis", 0.0, 5.0)
+    print("OK: _montar_anexo_multi_periodo — nenhuma linha depois do total geral")
 
 
 def test_anexo_multi_periodo_omite_subconta_mas_conta_pai_mantem_valor_proprio():
