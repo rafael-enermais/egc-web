@@ -443,13 +443,24 @@ def test_variante_gerencial_muda_titulo_do_cabecalho():
     print("OK: variante='gerencial' muda o título pra 'Demonstrativo Comentado Gerencial' no cabeçalho")
 
 
+def test_variante_fornecedor_v040_muda_titulo_e_mantem_conteudo_do_padrao():
+    # v0.40.0: "fornecedor" construida -- mesmo conteudo do padrao, so' titulo/selo mudam.
+    dados, _ = _montar(variante="fornecedor")
+    assert dados["variante"] == "fornecedor"
+    assert dados["cabecalho_relatorio"] == "Demonstrativo Comentado Fornecedor · 1º Semestre 2026"
+    base, _ = _montar()
+    for campo in ("receita_liquida", "ebitda", "resultado_liquido", "total_ativo", "anexo_ativo", "anexo_passivo"):
+        assert dados[campo] == base[campo]
+    print("OK: variante='fornecedor' muda so' o titulo; numeros iguais ao padrao")
+
+
 def test_variante_desconhecida_levanta_valueerror_claro():
     try:
-        _montar(variante="fornecedor")
-        assert False, "deveria ter levantado ValueError -- variante 'fornecedor' ainda não foi construída"
+        _montar(variante="inexistente")
+        assert False, "deveria ter levantado ValueError -- variante desconhecida"
     except ValueError as e:
-        assert "fornecedor" in str(e)
-    print("OK: variante desconhecida ('fornecedor', cogitada mas não implementada) levanta ValueError claro")
+        assert "inexistente" in str(e) and "fornecedor" in str(e)  # lista as validas, inclui fornecedor
+    print("OK: variante desconhecida levanta ValueError claro, listando as validas")
 
 
 EMPRESAS_GRUPO = [
@@ -497,7 +508,7 @@ def test_grupo_preenche_empresas_nomes_com_o_nome_real_de_cada_empresa():
          patch("dados_relatorio_comentado.visao_grupo.montar_pivot_grupo", side_effect=_pivot_fake), \
          patch("dados_relatorio_comentado.db.listar_periodos_grupo", return_value=[PERIODO]), \
          patch("dados_relatorio_comentado.db.listar_lancamentos_grupo_periodos",
-               side_effect=lambda conn, periodos, tipo, cods:
+               side_effect=lambda conn, periodos, tipo, cods, status="ATIVO", granularidade=None:
                [dict(x, periodo=PERIODO, granularidade="") for x in (BP_GRUPO_ACHATADO if tipo == "BP" else DRE_GRUPO_ACHATADO)]), \
          patch("dados_relatorio_comentado.db.listar_despesas_admin_itens", return_value=[]), \
          patch("dados_relatorio_comentado.indicadores.calcular_indicadores",

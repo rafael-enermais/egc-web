@@ -153,3 +153,18 @@ def test_capa_1_empresa_continua_igual():
     nome = next(k for k in chamadas if k[1] == "Enermais Energia Ltda")
     assert nome[2]["size"] == 12
     assert any(k[1] == "CNPJ 47.040.664/0001-48" for k in chamadas)
+
+
+def test_passivo_e_pl_abrem_pagina_propria_mesmo_com_anexo_pequeno():
+    """v0.40.0 (item C): Ativo numa pagina, Passivo + PL na seguinte -- mesmo
+    quando tudo caberia numa pagina so' (antes o Passivo comecava no pe' da
+    pagina do Ativo e o PL ficava sozinho na seguinte)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        dados = _dados_anexo(n_secoes=2, n_contas=3)
+        paginas = _paginas_texto(dados, tmp)
+        pg_ativo = [i for i, t in enumerate(paginas) if "TOTAL DO ATIVO" in t]
+        pg_passivo = [i for i, t in enumerate(paginas) if "PASSIVO SECAO 1" in t]
+        assert pg_ativo and pg_passivo
+        assert pg_ativo[0] < pg_passivo[0]
+        assert not any("PASSIVO SECAO" in t and "ATIVO SECAO" in t for t in paginas)
+        assert len(paginas) == len(B.PAGINAS) + A.paginas_extras_anexo(dados)

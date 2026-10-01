@@ -55,6 +55,13 @@ recebendo so' as datas. Ja' o "periodo de detalhe" (tabela BP/DRE por
 conta, abaixo) PRECISA saber qual documento mostrar quando ha' ambiguidade
 -- vira selecao de (periodo, granularidade), com a granularidade no
 rotulo so' quando aquele periodo_fim tem mais de 1 documento ativo.
+
+v0.40.0: "Resumo do grupo" ganhou EBITDA, Margem Bruta/EBITDA/Liquida, ROA/ROE,
+Capital de Giro, Liquidez Corrente, Endividamento Geral e Alavancagem (via
+visao_grupo.montar_indicadores_grupo -> indicadores.calcular_indicadores,
+respeitando o seletor "Base do periodo"), mais um grafico de margens; antes
+mostrava so' Total do Ativo/Passivo, Receita Liquida, Lucro Bruto e Lucro
+Liquido + 2 graficos (BP e DRE).
 """
 import sys
 from pathlib import Path
@@ -194,23 +201,91 @@ def _metric(col, serie, conta, label, periodo, periodo_ant):
     col.metric(label, formatacao.moeda_br(valor), delta=(formatacao.moeda_br(delta, forcar_sinal=True) if delta is not None else None))
 
 
-k1, k2, k3, k4, k5 = st.columns(5)
-_metric(k1, serie_bp, "TOTAL DO ATIVO", "Total do Ativo", periodo_detalhe, periodo_anterior)
-_metric(k2, serie_bp, "TOTAL DO PASSIVO", "Total do Passivo", periodo_detalhe, periodo_anterior)
-_metric(k3, serie_dre, "RECEITA OPERACIONAL LIQUIDA", "Receita Líquida", periodo_detalhe, periodo_anterior)
-_metric(k4, serie_dre, "LUCRO BRUTO", "Lucro Bruto", periodo_detalhe, periodo_anterior)
-_metric(k5, serie_dre, "LUCRO LIQUIDO DO EXERCICIO", "Lucro Líquido", periodo_detalhe, periodo_anterior)
+# v0.40.0 -- indicadores do grupo (EBITDA, margens, alavancagem, ...) por
+# periodo, SOMANDO as empresas selecionadas e usando so' a base escolhida
+# (mesmo `indicadores.calcular_indicadores` das outras telas; razoes
+# calculadas sobre os totais somados, nao media das razoes).
+ind_grupo = visao_grupo.montar_indicadores_grupo(
+    lancs_bp_multi, lancs_dre_multi, cods_selecionados, periodos_sel, base_sel,
+)
+
+
+def _metric_ind(col, coluna, label, formato, periodo, periodo_ant, inverso=False, help=None):
+    """KPI vindo de `ind_grupo`. formato: 'moeda' | 'pct' (delta em p.p.) | 'x'.
+    `inverso=True`: subir e' pior (endividamento, alavancagem) -> seta
+    vermelha na alta. Sem dado (NaN) mostra '—' e nunca inventa delta."""
+    ts = pd.Timestamp(periodo)
+    valor = ind_grupo.loc[ts, coluna] if (ts in ind_grupo.index and coluna in ind_grupo.columns) else float("nan")
+    delta = None
+    if periodo_ant is not None and pd.Timestamp(periodo_ant) in ind_grupo.index and coluna in ind_grupo.columns:
+        delta = valor - ind_grupo.loc[pd.Timestamp(periodo_ant), coluna]
+    if pd.isna(valor) or (delta is not None and pd.isna(delta)):
+        delta = None
+    if formato == "moeda":
+        txt_valor = formatacao.moeda_br(valor)
+        txt_delta = formatacao.moeda_br(delta, forcar_sinal=True) if delta is not None else None
+    elif formato == "pct":
+        txt_valor = formatacao.pct_br(valor)
+        txt_delta = formatacao.pct_br(delta, forcar_sinal=True).replace("%", " p.p.") if delta is not None else None
+    else:
+        txt_valor = formatacao.numero_br(valor, sufixo="x")
+        txt_delta = formatacao.numero_br(delta, sufixo="x", forcar_sinal=True) if delta is not None else None
+    col.metric(label, txt_valor, delta=txt_delta, delta_color=("inverse" if inverso else "normal"), help=help)
+
+
+_data_ant_txt = periodo_anterior.strftime("%m/%Y") if periodo_anterior is not None else None
+st.caption(
+    f"Variações comparadas a {_data_ant_txt} (período anterior da seleção, mesma base)."
+    if _data_ant_txt else "Sem período anterior na seleção — sem variação."
+)
+
+st.markdown("**Resultado do período (DRE)**")
+r1 = st.columns(4)
+_metric(r1[0], serie_dre, "RECEITA OPERACIONAL LIQUIDA", "Receita Líquida", periodo_detalhe, periodo_anterior)
+_metric(r1[1], serie_dre, "LUCRO BRUTO", "Lucro Bruto", periodo_detalhe, periodo_anterior)
+_metric_ind(r1[2], "EBITDA", "EBITDA", "moeda", periodo_detalhe, periodo_anterior,
+            help="Resultado operacional antes de juros, depreciação e amortização (mesma fórmula de indicadores.py).")
+_metric(r1[3], serie_dre, "LUCRO LIQUIDO DO EXERCICIO", "Resultado Líquido", periodo_detalhe, periodo_anterior)
+
+r2 = st.columns(5)
+_metric_ind(r2[0], "Margem Bruta", "Margem Bruta", "pct", periodo_detalhe, periodo_anterior)
+_metric_ind(r2[1], "Margem EBITDA", "Margem EBITDA", "pct", periodo_detalhe, periodo_anterior)
+_metric_ind(r2[2], "Margem Líquida", "Margem Líquida", "pct", periodo_detalhe, periodo_anterior)
+_metric_ind(r2[3], "ROA", "ROA", "pct", periodo_detalhe, periodo_anterior,
+            help="Resultado líquido do período / Total do Ativo (não anualizado).")
+_metric_ind(r2[4], "ROE", "ROE", "pct", periodo_detalhe, periodo_anterior,
+            help="Resultado líquido do período / Patrimônio Líquido (não anualizado).")
+
+st.markdown("**Posição patrimonial (BP) e estrutura**")
+r3 = st.columns(6)
+_metric(r3[0], serie_bp, "TOTAL DO ATIVO", "Total do Ativo", periodo_detalhe, periodo_anterior)
+_metric(r3[1], serie_bp, "TOTAL DO PASSIVO", "Total do Passivo", periodo_detalhe, periodo_anterior)
+_metric_ind(r3[2], "Capital de Giro", "Capital de Giro", "moeda", periodo_detalhe, periodo_anterior,
+            help="Ativo Circulante - Passivo Circulante.")
+_metric_ind(r3[3], "Liquidez Corrente", "Liquidez Corrente", "x", periodo_detalhe, periodo_anterior)
+_metric_ind(r3[4], "Endividamento Geral", "Endividamento Geral", "pct", periodo_detalhe, periodo_anterior, inverso=True,
+            help="Passivo exigível (circulante + não circulante) / Total do Ativo.")
+_metric_ind(r3[5], "Alavancagem", "Alavancagem", "x", periodo_detalhe, periodo_anterior, inverso=True,
+            help="Passivo exigível / Patrimônio Líquido (R$ de terceiros para cada R$ 1,00 próprio).")
+st.caption(
+    "Consolidado = soma simples das empresas selecionadas (sem eliminações entre empresas). "
+    "Margens, ROA/ROE, liquidez, endividamento e alavancagem são calculados sobre os totais somados."
+)
 
 if len(periodos_sel) >= 2:
-    g1, g2 = st.columns(2)
+    g1, g2, g3 = st.columns(3)
     g1.caption("Evolução patrimonial (BP)")
     g1.line_chart(serie_bp.rename(columns={"TOTAL DO ATIVO": "Ativo", "TOTAL DO PASSIVO": "Passivo"}))
     g2.caption("Evolução de resultado (DRE)")
-    g2.line_chart(serie_dre.rename(columns={
+    _dre_chart = serie_dre.rename(columns={
         "RECEITA OPERACIONAL LIQUIDA": "Receita líquida",
         "LUCRO BRUTO": "Lucro bruto",
-        "LUCRO LIQUIDO DO EXERCICIO": "Lucro líquido",
-    }))
+        "LUCRO LIQUIDO DO EXERCICIO": "Resultado líquido",
+    })
+    _dre_chart["EBITDA"] = ind_grupo["EBITDA"]
+    g2.line_chart(_dre_chart)
+    g3.caption("Margens (%)")
+    g3.line_chart((ind_grupo[["Margem Bruta", "Margem EBITDA", "Margem Líquida"]] * 100.0))
 else:
     st.caption("Selecione 2+ períodos pra ver os gráficos de evolução (com 1 só, os KPIs acima já mostram o valor).")
 

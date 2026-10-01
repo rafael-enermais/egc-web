@@ -160,12 +160,13 @@ class FakeDB:
         ]
 
     @staticmethod
-    def listar_lancamentos_grupo_periodos(conn, periodos, tipo, cods, status="ATIVO"):
+    def listar_lancamentos_grupo_periodos(conn, periodos, tipo, cods, status="ATIVO", granularidade=None):
         return [
             dict(empresa_codigo=l["empresa"], periodo=l["periodo"], grupo=l["grupo"], conta=l["conta"],
                  valor=l["valor"], granularidade=l["gran"])
             for l in _ativos(status)
             if l["periodo"] in periodos and l["tipo"] == tipo and l["empresa"] in cods
+            and (granularidade is None or l["gran"] == granularidade)
         ]
 
     @staticmethod
@@ -337,12 +338,15 @@ def test_comparativo_2_periodos_mesmo_fim_com_granularidades_diferentes_tem_ebit
     assert graf["EBITDA"][0] != graf["EBITDA"][1]
 
 
-def test_comparativo_grupo_trimestral_soma_ebitda_das_6_empresas():
-    dados = drc.montar_dados_relatorio_comparativo(
-        object(), TODAS, [P_JUN, P_JUN], ["a", "b"], "a A b", granularidades=["trimestral", "trimestral"],
-    )
-    fluxo = {k["label"]: k["valores"] for k in dados["kpis_fluxo"]}
-    assert fluxo["EBITDA"] == pytest.approx([-16268.75, -16268.75], abs=0.01)
+def test_comparativo_rejeita_o_mesmo_item_duas_vezes():
+    # v0.40.0: (periodo + granularidade) repetido gerava 2 colunas identicas
+    # (PDFs de 01/10/2026) -- agora e' erro claro. A soma do EBITDA do grupo
+    # trimestral (-16.268,75) e' conferida em tests/test_integracao_granularidade_pg.py.
+    with pytest.raises(ValueError) as exc:
+        drc.montar_dados_relatorio_comparativo(
+            object(), TODAS, [P_JUN, P_JUN], ["a", "b"], "a A b", granularidades=["trimestral", "trimestral"],
+        )
+    assert "mais de uma vez" in str(exc.value)
 
 
 def test_comparativo_grupo_com_semestral_so_da_energia_falha_claro():

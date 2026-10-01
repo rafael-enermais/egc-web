@@ -212,53 +212,76 @@ def _luminosidade_hex(cor_hex: str) -> float:
 
 
 def test_grafico_evolucao_cores_periodos_positivos_sao_distintas():
-    """Paleta A (padrao, FIX_20260930b): anteriores em navy dessaturado do
-    claro ao escuro, MAIS RECENTE em ORANGE; todas distintas entre si
-    para n=2,3,4 e com degrau de luminosidade visivel entre anteriores."""
+    """v0.40.0 (item E): valores >= 0 -- rampa de navy; o mais antigo no tom
+    mais claro, o MAIS RECENTE em NAVY pleno; todas distintas entre si
+    para n=2,3,4 com degrau de luminosidade visivel."""
     for n_periodos in (2, 3, 4):
         cores = [B._cor_periodo(i, n_periodos, v=1.0) for i in range(n_periodos)]
-        assert len(set(cores)) == n_periodos, (
-            f"n_periodos={n_periodos}: cores repetidas entre períodos positivos ({cores}) -- "
-            "período diferente tem que ter cor visivelmente diferente"
-        )
-        assert cores[-1] == B.ORANGE, "o período mais recente tem que ser o destaque laranja"
-        anteriores = cores[:-1]
-        assert all(c != B.NAVY for c in anteriores)
-        lum = [_luminosidade_hex(c) for c in anteriores]
-        # anteriores: mais antigo = mais claro (luminosidade estritamente decrescente)
-        assert all(lum[i] > lum[i + 1] for i in range(len(lum) - 1)), (
-            f"n_periodos={n_periodos}: anteriores não escurecem do mais antigo pro mais recente ({lum})"
-        )
-        if len(lum) > 1:
-            assert min(lum[i] - lum[i + 1] for i in range(len(lum) - 1)) > 0.06, f"degrau quase invisivel: {lum}"
-        # contraste das barras anteriores contra o fundo branco (barra precisa aparecer)
-        assert all(l < 0.80 for l in lum), f"barra anterior clara demais sobre o branco: {lum}"
-    print("OK: cor do gráfico de evolução (paleta A) -- 2/3/4 períodos distintos, anteriores em navy do claro ao escuro, mais recente em ORANGE")
-
-
-def test_grafico_evolucao_paleta_b_tudo_navy_mais_recente_navy_pleno():
-    for n_periodos in (2, 3, 4):
-        cores = [B._cor_periodo(i, n_periodos, v=1.0, paleta="B") for i in range(n_periodos)]
-        assert len(set(cores)) == n_periodos
-        assert cores[-1] == B.NAVY
-        assert B.ORANGE not in cores
+        assert len(set(cores)) == n_periodos, f"n={n_periodos}: cores repetidas ({cores})"
+        assert cores[-1] == B.NAVY, "o periodo mais recente tem que ser o NAVY pleno"
+        assert B.ORANGE not in cores, "laranja nao e' mais cor de destaque do periodo recente"
         lum = [_luminosidade_hex(c) for c in cores]
-        assert all(lum[i] > lum[i + 1] for i in range(n_periodos - 1)), f"paleta B: mais escuro = mais recente ({lum})"
-    print("OK: paleta B -- tudo em tons de navy, mais recente = NAVY, sem laranja")
+        assert all(lum[i] > lum[i + 1] for i in range(n_periodos - 1)), f"mais escuro = mais recente ({lum})"
+        assert min(lum[i] - lum[i + 1] for i in range(n_periodos - 1)) > 0.06, f"degrau quase invisivel: {lum}"
+        assert all(l < 0.80 for l in lum), f"barra clara demais sobre o branco: {lum}"
+    print("OK: valores >= 0 em navy -- mais antigo claro, mais recente NAVY pleno, todos distintos")
+
+
+def test_grafico_evolucao_valores_abaixo_de_zero_usam_familia_laranja_por_recencia():
+    for n_periodos in (2, 3, 4):
+        cores = [B._cor_periodo(i, n_periodos, v=-1.0) for i in range(n_periodos)]
+        assert len(set(cores)) == n_periodos, f"n={n_periodos}: cores repetidas ({cores})"
+        assert cores[-1] == B.ORANGE, "o periodo mais recente (abaixo de zero) e' o ORANGE pleno"
+        assert B.RED_ACCENT not in cores
+        lum = [_luminosidade_hex(c) for c in cores]
+        assert all(lum[i] > lum[i + 1] for i in range(n_periodos - 1)), f"mais claro = mais antigo ({lum})"
+        # nao pode coincidir com nenhum tom da rampa de positivos
+        pos = {B._cor_periodo(i, n_periodos, v=1.0) for i in range(n_periodos)}
+        assert not (set(cores) & pos)
+    print("OK: valores < 0 em familia laranja, mais claro = mais antigo, pleno = mais recente")
+
+
+def test_grafico_evolucao_paleta_alternativa_teal():
+    for n_periodos in (2, 3, 4):
+        cores = [B._cor_periodo(i, n_periodos, v=-1.0, paleta="teal") for i in range(n_periodos)]
+        assert len(set(cores)) == n_periodos
+        assert cores[-1] == B.PALETAS_NEGATIVO["teal"][1]
+    # paleta desconhecida cai no padrao (nunca quebra)
+    assert B._cor_periodo(0, 3, -1.0, paleta="xyz") == B._cor_periodo(0, 3, -1.0)
+    print("OK: paleta alternativa teal e fallback para o padrao")
 
 
 def test_grafico_evolucao_texto_do_valor_sempre_legivel():
+    def _contraste(hex_):
+        def lin(c):
+            c = c / 255
+            return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+        h = hex_.lstrip("#")
+        r, g, b = (lin(int(h[i:i + 2], 16)) for i in (0, 2, 4))
+        return 1.05 / (0.2126 * r + 0.7152 * g + 0.0722 * b + 0.05)
     for v in (1.0, 1_000_000.0):
-        assert _luminosidade_hex(B._cor_texto_valor(v)) < 0.15, "texto positivo tem que ser escuro (navy)"
-    assert _luminosidade_hex(B._cor_texto_valor(-5.0)) < 0.40, "texto negativo tem que ser legivel sobre branco"
-    print("OK: cor do texto do valor independe do tom (claro) da barra e sempre lê sobre o branco")
+        assert _luminosidade_hex(B._cor_texto_valor(v)) < 0.15, "texto >= 0 tem que ser escuro (navy)"
+    for pal in (None, "laranja", "teal"):
+        assert _contraste(B._cor_texto_valor(-5.0, pal)) >= 4.5, f"texto abaixo de zero ilegivel ({pal})"
+    print("OK: cor do texto do valor independe do tom (claro) da barra e tem contraste >= 4,5:1")
 
 
-def test_grafico_evolucao_negativo_sempre_red_accent_independente_do_periodo():
-    for n_periodos in (2, 3, 4):
-        for i in range(n_periodos):
-            assert B._cor_periodo(i, n_periodos, v=-1.0) == B.RED_ACCENT
-    print("OK: valor negativo é sempre RED_ACCENT, independente do período/posição na escala ordinal")
+def test_legenda_do_grafico_de_evolucao_e_neutra_e_descreve_a_regra_de_cor():
+    import tempfile, os, pdfplumber
+    from test_gerador_completo import PALAVRAS_PROIBIDAS
+    dados = dict(BASE, grafico_evolucao_metricas=[
+        dict(label="EBITDA", valores=[100.0, -50.0, 80.0]),
+    ], periodos_labels=["a", "b", "c"])
+    with tempfile.TemporaryDirectory() as tmp:
+        cam = os.path.join(tmp, "g.pdf")
+        B.gerar_pdf_comparativo(dados, cam)
+        with pdfplumber.open(cam) as pdf:
+            pagina = pdf.pages[2].extract_text()
+    assert "Como ler" in pagina and "comprimento da barra" in pagina
+    baixo = pagina.lower()
+    for palavra in PALAVRAS_PROIBIDAS:
+        assert palavra.lower() not in baixo, f"palavra avaliativa '{palavra}' na legenda do grafico"
+    print("OK: legenda do grafico neutra e descreve cor = periodo + sinal, barra = valor")
 
 
 if __name__ == "__main__":

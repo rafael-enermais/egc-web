@@ -289,14 +289,14 @@ def test_anexo_multi_coluna_grande_nao_perde_conteudo_estourando_pagina():
         g.gerar_pdf_completo(dados_grande, caminho)
         assert os.path.getsize(caminho) > 5000
 
-    # dataset pequeno (caso ja coberto antes) continua cabendo numa so' pagina
+    # dataset pequeno: v0.40.0 -- Ativo e Passivo+PL nunca dividem pagina (1 extra)
     dados_pequeno = dict(
         BASE, empresa_nome="Grupo Enermais", empresas_codigos=["ENERGIA", "SMG"],
         anexo_colunas=["Enermais Energia", "SMG Soluções"], anexo_escopo_label="Grupo Enermais",
         anexo_ativo=[("grupo", "ATIVO"), ("conta", "Disponível", 100.0, 150.0), ("total", "TOTAL DO ATIVO", 100.0, 150.0)],
         anexo_passivo=[("grupo", "PASSIVO"), ("conta", "Fornecedores", 100.0, 150.0), ("total", "TOTAL DO PASSIVO", 100.0, 150.0)],
     )
-    assert g.paginas_extras_anexo(dados_pequeno) == 0
+    assert g.paginas_extras_anexo(dados_pequeno) == 1
     print("OK: anexo multi-coluna grande usa páginas extras em vez de perder conteúdo (paginas_extras_anexo="
           f"{extras}); dataset pequeno continua em 1 página só")
 
@@ -481,3 +481,22 @@ def test_nomes_empresas_grupo_cai_pros_codigos_se_empresas_nomes_ausente():
     dados = dict(BASE, empresas_codigos=["ENERGIA", "SMG"])
     assert g._nomes_empresas_grupo(dados) == ["ENERGIA", "SMG"]
     print("OK: _nomes_empresas_grupo cai pros códigos quando 'empresas_nomes' está ausente")
+
+
+def test_variante_fornecedor_igual_ao_padrao_sem_despesas_e_com_selo_proprio():
+    """v0.40.0 (item D): fornecedor = padrao (8 paginas, sem Composicao das
+    Despesas), com selo FORNECEDOR na capa; padrao/gerencial sem o selo."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cam_f = os.path.join(tmp, "f.pdf")
+        g.gerar_pdf_completo(dict(BASE, variante="fornecedor"), cam_f)
+        pg_f = _texto_paginas(cam_f)
+        assert len(pg_f) == 8
+        assert not any("Composição das Despesas" in p for p in pg_f)
+        assert "FORNECEDOR" in pg_f[0] and "GERENCIAL" not in pg_f[0]
+        cam_p = os.path.join(tmp, "p.pdf")
+        g.gerar_pdf_completo(dict(BASE, variante="padrao"), cam_p)
+        assert "FORNECEDOR" not in _texto_paginas(cam_p)[0]
+        cam_g = os.path.join(tmp, "g.pdf")
+        g.gerar_pdf_completo(dict(BASE, variante="gerencial"), cam_g)
+        assert "FORNECEDOR" not in _texto_paginas(cam_g)[0]
+    print("OK: variante 'fornecedor' = padrao (8 paginas) + selo FORNECEDOR na capa")

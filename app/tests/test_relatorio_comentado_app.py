@@ -32,6 +32,16 @@ NOVO_SENTINELA = "➕ Cadastrar novo…"
 PAGE = str(Path(__file__).resolve().parent.parent / "telas" / "8_Relatorio_Comentado.py")
 
 
+def _sel_periodo(at):
+    """selectbox do Periodo unico: a key carrega a assinatura de empresas+opcoes (v0.40.0)."""
+    return next(sb for sb in at.selectbox if sb.key and sb.key.startswith("relatorio_periodo_sel"))
+
+
+def _ms_periodos(at):
+    """multiselect de periodos do Comparativo (key com assinatura, v0.40.0)."""
+    return next(m for m in at.multiselect if m.key and m.key.startswith("relatorio_periodos_multi"))
+
+
 def _det(periodos):
     """Fase 3 (29/09/2026): converte list[date] (formato antigo, usado
     nos fixtures deste arquivo) pro formato detalhado de
@@ -79,7 +89,8 @@ def test_sem_periodo_mostra_info_sem_excecao():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=[]), \
-         patch.object(db, "listar_periodos_detalhado", return_value=_det([])):
+         patch.object(db, "listar_periodos_detalhado", return_value=_det([])), \
+         patch.object(db, "listar_periodos_completos_detalhado", return_value=_det([])):
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
         assert not at.exception, f"excecao sem periodo nenhum: {at.exception}"
@@ -96,7 +107,8 @@ def test_carrega_formulario_com_periodo_disponivel():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=[PERIODO]), \
-         patch.object(db, "listar_periodos_detalhado", return_value=_det([PERIODO])):
+         patch.object(db, "listar_periodos_detalhado", return_value=_det([PERIODO])), \
+         patch.object(db, "listar_periodos_completos_detalhado", return_value=_det([PERIODO])):
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
         assert not at.exception, f"excecao carregando formulario: {at.exception}"
@@ -116,6 +128,7 @@ def test_seletor_de_contato_salvo_preenche_nome_e_cargo():
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=[PERIODO]), \
          patch.object(db, "listar_periodos_detalhado", return_value=_det([PERIODO])), \
+         patch.object(db, "listar_periodos_completos_detalhado", return_value=_det([PERIODO])), \
          patch.object(db, "listar_contatos_relatorio", return_value=contatos):
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
@@ -139,6 +152,7 @@ def test_lista_de_contatos_e_compartilhada_entre_administrador_e_contador():
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=[PERIODO]), \
          patch.object(db, "listar_periodos_detalhado", return_value=_det([PERIODO])), \
+         patch.object(db, "listar_periodos_completos_detalhado", return_value=_det([PERIODO])), \
          patch.object(db, "listar_contatos_relatorio", return_value=contatos):
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
@@ -188,12 +202,13 @@ def test_gerar_relatorio_comparativo_chama_pipeline_e_nao_quebra():
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=PERIODOS_COMPARATIVO), \
          patch.object(db, "listar_periodos_detalhado", return_value=_det(PERIODOS_COMPARATIVO)), \
+         patch.object(db, "listar_periodos_completos_detalhado", return_value=_det(PERIODOS_COMPARATIVO)), \
          patch.object(drc, "montar_dados_relatorio_comparativo", return_value=DADOS_FIXTURE_COMPARATIVO) as m_montar, \
          patch.object(db, "registrar_relatorio_gerado") as m_log:
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
         at.radio(key="relatorio_tipo").set_value("Comparativo / Evolução").run(timeout=30)
-        at.multiselect(key="relatorio_periodos_multi").set_value([_pg(p) for p in PERIODOS_COMPARATIVO]).run(timeout=30)
+        _ms_periodos(at).set_value([_pg(p) for p in PERIODOS_COMPARATIVO]).run(timeout=30)
         botao = next(b for b in at.button if b.label == "Gerar relatório")
         assert not botao.disabled, "botão Gerar não pode ficar desabilitado com 2 períodos escolhidos"
         botao.click().run(timeout=30)
@@ -220,13 +235,14 @@ def test_comparativo_com_varias_empresas_passa_lista_pro_backend_e_nome_grupo():
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=PERIODOS_COMPARATIVO), \
          patch.object(db, "listar_periodos_detalhado", return_value=_det(PERIODOS_COMPARATIVO)), \
+         patch.object(db, "listar_periodos_completos_detalhado", return_value=_det(PERIODOS_COMPARATIVO)), \
          patch.object(drc, "montar_dados_relatorio_comparativo", return_value=DADOS_FIXTURE_COMPARATIVO) as m_montar, \
          patch.object(db, "registrar_relatorio_gerado") as m_log:
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
         at.radio(key="relatorio_tipo").set_value("Comparativo / Evolução").run(timeout=30)
         at.multiselect(key="relatorio_empresas_multi").set_value(["ENERGIA", "SMG"]).run(timeout=30)
-        at.multiselect(key="relatorio_periodos_multi").set_value([_pg(p) for p in PERIODOS_COMPARATIVO]).run(timeout=30)
+        _ms_periodos(at).set_value([_pg(p) for p in PERIODOS_COMPARATIVO]).run(timeout=30)
         botao = next(b for b in at.button if b.label == "Gerar relatório")
         assert not botao.disabled
         botao.click().run(timeout=30)
@@ -251,11 +267,12 @@ def test_trocar_selecao_de_periodos_nao_deixa_rotulo_preso_no_slot_antigo():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=periodos_disponiveis), \
-         patch.object(db, "listar_periodos_detalhado", return_value=_det(periodos_disponiveis)):
+         patch.object(db, "listar_periodos_detalhado", return_value=_det(periodos_disponiveis)), \
+         patch.object(db, "listar_periodos_completos_detalhado", return_value=_det(periodos_disponiveis)):
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
         at.radio(key="relatorio_tipo").set_value("Comparativo / Evolução").run(timeout=30)
-        at.multiselect(key="relatorio_periodos_multi").set_value([_pg(p) for p in PERIODOS_COMPARATIVO]).run(timeout=30)
+        _ms_periodos(at).set_value([_pg(p) for p in PERIODOS_COMPARATIVO]).run(timeout=30)
 
         rotulos = [ti for ti in at.text_input if ti.key and ti.key.startswith("relatorio_periodo_multi_label_")]
         assert len(rotulos) == 2
@@ -264,7 +281,7 @@ def test_trocar_selecao_de_periodos_nao_deixa_rotulo_preso_no_slot_antigo():
         # Troca a seleção pra um período diferente no lugar do mais antigo
         # (simula o Rafael mudando de ideia sobre quais períodos comparar).
         nova_selecao = [_pg(PERIODOS_COMPARATIVO[1]), _pg(periodo_extra)]
-        at.multiselect(key="relatorio_periodos_multi").set_value(nova_selecao).run(timeout=30)
+        _ms_periodos(at).set_value(nova_selecao).run(timeout=30)
         assert not at.exception, f"excecao trocando seleção de períodos: {at.exception}"
 
         rotulos_novos = sorted(
@@ -288,11 +305,12 @@ def test_botao_gerar_desabilitado_com_menos_de_2_periodos_no_comparativo():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=PERIODOS_COMPARATIVO), \
-         patch.object(db, "listar_periodos_detalhado", return_value=_det(PERIODOS_COMPARATIVO)):
+         patch.object(db, "listar_periodos_detalhado", return_value=_det(PERIODOS_COMPARATIVO)), \
+         patch.object(db, "listar_periodos_completos_detalhado", return_value=_det(PERIODOS_COMPARATIVO)):
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
         at.radio(key="relatorio_tipo").set_value("Comparativo / Evolução").run(timeout=30)
-        at.multiselect(key="relatorio_periodos_multi").set_value([_pg(PERIODOS_COMPARATIVO[0])]).run(timeout=30)
+        _ms_periodos(at).set_value([_pg(PERIODOS_COMPARATIVO[0])]).run(timeout=30)
         botao = next(b for b in at.button if b.label == "Gerar relatório")
         assert botao.disabled, "botão Gerar deveria ficar desabilitado com só 1 período no modo comparativo"
         print("OK: Relatório Comentado — botão Gerar desabilitado no comparativo com menos de 2 períodos")
@@ -308,6 +326,7 @@ def test_periodo_unico_com_varias_empresas_consolida_e_passa_lista_pro_backend()
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=[PERIODO]), \
          patch.object(db, "listar_periodos_detalhado", return_value=_det([PERIODO])), \
+         patch.object(db, "listar_periodos_completos_detalhado", return_value=_det([PERIODO])), \
          patch.object(drc, "montar_dados_relatorio", return_value=(DADOS_FIXTURE, True)) as m_montar, \
          patch.object(db, "registrar_relatorio_gerado") as m_log:
         at = AppTest.from_file(PAGE)
@@ -330,6 +349,7 @@ def test_periodo_unico_1_empresa_continua_enviando_string_sem_regressao():
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=[PERIODO]), \
          patch.object(db, "listar_periodos_detalhado", return_value=_det([PERIODO])), \
+         patch.object(db, "listar_periodos_completos_detalhado", return_value=_det([PERIODO])), \
          patch.object(drc, "montar_dados_relatorio", return_value=(DADOS_FIXTURE, True)) as m_montar, \
          patch.object(db, "registrar_relatorio_gerado") as m_log:
         at = AppTest.from_file(PAGE)
@@ -354,18 +374,19 @@ def test_trocar_periodo_no_unico_nao_deixa_rotulo_preso_no_periodo_antigo():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=[PERIODO, periodo_extra]), \
-         patch.object(db, "listar_periodos_detalhado", return_value=_det([PERIODO, periodo_extra])):
+         patch.object(db, "listar_periodos_detalhado", return_value=_det([PERIODO, periodo_extra])), \
+         patch.object(db, "listar_periodos_completos_detalhado", return_value=_det([PERIODO, periodo_extra])):
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
         # _periodos_intersecao ordena crescente -- período mais antigo
         # (periodo_extra, 2023) vem selecionado por padrão (índice 0).
-        assert at.selectbox(key="relatorio_periodo_sel").value == _pg(periodo_extra)
+        assert _sel_periodo(at).value == _pg(periodo_extra)
 
         rotulo_inicial = [ti for ti in at.text_input if ti.key and ti.key.startswith("relatorio_periodo_label_")]
         assert len(rotulo_inicial) == 1
         assert rotulo_inicial[0].value == "12/2023"
 
-        at.selectbox(key="relatorio_periodo_sel").set_value(_pg(PERIODO)).run(timeout=30)
+        _sel_periodo(at).set_value(_pg(PERIODO)).run(timeout=30)
         assert not at.exception, f"excecao trocando periodo no modo unico: {at.exception}"
 
         rotulo_novo = [ti for ti in at.text_input if ti.key and ti.key.startswith("relatorio_periodo_label_")]
@@ -381,6 +402,7 @@ def test_gerar_relatorio_chama_pipeline_e_nao_quebra():
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=[PERIODO]), \
          patch.object(db, "listar_periodos_detalhado", return_value=_det([PERIODO])), \
+         patch.object(db, "listar_periodos_completos_detalhado", return_value=_det([PERIODO])), \
          patch.object(drc, "montar_dados_relatorio", return_value=(DADOS_FIXTURE, True)) as m_montar, \
          patch.object(db, "registrar_relatorio_gerado") as m_log:
         at = AppTest.from_file(PAGE)
@@ -402,6 +424,7 @@ def test_tipo_gerencial_chama_pipeline_com_variante_gerencial_e_nome_de_arquivo_
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=[PERIODO]), \
          patch.object(db, "listar_periodos_detalhado", return_value=_det([PERIODO])), \
+         patch.object(db, "listar_periodos_completos_detalhado", return_value=_det([PERIODO])), \
          patch.object(drc, "montar_dados_relatorio", return_value=(dict(DADOS_FIXTURE, variante="gerencial"), True)) as m_montar, \
          patch.object(db, "registrar_relatorio_gerado") as m_log:
         at = AppTest.from_file(PAGE)
@@ -430,6 +453,7 @@ def test_botao_padrao_continua_passando_variante_padrao_sem_regressao():
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=[PERIODO]), \
          patch.object(db, "listar_periodos_detalhado", return_value=_det([PERIODO])), \
+         patch.object(db, "listar_periodos_completos_detalhado", return_value=_det([PERIODO])), \
          patch.object(drc, "montar_dados_relatorio", return_value=(DADOS_FIXTURE, True)) as m_montar, \
          patch.object(db, "registrar_relatorio_gerado"):
         at = AppTest.from_file(PAGE)
@@ -447,12 +471,13 @@ def test_seletor_de_tipo_tem_4_opcoes_e_um_unico_botao_gerar():
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=PERIODOS_COMPARATIVO), \
-         patch.object(db, "listar_periodos_detalhado", return_value=_det(PERIODOS_COMPARATIVO)):
+         patch.object(db, "listar_periodos_detalhado", return_value=_det(PERIODOS_COMPARATIVO)), \
+         patch.object(db, "listar_periodos_completos_detalhado", return_value=_det(PERIODOS_COMPARATIVO)):
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
         assert at.radio(key="relatorio_tipo").options == [
             "Demonstrativo Comentado", "Demonstrativo Comentado Gerencial",
-            "Demonstrativo Comentado Fornecedor (em breve)", "Comparativo / Evolução",
+            "Demonstrativo Comentado Fornecedor", "Comparativo / Evolução",
         ]
         assert at.radio(key="relatorio_tipo").value == "Demonstrativo Comentado", "padrão = período único"
         for tipo in at.radio(key="relatorio_tipo").options:
@@ -463,21 +488,28 @@ def test_seletor_de_tipo_tem_4_opcoes_e_um_unico_botao_gerar():
         print("OK: Relatório Comentado — seletor de 4 tipos e um único botão 'Gerar relatório' em todos")
 
 
-def test_tipo_fornecedor_em_breve_desabilita_botao_e_avisa():
+def test_tipo_fornecedor_v040_gera_com_variante_fornecedor_sem_em_breve():
+    # v0.40.0: "Fornecedor" construido -- sai o "(em breve)", o botao fica
+    # habilitado e a variante chega ao backend.
     with patch.object(auth, "usuario_atual", return_value="teste@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=[PERIODO]), \
          patch.object(db, "listar_periodos_detalhado", return_value=_det([PERIODO])), \
-         patch.object(drc, "montar_dados_relatorio") as m_montar:
+         patch.object(db, "listar_periodos_completos_detalhado", return_value=_det([PERIODO])), \
+         patch.object(drc, "montar_dados_relatorio", return_value=(dict(DADOS_FIXTURE, variante="fornecedor"), True)) as m_montar, \
+         patch.object(db, "registrar_relatorio_gerado"):
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
-        at.radio(key="relatorio_tipo").set_value("Demonstrativo Comentado Fornecedor (em breve)").run(timeout=30)
+        at.radio(key="relatorio_tipo").set_value("Demonstrativo Comentado Fornecedor").run(timeout=30)
         assert not at.exception
+        assert not any("em breve" in i.value for i in at.info)
         botao = next(b for b in at.button if b.label == "Gerar relatório")
-        assert botao.disabled, "tipo Fornecedor (em breve) não pode gerar nada"
-        assert any("em breve" in i.value for i in at.info)
-        assert not m_montar.called
-        print("OK: Relatório Comentado — tipo Fornecedor rotulado 'em breve', botão desabilitado, nada é gerado")
+        assert not botao.disabled
+        botao.click().run(timeout=30)
+        assert not at.exception, at.exception
+        assert m_montar.call_args.kwargs.get("variante") == "fornecedor"
+        assert any("(variante Fornecedor)" in s.value for s in at.success)
+        print("OK: Relatório Comentado — tipo Fornecedor habilitado e passa variante='fornecedor'")
 
 
 def test_periodo_com_2_granularidades_passa_a_escolhida_e_mostra_a_base_usada():
@@ -489,11 +521,12 @@ def test_periodo_com_2_granularidades_passa_a_escolhida_e_mostra_a_base_usada():
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(db, "listar_periodos", return_value=[PERIODO]), \
          patch.object(db, "listar_periodos_detalhado", return_value=det), \
+         patch.object(db, "listar_periodos_completos_detalhado", return_value=det), \
          patch.object(drc, "montar_dados_relatorio", return_value=(dict(DADOS_FIXTURE, periodo_anterior=None, avisos=[]), True)) as m_montar, \
          patch.object(db, "registrar_relatorio_gerado"):
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
-        at.selectbox(key="relatorio_periodo_sel").set_value((PERIODO, "trimestral")).run(timeout=30)
+        _sel_periodo(at).set_value((PERIODO, "trimestral")).run(timeout=30)
         next(b for b in at.button if b.label == "Gerar relatório").click().run(timeout=30)
         assert not at.exception, at.exception
         assert m_montar.call_args.kwargs.get("granularidade") == "trimestral"
@@ -519,5 +552,5 @@ if __name__ == "__main__":
     test_comparativo_com_varias_empresas_passa_lista_pro_backend_e_nome_grupo()
     test_trocar_selecao_de_periodos_nao_deixa_rotulo_preso_no_slot_antigo()
     test_seletor_de_tipo_tem_4_opcoes_e_um_unico_botao_gerar()
-    test_tipo_fornecedor_em_breve_desabilita_botao_e_avisa()
+    test_tipo_fornecedor_v040_gera_com_variante_fornecedor_sem_em_breve()
     test_periodo_com_2_granularidades_passa_a_escolhida_e_mostra_a_base_usada()

@@ -49,6 +49,7 @@ diferentes).
 """
 from __future__ import annotations
 
+import unicodedata
 import warnings
 from collections import Counter
 from datetime import date
@@ -58,6 +59,7 @@ import pandas as pd
 
 import db
 import indicadores
+import selecao_periodos
 import visao_grupo
 
 # Contas cujo nome_saida (BP) e' o TOTALIZADOR do proprio grupo -- ver
@@ -424,7 +426,7 @@ def _consolidar_historico(conn, empresas_codigos: list, tipo: str, granularidade
     periodos = db.listar_periodos_grupo(conn, empresas_codigos, status="ATIVO")
     if not periodos:
         return []
-    lancs = db.listar_lancamentos_grupo_periodos(conn, periodos, tipo, empresas_codigos)
+    lancs = db.listar_lancamentos_grupo_periodos(conn, periodos, tipo, empresas_codigos, granularidade=granularidade)
     if not lancs:
         return []
     if granularidade is not None:
@@ -512,17 +514,126 @@ def _consolidar_despesas_admin_itens(conn, empresas_codigos: list, periodo: date
 # FIX_20260930 (Rafael, variante "Demonstrativo Comentado Gerencial" --
 # a página "Composição das Despesas Administrativas" sai do relatório
 # padrão e só existe nesta variante nova). String (não bool) de proposito
-# -- Rafael já avisou que quer construir uma 3ª variante ("fornecedor")
-# depois; mapa fica pronto pra crescer sem reabrir a assinatura de
-# `montar_dados_relatorio`. "fornecedor" e' cogitada mas NAO implementada
-# ainda (pedido explicito do Rafael pra nao construir agora) -- por isso
-# so' "padrao"/"gerencial" sao validas aqui; pedir uma variante
-# desconhecida levanta erro claro em vez de gerar um relatorio errado
-# silenciosamente (mesma REGRA DE OURO do resto do modulo).
+# -- o mapa cresce sem reabrir a assinatura de `montar_dados_relatorio`.
+# v0.40.0: "fornecedor" construida -- mesmo conteudo do "padrao" (sem a
+# pagina de Composicao das Despesas), so' muda o titulo/selo da capa e o
+# sufixo do arquivo. Pedir uma variante desconhecida levanta erro claro
+# em vez de gerar um relatorio errado silenciosamente (mesma REGRA DE
+# OURO do resto do modulo).
 _VARIANTE_TITULOS = {
     "padrao": "Demonstrativo Comentado",
     "gerencial": "Demonstrativo Comentado Gerencial",
+    "fornecedor": "Demonstrativo Comentado Fornecedor",
 }
+VARIANTES_VALIDAS = tuple(_VARIANTE_TITULOS)
+
+
+
+# ─────────────────────────────────────────────
+#  v0.40.0 -- salvaguardas de coerencia do DOCUMENTO (periodo + granularidade)
+# ─────────────────────────────────────────────
+#
+# Os PDFs de teste de 01/10/2026 mostraram um "trimestral" com numeros do
+# SEMESTRAL (e um Grupo somando Energia semestral + demais trimestrais).
+# Contra um Postgres real o pipeline de calculo esta' certo quando o
+# ROTULO de granularidade gravado em egc.lancamentos corresponde ao
+# conteudo -- o erro reproduzido e' um documento cujo rotulo diz
+# "trimestral" mas cujas linhas sao do semestral. O motor nao tinha como
+# perceber: confiava no rotulo. As 2 checagens abaixo desconfiam dele.
+
+_GRANULARIDADES_CONHECIDAS = set(selecao_periodos.MESES_GRANULARIDADE)
+
+
+def _granularidade_do_intervalo(periodo_inicio: date, periodo_fim: date) -> str:
+    """Mesma classificacao do parser (parser_egc.calcular_granularidade)
+    aplicada ao intervalo GRAVADO (periodo_inicio..periodo). Import tardio:
+    o parser puxa dependencias de PDF que a camada de dados nao precisa
+    carregar no import."""
+    from parser_egc import calcular_granularidade
+
+    return calcular_granularidade(periodo_inicio.strftime("%d/%m/%Y"), periodo_fim.strftime("%d/%m/%Y"))
+
+
+def validar_cobertura_documento(conn, cod: str, periodo: date, granularidade: str) -> None:
+    """Levanta ValueError se o intervalo que o PROPRIO PDF declarou
+    (periodo_inicio..periodo_fim, gravado na importacao) classifica numa
+    granularidade DIFERENTE da gravada em `granularidade` -- ex. DRE
+    gravado como 'trimestral' mas com periodo_inicio 01/01/2026 (= 6
+    meses, semestral). Nesse caso os numeros NAO sao do que o rotulo diz,
+    e gerar o relatorio seria publicar semestre como trimestre.
+
+    Silencioso quando nao ha como conferir (granularidade '' ou 'outra',
+    documento sem periodo_inicio -- import anterior a 24/09/2026 --, ou
+    coluna ausente)."""
+    if (granularidade or "") not in _GRANULARIDADES_CONHECIDAS:
+        return
+    for ini in db.listar_inicios_documento(conn, cod, periodo, granularidade):
+        declarada = _granularidade_do_intervalo(ini, periodo)
+        if declarada in _GRANULARIDADES_CONHECIDAS and declarada != granularidade:
+            raise ValueError(
+                f"Granularidade inconsistente em {cod} {periodo.strftime('%m/%Y')}: o DRE está gravado como "
+                f"'{granularidade}', mas o intervalo declarado no próprio PDF "
+                f"({ini.strftime('%d/%m/%Y')} a {periodo.strftime('%d/%m/%Y')}) é '{declarada}'. "
+                "Os números deste documento não são de um período "
+                f"{selecao_periodos.rotulo_granularidade(granularidade).lower()} — provável erro de "
+                "classificação na importação. Reimporte o PDF correto confirmando a granularidade "
+                f"'{declarada}' (ou arquive este documento) antes de gerar o relatório."
+            )
+
+
+def _avisar_documentos_identicos(
+    conn, cod: str, periodo: date, granularidade: str, dre_map: Optional[dict], avisos: list,
+) -> None:
+    """Aviso (nao bloqueia): outro documento ATIVO da MESMA empresa no
+    MESMO periodo_fim, de granularidade diferente, com Receita Liquida e
+    Resultado Liquido IDENTICOS ao deste. Um trimestre e um semestre so'
+    coincidem se a empresa nao teve atividade no 1o trimestre -- muito
+    mais provavel que um dos dois esteja rotulado errado.
+
+    `dre_map` None = buscar o DRE deste documento so' se houver outra
+    granularidade a comparar (caso comum: nao ha', zero consulta extra)."""
+    outras = [
+        d["granularidade"] for d in db.listar_periodos_detalhado(conn, cod, status="ATIVO")
+        if d["periodo"] == periodo and d["granularidade"] != granularidade
+    ]
+    if not outras:
+        return
+    if dre_map is None:
+        dre_map = _mapa(db.listar_lancamentos(conn, cod, periodo, "DRE", granularidade=granularidade))
+    rl = dre_map.get("RECEITA OPERACIONAL LIQUIDA")
+    ll = dre_map.get("LUCRO LIQUIDO DO EXERCICIO")
+    if not rl:
+        return
+    for outra in outras:
+        outro_map = _mapa(db.listar_lancamentos(conn, cod, periodo, "DRE", granularidade=outra))
+        if outro_map.get("RECEITA OPERACIONAL LIQUIDA") == rl and outro_map.get("LUCRO LIQUIDO DO EXERCICIO") == ll:
+            avisos.append(
+                f"{cod} {periodo.strftime('%m/%Y')}: os documentos '{granularidade or 'não declarada'}' e "
+                f"'{outra or 'não declarada'}' têm Receita Líquida e Resultado Líquido idênticos "
+                f"(R$ {rl:,.2f} / R$ {ll or 0:,.2f}) — provável erro de classificação na importação; "
+                "confira qual PDF foi gravado em cada base."
+            )
+
+
+def _periodo_anterior_imediato(candidatos: list, periodo: date, granularidade: str):
+    """O periodo anterior de comparacao: o ultimo de `candidatos` (todos
+    ja' da MESMA granularidade e < periodo) -- mas so' se for o periodo
+    IMEDIATAMENTE anterior da base (trimestral: 3 meses antes; semestral:
+    6; anual: 12 ...). Comparar 06/2026 trimestral com 12/2023 sob o rotulo
+    "periodo anterior" (30 meses de distancia) e' enganoso. Devolve
+    (anterior|None, ignorado|None): `ignorado` e' o ultimo da base que NAO
+    e' adjacente (a tela explica por que nao comparou). Base sem tamanho
+    conhecido ('' / 'outra') mantem o comportamento antigo (ultimo da base)."""
+    if not candidatos:
+        return None, None
+    ultimo = max(candidatos)
+    meses = selecao_periodos.MESES_GRANULARIDADE.get(granularidade or "")
+    if not meses:
+        return ultimo, None
+    distancia = (periodo.year - ultimo.year) * 12 + (periodo.month - ultimo.month)
+    if distancia == meses:
+        return ultimo, None
+    return None, ultimo
 
 
 def montar_dados_relatorio(
@@ -572,7 +683,7 @@ def montar_dados_relatorio(
     inputs editaveis na tela (decisao do Rafael, 24/09). Campo ausente
     vira string vazia (a tela decide o que exigir antes de gerar).
 
-    variante ("padrao"/"gerencial", FIX_20260930): decide o TÍTULO ("Demonstrativo
+    variante ("padrao"/"gerencial"/"fornecedor", FIX_20260930 + v0.40.0): decide o TÍTULO ("Demonstrativo
     Comentado" vs "Demonstrativo Comentado Gerencial" -- entra em
     `dados['cabecalho_relatorio']`, cabeçalho de toda página) e é
     repassada em `dados['variante']` pra `gerador_relatorio_comentado.
@@ -585,8 +696,7 @@ def montar_dados_relatorio(
     data_geracao = data_geracao or date.today().strftime("%d/%m/%Y")
     if variante not in _VARIANTE_TITULOS:
         raise ValueError(
-            f"variante '{variante}' desconhecida -- use {sorted(_VARIANTE_TITULOS)} "
-            "('fornecedor' foi cogitada mas ainda não foi construída)."
+            f"variante '{variante}' desconhecida -- use {sorted(_VARIANTE_TITULOS)}."
         )
 
     codigos = [empresa_codigo] if isinstance(empresa_codigo, str) else list(empresa_codigo)
@@ -595,6 +705,11 @@ def montar_dados_relatorio(
     grupo = len(codigos) > 1
 
     empresas = {e["codigo"]: e for e in db.listar_empresas(conn)}
+
+    # v0.40.0: rotulo de granularidade x intervalo declarado no PDF. Antes
+    # de ler qualquer numero -- documento mal classificado nao gera relatorio.
+    for cod in codigos:
+        validar_cobertura_documento(conn, cod, periodo, granularidade)
 
     if grupo:
         for cod in codigos:
@@ -661,6 +776,8 @@ def montar_dados_relatorio(
     indic_df = indicadores.calcular_indicadores(bp_hist, dre_hist, granularidade=granularidade)
     dre_hist = indicadores.filtrar_granularidade_exata(dre_hist, granularidade)
     avisos: list = []
+    for cod in codigos:
+        _avisar_documentos_identicos(conn, cod, periodo, granularidade, None if grupo else dre_map, avisos)
 
     # ---- Receita / Custos (pagina 3) ----
     receita_bruta = dre_map.get("RECEITA OPERACIONAL BRUTA", 0.0) + dre_map.get("RECEITAS OPERACIONAIS DIVERSAS", 0.0)
@@ -717,8 +834,10 @@ def montar_dados_relatorio(
     # Periodo anterior = o periodo imediatamente anterior COM A MESMA
     # granularidade (indic_df e dre_hist ja so' tem essa granularidade --
     # Fase 4). Sem ele -> fallback "sem periodo anterior disponivel".
-    anteriores = [d for d in indic_df.index if d < pd.Timestamp(periodo)]
-    periodo_anterior = max(anteriores).date() if anteriores else None
+    anteriores = [d.date() for d in indic_df.index if d < pd.Timestamp(periodo)]
+    # v0.40.0: alem de MESMA granularidade, o anterior tem que ser o
+    # IMEDIATAMENTE anterior da base (ver _periodo_anterior_imediato).
+    periodo_anterior, periodo_anterior_ignorado = _periodo_anterior_imediato(anteriores, periodo, granularidade)
     # Receita liquida nao e' coluna de indic_df -- pega direto do historico DRE.
     receita_liquida_anterior = None
     ebitda_anterior = None
@@ -786,6 +905,7 @@ def montar_dados_relatorio(
     # (periodo + granularidade) alimentou TODOS os numeros deste relatorio.
     dados["granularidade"] = granularidade
     dados["periodo_anterior"] = periodo_anterior
+    dados["periodo_anterior_ignorado"] = periodo_anterior_ignorado  # ultimo da base que NAO e' adjacente
     dados["avisos"] = avisos
 
     return dados, tem_csll_irpj
@@ -854,28 +974,63 @@ def _montar_anexo_multi_periodo(bp_por_periodo: list, lado: str) -> list:
     arvores = [_montar_anexo(bp, lado, incluir_subconta=False) for bp in bp_por_periodo]
     n = len(arvores)
 
-    ordem = []
-    vistas = set()
-    valores: dict = {}
+    # v0.40.0 (item C): a versao anterior mesclava por "ordem de primeira
+    # aparicao" numa lista unica -- uma conta que so' existia num periodo
+    # posterior (ex.: "Imoveis", "Fornecedores") entrava no FIM da lista,
+    # depois do TOTAL DO ATIVO / TOTAL PASSIVO + PL, fora do proprio grupo.
+    # Agora a mescla e' feita POR SECAO: cada secao (linha "grupo" + contas
+    # + subtotal) recebe a uniao das contas dos periodos, em ordem
+    # alfabetica sem acento (mesma ordem que _montar_anexo usa em 1
+    # periodo), com o subtotal logo apos as contas e o total geral por
+    # ultimo. Secoes em ordem canonica (Ativo Circulante -> Nao Circulante;
+    # Passivo Circulante -> Nao Circulante -> PL).
+    canonica = [rotulo for _bd, rotulo, _tot in (_GRUPOS_ATIVO if lado == "ATIVO" else _GRUPOS_PASSIVO)]
+
+    def _ordem_secao(rotulo, vista_em):
+        return (canonica.index(rotulo) if rotulo in canonica else len(canonica), vista_em)
+
+    secoes: dict = {}      # rotulo do grupo -> {"contas": {label: [v]*n}, "subtotal": (label, [v]*n) | None}
+    primeira_vez: dict = {}
+    total_geral = None     # (label, [v]*n)
+    contador = 0
     for i, arvore in enumerate(arvores):
+        atual = None
         for linha in arvore:
             tipo, label = linha[0], linha[1]
-            chave = (tipo, label)
-            if chave not in vistas:
-                vistas.add(chave)
-                ordem.append(chave)
-                if tipo != "grupo":
-                    valores[chave] = [0.0] * n
-            if tipo != "grupo":
-                valores[chave][i] = float(linha[2])
+            if tipo == "grupo":
+                atual = secoes.setdefault(label, {"contas": {}, "subtotal": None})
+                if label not in primeira_vez:
+                    primeira_vez[label] = contador
+                    contador += 1
+            elif tipo == "conta":
+                atual["contas"].setdefault(label, [0.0] * n)[i] = float(linha[2])
+            elif tipo == "subtotal":
+                if atual["subtotal"] is None:
+                    atual["subtotal"] = (label, [0.0] * n)
+                atual["subtotal"][1][i] = float(linha[2])
+            elif tipo == "total":
+                if total_geral is None:
+                    total_geral = (label, [0.0] * n)
+                total_geral[1][i] = float(linha[2])
 
     linhas = []
-    for tipo, label in ordem:
-        if tipo == "grupo":
-            linhas.append((tipo, label))
-        else:
-            linhas.append((tipo, label, *valores[(tipo, label)]))
+    for rotulo in sorted(secoes, key=lambda r: _ordem_secao(r, primeira_vez[r])):
+        sec = secoes[rotulo]
+        linhas.append(("grupo", rotulo))
+        for label in sorted(sec["contas"], key=_chave_ordem_label):
+            linhas.append(("conta", label, *sec["contas"][label]))
+        if sec["subtotal"] is not None:
+            linhas.append(("subtotal", sec["subtotal"][0], *sec["subtotal"][1]))
+    if total_geral is not None:
+        linhas.append(("total", total_geral[0], *total_geral[1]))
     return linhas
+
+
+def _chave_ordem_label(label: str):
+    """Ordem alfabetica sem acento/caixa (a mesma que o banco, que guarda
+    o nome sem acento, daria)."""
+    sem = "".join(ch for ch in unicodedata.normalize("NFD", label) if unicodedata.category(ch) != "Mn")
+    return (sem.casefold(), label)
 
 
 def montar_dados_relatorio_comparativo(
@@ -941,6 +1096,20 @@ def montar_dados_relatorio_comparativo(
     granularidades = list(granularidades) if granularidades is not None else [""] * len(periodos)
     if len(granularidades) != len(periodos):
         raise ValueError("granularidades e periodos precisam ter o mesmo tamanho")
+    # v0.40.0: o mesmo item (periodo_fim + granularidade) nao pode entrar 2x
+    # (colunas identicas foram o sintoma dos PDFs de 01/10/2026) e os
+    # rotulos das colunas precisam ser distintos entre si.
+    pares_pedidos = list(zip(periodos, granularidades))
+    if len(set(pares_pedidos)) != len(pares_pedidos):
+        raise ValueError(
+            "o mesmo período (data + granularidade) foi escolhido mais de uma vez -- "
+            "cada coluna do comparativo precisa ser um documento diferente."
+        )
+    if selecao_periodos.rotulos_duplicados(periodos_labels):
+        raise ValueError(
+            "rótulos de coluna repetidos (" + ", ".join(periodos_labels) + ") -- dê um nome diferente "
+            "para cada coluna (ex.: 2T/2026 e 1S/2026) para não confundir trimestral com semestral."
+        )
 
     admin = admin or {}
     data_geracao = data_geracao or date.today().strftime("%d/%m/%Y")
@@ -1041,6 +1210,10 @@ def montar_dados_relatorio_comparativo(
         cnpj=cnpj,
         cabecalho_relatorio=f"Evolução Financeira · {periodo_range_label}",
         periodos_labels=list(periodos_labels),
+        # v0.40.0: auditoria -- documento (periodo + granularidade) que
+        # alimentou CADA coluna, na mesma ordem de periodos_labels.
+        periodos=list(periodos),
+        granularidades=list(granularidades),
         periodo_range_label=periodo_range_label,
         data_geracao=data_geracao,
         kpis_fluxo=kpis_fluxo,
