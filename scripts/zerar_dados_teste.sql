@@ -10,14 +10,14 @@
 --   relatorios_gerados (log de PDFs)          projecoes, projecoes_ajustes
 --   eventos_sistema (log de erros/eventos)
 --   NF: nf_manifesto_import, nf_conciliacao, nf_import_historico,
---       nf_bills_orfaos  (notas importadas, conferencias e pendencias)
+--       nf_bills_orfaos, nf_manifesto_ignoradas  (notas importadas, conferencias e pendencias)
 --   Erik.AI: chat_mensagem (memoria), chat_acao (trilha de acoes)
 --
 -- MANTEM (configuracao / referencia -- nao e' "dado de teste"):
 --   empresas, textos_relatorio, config_relatorio (assinaturas/CPF/etc.),
 --   contexto_fiscal, nf_debtor_empresa (mapa credor->empresa),
 --   nf_bills_sync e nf_creditors_sync (espelho do Sienge; so' recarrega
---   no botao "Atualizar do Sienge"), contatos_relatorio.
+--   no botao "Atualizar agora" e todo dia as 04h), contatos_relatorio.
 --   -> Se quiser zerar tambem algum desses, descomente a linha no
 --      bloco "OPCIONAIS" logo abaixo.
 --
@@ -34,7 +34,7 @@ DECLARE
   apagar text[] := ARRAY[
     'lancamentos', 'importacoes', 'despesas_admin_itens', 'relatorios_gerados',
     'projecoes', 'projecoes_ajustes', 'eventos_sistema',
-    'nf_manifesto_import', 'nf_conciliacao', 'nf_import_historico', 'nf_bills_orfaos',
+    'nf_manifesto_import', 'nf_conciliacao', 'nf_import_historico', 'nf_bills_orfaos', 'nf_manifesto_ignoradas',
     'chat_mensagem', 'chat_acao'
     -- OPCIONAIS (descomente colocando virgula na linha de cima):
     -- , 'contatos_relatorio'      -- assinantes cadastrados (administrador/contador)
@@ -69,6 +69,8 @@ UNION ALL SELECT 'APAGADA', 'despesas_admin_itens', count(*) FROM egc.despesas_a
 UNION ALL SELECT 'APAGADA', 'nf_manifesto_import', count(*) FROM egc.nf_manifesto_import
 UNION ALL SELECT 'APAGADA', 'nf_conciliacao', count(*) FROM egc.nf_conciliacao
 UNION ALL SELECT 'APAGADA', 'nf_import_historico', count(*) FROM egc.nf_import_historico
+UNION ALL SELECT 'APAGADA', 'nf_bills_orfaos', count(*) FROM egc.nf_bills_orfaos
+UNION ALL SELECT 'APAGADA', 'nf_manifesto_ignoradas', count(*) FROM egc.nf_manifesto_ignoradas
 UNION ALL SELECT 'APAGADA', 'chat_mensagem', count(*) FROM egc.chat_mensagem
 UNION ALL SELECT 'APAGADA', 'chat_acao', count(*) FROM egc.chat_acao
 UNION ALL SELECT 'MANTIDA', 'empresas', count(*) FROM egc.empresas
@@ -76,4 +78,5 @@ UNION ALL SELECT 'MANTIDA', 'textos_relatorio', count(*) FROM egc.textos_relator
 UNION ALL SELECT 'MANTIDA', 'config_relatorio', count(*) FROM egc.config_relatorio
 UNION ALL SELECT 'MANTIDA', 'contexto_fiscal', count(*) FROM egc.contexto_fiscal
 UNION ALL SELECT 'MANTIDA', 'contatos_relatorio', count(*) FROM egc.contatos_relatorio
-UNION ALL SELECT 'MANTIDA', 'nf_debtor_empresa', count(*) FROM egc.nf_debtor_empresa;
+UNION ALL SELECT 'MANTIDA', 'nf_debtor_empresa', count(*) FROM egc.nf_debtor_empresa
+UNION ALL SELECT 'MANTIDA', 'nf_bills_sync', count(*) FROM egc.nf_bills_sync;
