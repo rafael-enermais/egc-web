@@ -5,17 +5,20 @@ Receita Federal) contra o Contas a Pagar do Sienge. Import 100% separado
 do fluxo BP/DRE (Importar PDF) -- nenhuma tabela egc.lancamentos é lida
 ou escrita aqui.
 
-Fluxo (ver EGC 00-handoff.md seção 62 pro desenho completo):
-  1. "Atualizar do Sienge" -- sincroniza egc.nf_bills_sync/nf_creditors_sync
-     (chamado sob demanda, roda no servidor -- a chave do Sienge nunca
-     chega ao navegador da contadora nem ao repo).
+Fluxo (v0.45.0 -- "conferência viva"; ver EGC 00-handoff.md):
+  1. O Sienge é copiado pro app sozinho todo dia (04h, ano todo) e o resultado
+     de TODAS as conferências é refeito logo depois. "Atualizar agora" faz o
+     mesmo sob demanda (roda no servidor -- a chave do Sienge nunca chega ao
+     navegador da contadora nem ao repo).
   2. Upload do .xlsx do manifesto -> nf_parser decodifica cada linha
-     (inclusive a chave de acesso, quando presente) -> grava em
-     egc.nf_manifesto_import sob um import_id novo.
-  3. Concilia contra o snapshot sincronizado (CNPJ+número+valor, chave
-     como confirmação extra) -> grava em egc.nf_conciliacao.
-  4. KPIs + tabela de conferência + export .xlsx de pendências (pra
-     mandar pro Suprimentos verificar no Sienge) + histórico de rodadas.
+     (inclusive a chave de acesso) -> grava em egc.nf_manifesto_import. Subir
+     o mesmo mês de novo SUBSTITUI o anterior (o antigo fica só no histórico).
+  3. Há UMA conferência vigente por (empresa, período). Todos os meses
+     vigentes da empresa são conferidos juntos contra o Sienge atual, então
+     o resultado de um mês muda sozinho quando outro mês é subido ou quando
+     a compra lança a nota no Sienge -> grava em egc.nf_conciliacao.
+  4. Tabela empresa × período + KPIs + tabela de conferência + export .xlsx
+     de pendências (pra mandar pro Suprimentos verificar no Sienge).
 
 Pendências têm lastro: mudar o status (Enviado ao Suprimentos / Resolvido
 / Descartado) NUNCA apaga a linha, só atualiza egc.nf_conciliacao.pendencia_status
@@ -84,35 +87,39 @@ def _ao_subir_arquivo():
         st.session_state["nf_empresa_sel"] = codigos.index(info["empresa"])
 
 
-nomes_emp = [f"{nome} ({cod})" for cod, nome, _cnpj in EMPRESAS_NF]
-idx = st.selectbox("Empresa", range(len(EMPRESAS_NF)), format_func=lambda i: nomes_emp[i], key="nf_empresa_sel")
-cod_empresa, nome_empresa, _cnpj_empresa = EMPRESAS_NF[idx]
-
 # ─────────────────────────── 1. Atualizar do Sienge ───────────────────────────
-st.subheader("1. Atualizar dados do Sienge")
+st.subheader("1. Dados do Sienge")
 
 try:
     _ultima_sync = nf_sienge.ultima_sincronizacao(conn)
 except Exception:
     _ultima_sync = None
 
+JANELA_ATUALIZAR_DIAS = 365   # "ano sempre atualizado": mesma janela do sync diário (ingest-sienge.yml)
+
 if _ultima_sync:
-    st.caption(f"🔄 Última sincronização automática: {formatacao.hora_br(_ultima_sync)} "
-               "(roda sozinha todo dia às 04h -- use o botão abaixo só se precisar de dado mais fresco agora)")
+    st.caption(f"🔄 Última sincronização: {formatacao.hora_br(_ultima_sync)}. O Sienge é copiado sozinho todo dia às 04h "
+               "(ano inteiro) e as conferências são refeitas na sequência -- use o botão só se precisar do dado de agora.")
 else:
     st.error(
         "Ainda não há nenhuma sincronização registrada com o Sienge. "
-        "Clique em \"Atualizar do Sienge\" abaixo -- o passo 2 (subir manifesto/rodar "
-        "conferência) só libera depois da primeira sincronização, pra não gerar "
-        "\"não encontrada\" em massa por falta de dado, não por nota realmente pendente."
+        "Clique em \"Atualizar agora\" abaixo -- o passo 2 (subir manifesto) só libera depois da "
+        "primeira sincronização, pra não gerar \"não encontrada\" em massa por falta de dado, "
+        "não por nota realmente pendente."
     )
 
-col_ini, col_fim, col_btn = st.columns([1, 1, 1])
-hoje = _dt.date.today()
-data_inicio = col_ini.date_input("De", value=hoje.replace(day=1) - _dt.timedelta(days=1), key="nf_data_ini")
-data_fim = col_fim.date_input("Até", value=hoje, key="nf_data_fim")
 
-if col_btn.button("🔄 Atualizar do Sienge", key="nf_btn_sync"):
+def _total_pendencias_vigentes() -> dict:
+    """{(empresa, periodo): pendencias} das conferencias vigentes (notas + titulos Sienge sem nota)."""
+    try:
+        return {(r["empresa_codigo"], r["periodo_referencia"]): int(r["total_pendencias"])
+                for r in nf_sienge.resumo_vigentes(conn)}
+    except Exception:
+        return {}
+
+
+if st.button("🔄 Atualizar agora", key="nf_btn_sync",
+             help=f"Copia do Sienge os últimos {JANELA_ATUALIZAR_DIAS} dias e refaz todas as conferências."):
     try:
         base_url = st.secrets["SIENGE_BASE_URL"]
         sienge_user = st.secrets["SIENGE_USER"]
@@ -124,15 +131,37 @@ if col_btn.button("🔄 Atualizar do Sienge", key="nf_btn_sync"):
         )
         st.stop()
 
-    with st.spinner("Sincronizando títulos e credores do Sienge..."):
+    _fim = _dt.date.today()
+    _ini = _fim - _dt.timedelta(days=JANELA_ATUALIZAR_DIAS)
+    _antes_sync = _total_pendencias_vigentes()
+    with st.spinner("Atualizando o Sienge (ano inteiro) e refazendo as conferências..."):
         try:
-            n_bills = sum(nf_sienge.sincronizar_bills_por_mes(conn, base_url, sienge_user, sienge_pass, data_inicio, data_fim).values())
+            n_bills = sum(nf_sienge.sincronizar_bills_por_mes(conn, base_url, sienge_user, sienge_pass, _ini, _fim).values())
             n_cred = nf_sienge.sincronizar_creditores(conn, base_url, sienge_user, sienge_pass)
-            st.success(f"Sincronizado: {n_bills} título(s) e {n_cred} credor(es).")
-            _log_info(f"Sync Sienge: {n_bills} títulos, {n_cred} credores ({data_inicio} a {data_fim})", cod_empresa)
         except Exception as exc:
             st.error(f"Falha ao sincronizar com o Sienge: {exc}")
-            _log_erro("Falha na sincronização com o Sienge", detalhe=str(exc), empresa_codigo=cod_empresa)
+            _log_erro("Falha na sincronização com o Sienge", detalhe=str(exc))
+            st.stop()
+        try:
+            _todas = nf_sienge.reconferir_todas(conn)
+        except Exception as exc:
+            _todas = None
+            st.warning(f"O Sienge foi atualizado ({n_bills} título(s), {n_cred} credor(es)), mas não consegui refazer "
+                       f"as conferências agora: {exc}")
+            _log_erro("Falha ao refazer conferências após sync", detalhe=str(exc))
+    if _todas is not None:
+        _mudaram = []
+        for _emp, _por_periodo in _todas.items():
+            for _per, _r in _por_periodo.items():
+                _antes_n = _antes_sync.get((_emp, _per))
+                _depois_n = int(_r["pendencias"]) + int(_r.get("orfaos_sienge") or 0)
+                if _antes_n is not None and _antes_n != _depois_n:
+                    _mudaram.append(f"{NOME_POR_COD.get(_emp, _emp)} {_per}: {_antes_n} → {_depois_n} pendência(s)")
+        st.success(f"Sienge atualizado: {n_bills} título(s) e {n_cred} credor(es). Conferências refeitas."
+                   + (" Mudaram: " + "; ".join(_mudaram) + "." if _mudaram else " Nenhuma pendência mudou."))
+        _log_info(f"Atualizar agora: {n_bills} títulos, {n_cred} credores ({_ini} a {_fim}); "
+                  f"{len(_mudaram)} período(s) com pendência alterada")
+    _ultima_sync = nf_sienge.ultima_sincronizacao(conn)
 
 # ───────────── Empresa de cada devedor do Sienge (confere lançamento na empresa certa) ─────────────
 with st.expander("🏢 Empresa de cada devedor do Sienge — confere se a nota foi lançada na empresa certa"):
@@ -176,6 +205,12 @@ st.divider()
 
 # ─────────────────────────── 2. Upload do manifesto ───────────────────────────
 st.subheader("2. Subir o manifesto de NF-e (.xlsx da Receita Federal)")
+st.caption("Pode subir quando quiser, em qualquer ordem. O mês que já existe é substituído pelo arquivo novo, e todos os "
+           "meses da empresa são conferidos juntos de novo.")
+
+nomes_emp = [f"{nome} ({cod})" for cod, nome, _cnpj in EMPRESAS_NF]
+idx = st.selectbox("Empresa", range(len(EMPRESAS_NF)), format_func=lambda i: nomes_emp[i], key="nf_empresa_sel")
+cod_empresa, nome_empresa, _cnpj_empresa = EMPRESAS_NF[idx]
 
 _sync_liberado = _ultima_sync is not None
 if not _sync_liberado:
@@ -218,7 +253,7 @@ if _info_upload and not _info_upload.get("erro"):
 elif _info_upload and _info_upload.get("erro"):
     st.warning(f"Não consegui ler a planilha: {_info_upload['erro']}")
 
-if arquivo is not None and st.button("▶️ Rodar conferência", key="nf_btn_rodar", disabled=not _sync_liberado):
+if arquivo is not None and st.button("▶️ Enviar e conferir", key="nf_btn_rodar", disabled=not _sync_liberado):
     try:
         df = nf_parser.ler_manifesto_xlsx(io.BytesIO(arquivo.getvalue()))
     except nf_parser.ManifestoInvalido as exc:
@@ -256,8 +291,15 @@ if arquivo is not None and st.button("▶️ Rodar conferência", key="nf_btn_ro
         st.warning("Informe o período de referência antes de rodar a conferência.")
         st.stop()
 
-    _resumos = []
-    with st.spinner(f"Gravando {len(df)} nota(s) e conciliando contra o Sienge..."):
+    _antes_up = _total_pendencias_vigentes()
+    _ja_existia = {}
+    try:
+        _ja_existia = {v["periodo_referencia"]: v for v in nf_sienge.listar_vigentes(conn, cod_empresa)}
+    except Exception:
+        pass
+    _periodos_enviados = []
+    _resumos = {}
+    with st.spinner(f"Gravando {len(df)} nota(s) e conferindo todos os meses de {nome_empresa} contra o Sienge..."):
         try:
             for _comp, _df_mes, _ign_mes in _grupos:
                 _periodo = (periodo_referencia.strip() if len(_grupos) == 1 else _comp) or periodo_referencia.strip()
@@ -266,70 +308,99 @@ if arquivo is not None and st.button("▶️ Rodar conferência", key="nf_btn_ro
                     st.stop()
                 import_id = nf_sienge.gravar_manifesto(conn, cod_empresa, _periodo, _df_mes, arquivo.name, usuario)
                 nf_sienge.gravar_ignoradas(conn, import_id, cod_empresa, _periodo, _ign_mes, usuario)
-                resumo = nf_sienge.conciliar_import(conn, import_id)
-                nf_sienge.gravar_historico_import(conn, import_id, cod_empresa, _periodo, arquivo.name, usuario, resumo)
-                _resumos.append((_periodo, resumo))
-                st.session_state["nf_ultimo_import_id"] = import_id
-                _log_info(f"Conferência rodada: {resumo['total']} notas, {resumo['lancadas']} lançadas, "
-                          f"{resumo['pendencias']} pendências, {len(_ign_mes) if _ign_mes is not None else 0} fora da "
-                          f"conferência ({_periodo})", cod_empresa)
+                _periodos_enviados.append((_periodo, len(_df_mes), len(_ign_mes) if _ign_mes is not None else 0))
+                st.session_state["nf_ultimo_periodo"] = (cod_empresa, _periodo)
+            # v0.45.0: a conferencia e' da empresa inteira (todos os meses vigentes juntos).
+            _resumos = nf_sienge.reconferir_empresa(conn, cod_empresa)
         except Exception as exc:
-            st.error(f"Falha ao rodar a conferência: {exc}")
+            st.error(f"Falha ao gravar/conferir o manifesto: {exc}")
             _log_erro("Falha ao gravar/conciliar manifesto", detalhe=str(exc), empresa_codigo=cod_empresa)
             st.stop()
 
-    for _periodo, resumo in _resumos:
-        msg_final = (f"Conferência de {_periodo} concluída: {resumo['total']} nota(s) · "
-                     f"{resumo['lancadas']} lançada(s) · {resumo['pendencias']} pendência(s).")
+    def _pend(r):
+        return int(r["pendencias"]) + int(r.get("orfaos_sienge") or 0)
+
+    for _periodo, _n_notas, _n_fora in _periodos_enviados:
+        resumo = _resumos.get(_periodo) or dict(total=0, lancadas=0, pendencias=0, orfaos_sienge=0)
+        msg_final = (f"{_periodo}: {resumo['total']} nota(s) · {resumo['lancadas']} lançada(s) · "
+                     f"{resumo['pendencias']} pendência(s)")
         if resumo.get("orfaos_sienge"):
-            # FIX_20260928f (Rafael: "a nota q estiver no Sienge, e não tiver
-            # na receita, tem q virar pendencia tb"): so' > 0 quando ha' devedor
-            # mapeado pra empresa (ver avisos_conciliacao) -- por isso avisa aqui
-            # em vez de deixar passar batido dentro do numero de "pendencias".
-            msg_final += f" · ⚠️ {resumo['orfaos_sienge']} título(s) no Sienge sem nota no manifesto."
-        st.success(msg_final)
+            msg_final += f" · ⚠️ {resumo['orfaos_sienge']} título(s) no Sienge sem nota no manifesto"
+        if _periodo in _ja_existia:
+            msg_final += f" · substituiu o arquivo anterior ({_ja_existia[_periodo].get('arquivo_nome') or 'sem nome'})"
+        st.success(msg_final + ".")
+        _log_info(f"Conferência rodada: {resumo['total']} notas, {resumo['lancadas']} lançadas, "
+                  f"{resumo['pendencias']} pendências, {_n_fora} fora da conferência ({_periodo})", cod_empresa)
+    _enviados = {p for p, _n, _f in _periodos_enviados}
+    _mudaram = []
+    for _per, _r in _resumos.items():
+        _antes_n = _antes_up.get((cod_empresa, _per))
+        if _per not in _enviados and _antes_n is not None and _antes_n != _pend(_r):
+            _mudaram.append(f"{_per}: {_antes_n} → {_pend(_r)}")
+    if _mudaram:
+        st.info("Outros meses de " + nome_empresa + " mudaram com este arquivo (pendências antes → depois): "
+                + "; ".join(_mudaram) + ".")
     if _contagens["canceladas"] or _contagens["entradas"]:
         st.info(f"Ficaram fora da conferência: {_contagens['canceladas']} cancelada(s) e {_contagens['entradas']} "
                 "de Entrada (devolução/retorno). A lista está no resultado abaixo e na aba \"Ignoradas\" da planilha.")
 
 st.divider()
 
-# ─────────────────────────── 3. Resultado da última conferência ───────────────
-st.subheader("3. Resultado da conferência")
+# ─────────────────────────── 3. Situação por empresa e período ────────────────
+st.subheader("3. Situação por empresa e período")
+st.caption("Uma linha por empresa e mês, sempre com o último arquivo subido. O resultado acompanha o Sienge: "
+           "quando a compra lança uma nota pendente, ela passa para lançada sozinha.")
 
-# 01/10/2026: histórico carregado ANTES do resultado (e não só na seção 4)
-# pra poder reabrir/baixar qualquer rodada anterior -- antes só a última
-# rodada da sessão aparecia aqui, e sumia ao recarregar a página.
 try:
-    historico = nf_sienge.listar_historico_importacoes(conn, cod_empresa)
+    vigentes = nf_sienge.resumo_vigentes(conn)
 except Exception as exc:
-    st.warning(f"Não foi possível carregar o histórico: {exc}")
-    _log_erro("Falha ao listar histórico de conferências", detalhe=str(exc), empresa_codigo=cod_empresa)
-    historico = []
+    st.warning(f"Não foi possível carregar as conferências: {exc}")
+    _log_erro("Falha ao listar conferências vigentes", detalhe=str(exc))
+    vigentes = []
 
 import_id_atual = None
 rodada_sel = None
-if historico:
-    _ids = [str(h["import_id"]) for h in historico]
-    _recente = str(st.session_state.get("nf_ultimo_import_id") or "")
-    if _recente in _ids and st.session_state.get("_nf_rodada_recente_aplicada") != _recente:
-        st.session_state["nf_rodada_sel"] = _recente  # acabou de rodar -> abre essa
-        st.session_state["_nf_rodada_recente_aplicada"] = _recente
-    if st.session_state.get("nf_rodada_sel") not in _ids:
-        st.session_state["nf_rodada_sel"] = _ids[0]
-    _por_id = {str(h["import_id"]): h for h in historico}
+if not vigentes:
+    st.caption("Nenhuma conferência ainda. Suba um manifesto acima e o resultado aparece aqui.")
+else:
+    _tab = pd.DataFrame([{
+        "Empresa": NOME_POR_COD.get(v["empresa_codigo"], v["empresa_codigo"]),
+        "Período": v["periodo_referencia"],
+        "Notas": v["total_notas"],
+        "Lançadas": v["total_lancadas"],
+        "Pendências": v["total_pendencias"],
+        "Taxa": formatacao.pct_br(v["taxa"]) if v.get("taxa") is not None else "—",
+        "Arquivo": v.get("arquivo_nome") or "",
+        "Atualizado em": formatacao.hora_br(v["atualizado_em"]) if v.get("atualizado_em") else "",
+    } for v in vigentes])
+    st.dataframe(_tab, hide_index=True, use_container_width=True)
 
-    def _rotulo_rodada(i):
-        h = _por_id[i]
-        return (f"{formatacao.hora_br(h['criado_em'])} · período {h['periodo_referencia']} · "
-                f"{h['total_notas']} notas · {h['arquivo_nome']}")
+    _ids = [str(v["import_id"]) for v in vigentes]
+    _por_id = {str(v["import_id"]): v for v in vigentes}
+    _ult = st.session_state.get("nf_ultimo_periodo")      # (empresa, periodo) acabou de subir -> abre esse
+    if _ult and st.session_state.get("_nf_ultimo_aplicado") != _ult:
+        for _i, _v in _por_id.items():
+            if (_v["empresa_codigo"], _v["periodo_referencia"]) == tuple(_ult):
+                st.session_state["nf_vigente_sel"] = _i
+        st.session_state["_nf_ultimo_aplicado"] = _ult
+    if st.session_state.get("nf_vigente_sel") not in _ids:
+        st.session_state["nf_vigente_sel"] = _ids[0]
 
-    import_id_atual = st.selectbox("Rodada de conferência", _ids, format_func=_rotulo_rodada, key="nf_rodada_sel",
-                                    help="A mais recente vem selecionada. Escolha outra para rever ou baixar de novo.")
+    def _rotulo_vigente(i):
+        v = _por_id[i]
+        return f"{NOME_POR_COD.get(v['empresa_codigo'], v['empresa_codigo'])} · {v['periodo_referencia']} · {v['total_pendencias']} pendência(s)"
+
+    import_id_atual = st.selectbox("Ver detalhe de", _ids, format_func=_rotulo_vigente, key="nf_vigente_sel")
     rodada_sel = _por_id[import_id_atual]
 
+st.divider()
+st.subheader("4. Detalhe da conferência")
+
+emp_det = (rodada_sel or {}).get("empresa_codigo") or cod_empresa
+nome_det = NOME_POR_COD.get(emp_det, emp_det)
+
 if not import_id_atual:
-    st.caption("Rode uma conferência acima pra ver o resultado aqui.")
+    st.caption("Escolha um período na tabela acima para ver o detalhe.")
 else:
     tabela = nf_sienge.listar_conciliacao(conn, import_id_atual)
     # FIX_20260928f (direção reversa, pedido do Rafael): órfãos do Sienge
@@ -344,7 +415,7 @@ else:
         tabela = pd.concat([tabela, orfaos], ignore_index=True)
 
     if tabela.empty:
-        st.caption("Sem notas nesta rodada.")
+        st.caption("Sem notas neste período.")
     else:
         r = nf_export.resumo_conferencia(tabela)
         por_status = r["por_status"]
@@ -352,7 +423,7 @@ else:
         # Avisos de cobertura (Sienge sem devedor da empresa / espelho que nao
         # cobre o periodo) -- "0 Sienge sem manifesto" nunca fica sem explicacao.
         try:
-            for _aviso in nf_sienge.avisos_conciliacao(conn, import_id_atual, (rodada_sel or {}).get("empresa_codigo") or cod_empresa):
+            for _aviso in nf_sienge.avisos_conciliacao(conn, import_id_atual, emp_det):
                 st.warning(_aviso)
         except Exception:
             pass
@@ -420,20 +491,20 @@ else:
             _ign_rodada = pd.DataFrame()
         try:
             xlsx_completo = nf_export.gerar_xlsx_conferencia(
-                tabela, nome_empresa, (rodada_sel or {}).get("periodo_referencia") or "",
+                tabela, nome_det, (rodada_sel or {}).get("periodo_referencia") or "",
                 (rodada_sel or {}).get("arquivo_nome"), formatacao.hora_br(_dt.datetime.now()),
                 ignoradas=_ign_rodada,
             )
         except Exception as exc:
             xlsx_completo = None
             st.warning(f"Não consegui montar a planilha completa: {exc}")
-            _log_erro("Falha ao montar xlsx completo de NF", detalhe=str(exc), empresa_codigo=cod_empresa)
+            _log_erro("Falha ao montar xlsx completo de NF", detalhe=str(exc), empresa_codigo=emp_det)
         d1, d2 = st.columns(2)
         if xlsx_completo:
             d1.download_button(
                 "⬇️ Baixar conferência COMPLETA (todas as notas + Sienge)",
                 data=xlsx_completo,
-                file_name=f"conferencia_nf_{cod_empresa}_{_periodo_arq}.xlsx",
+                file_name=f"conferencia_nf_{emp_det}_{_periodo_arq}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="nf_download_completo", type="primary",
             )
@@ -444,7 +515,7 @@ else:
             d2.download_button(
                 "⬇️ Baixar só as pendências (pra mandar ao Suprimentos)",
                 data=buffer.getvalue(),
-                file_name=f"pendencias_nf_{cod_empresa}_{_periodo_arq}.xlsx",
+                file_name=f"pendencias_nf_{emp_det}_{_periodo_arq}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="nf_download_pendencias",
             )
@@ -464,7 +535,7 @@ else:
                 "aqui) -- fica registrado quem mudou e quando."
             )
             if pendencias_df.empty:
-                st.caption("Sem pendência nesta rodada.")
+                st.caption("Sem pendência neste período.")
             else:
                 nota_sel = st.selectbox(
                     "Nota", pendencias_df["numero_nota"].tolist(), key="nf_pendencia_nota_sel",
@@ -486,19 +557,29 @@ else:
                     else:
                         nf_sienge.atualizar_status_pendencia(conn, int(linha["registro_id"]), novo_status, usuario)
                     flash("ok", f"Nota {nota_sel} marcada como {novo_status}.")
-                    _log_info(f"Pendência nota {nota_sel} -> {novo_status}", cod_empresa)
+                    _log_info(f"Pendência nota {nota_sel} -> {novo_status}", emp_det)
                     st.rerun()
 
 st.divider()
 
-# ─────────────────────────── 4. Histórico de conferências ───────────────────────────
-st.subheader("4. Histórico de conferências")
-if not historico:
-    st.caption("Nenhuma conferência rodada ainda pra essa empresa.")
-else:
-    df_hist = pd.DataFrame(historico)[
-        ["criado_em", "periodo_referencia", "total_notas", "total_lancadas", "total_pendencias",
-         "arquivo_nome", "usuario"]
-    ]
-    df_hist["taxa_conciliacao"] = (df_hist["total_lancadas"] / df_hist["total_notas"]).apply(formatacao.pct_br)
-    st.dataframe(df_hist, hide_index=True, use_container_width=True)
+# ─────────────────────────── Histórico (auditoria) ───────────────────────────
+with st.expander("🗂️ Histórico de arquivos enviados (auditoria)"):
+    st.caption("Cada arquivo subido fica guardado. Só o mais recente de cada empresa e mês vale (\"Vigente\"); "
+               "os anteriores ficam aqui só para consulta.")
+    try:
+        historico = nf_sienge.listar_historico_importacoes(conn)
+    except Exception as exc:
+        st.warning(f"Não foi possível carregar o histórico: {exc}")
+        _log_erro("Falha ao listar histórico de conferências", detalhe=str(exc))
+        historico = []
+    if not historico:
+        st.caption("Nenhum arquivo enviado ainda.")
+    else:
+        df_hist = pd.DataFrame(historico)
+        df_hist["Empresa"] = df_hist["empresa_codigo"].map(lambda c: NOME_POR_COD.get(c, c))
+        df_hist["Situação"] = df_hist["vigente"].map(lambda v: "Vigente" if v else "Substituída")
+        df_hist["Enviado em"] = df_hist["criado_em"].apply(formatacao.hora_br)
+        df_hist = df_hist.rename(columns={"periodo_referencia": "Período", "total_notas": "Notas",
+                                           "arquivo_nome": "Arquivo", "usuario": "Enviado por"})
+        st.dataframe(df_hist[["Enviado em", "Empresa", "Período", "Situação", "Notas", "Arquivo", "Enviado por"]],
+                     hide_index=True, use_container_width=True)

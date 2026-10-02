@@ -13,8 +13,10 @@ Cobre as 6 empresas de uma vez só -- /v1/bills não filtra por empresa
 (confirmado em EGC 00-handoff.md seção 62), então 1 rodada diária já
 sincroniza o grupo inteiro.
 
-O botão continua existindo no app pra forçar uma atualização fora do
+O botão "Atualizar agora" continua existindo no app pra forçar uma atualização fora do
 horário do cron (ex.: acabou de lançar uma nota e quer conferir na hora).
+v0.45.0: depois do sync, refaz a conferência de todas as empresas/períodos vigentes
+(nf_sienge.reconferir_todas).
 
 Credenciais vêm de variável de ambiente (nunca hardcoded, nunca commitadas):
   SIENGE_BASE_URL, SIENGE_USER, SIENGE_PASSWORD  -- mesma credencial
@@ -86,6 +88,38 @@ def main() -> None:
             f"({data_inicio} a {data_fim})",
             usuario=USUARIO_LOG,
         )
+
+        # v0.45.0 (conferencia viva): com o Sienge atualizado, refaz o resultado de TODAS as
+        # conferencias vigentes -- nota pendente que a compra lancou ontem vira LANCADA sozinha.
+        # Falha aqui NAO desfaz o sync (ja' gravado): registra, e o job fica vermelho no fim.
+        falha_reconferencia = None
+        try:
+            print("Refazendo as conferencias vigentes (todas as empresas)...")
+            todas = nf_sienge.reconferir_todas(conn)
+            mudancas = []
+            for empresa, por_periodo in todas.items():
+                for periodo, r in por_periodo.items():
+                    antes = r.get("antes") or {}
+                    pend_depois = int(r["pendencias"]) + int(r.get("orfaos_sienge") or 0)
+                    print(f"  {empresa} {periodo}: {r['lancadas']}/{r['total']} lancadas, {pend_depois} pendencia(s)")
+                    if antes and int(antes.get("pendencias") or 0) != int(r["pendencias"]):
+                        mudancas.append(f"{empresa} {periodo}: {antes.get('pendencias')} -> {r['pendencias']}")
+            db.registrar_evento(
+                conn, "notas_fiscais", "INFO",
+                f"Conferencias refeitas apos o sync automatico: {sum(len(v) for v in todas.values())} periodo(s)"
+                + (f"; pendencias alteradas: {'; '.join(mudancas)}" if mudancas else "; nenhuma pendencia mudou"),
+                usuario=USUARIO_LOG,
+            )
+        except Exception as exc_conf:
+            falha_reconferencia = exc_conf
+            print(f"ERRO ao refazer as conferencias: {exc_conf}", file=sys.stderr)
+            try:
+                db.registrar_evento(conn, "notas_fiscais", "ERRO", "Falha ao refazer conferencias apos o sync automatico",
+                                     usuario=USUARIO_LOG, detalhe=str(exc_conf))
+            except Exception:
+                pass
+        if falha_reconferencia is not None:
+            raise falha_reconferencia
         print("Ingestão concluída com sucesso.")
     except Exception as exc:
         print(f"ERRO na ingestão: {exc}", file=sys.stderr)

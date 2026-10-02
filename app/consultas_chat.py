@@ -351,7 +351,7 @@ def consultar_notas_fiscais_kpi(conn, empresa_codigo: Optional[str] = None) -> d
     egc.nf_import_historico via nf_sienge.listar_historico_importacoes --
     zero query nova, so' reaproveita o que a tela "Notas Fiscais" ja usa.
     """
-    historico = nf_sienge.listar_historico_importacoes(conn, empresa_codigo)
+    historico = nf_sienge.listar_historico_importacoes(conn, empresa_codigo, somente_vigentes=True)
     if not historico:
         return {
             "erro": "Nenhuma conferência de notas fiscais rodada ainda"

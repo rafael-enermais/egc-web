@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from typing import Optional
 
@@ -64,6 +65,10 @@ LIMITE_PAGINA = 200      # teto documentado da API REST do Sienge
 PROXIMIDADE_VALOR_IGNORADA = 0.05  # nota ignorada com valor ate' 5% diferente conta como "par provavel"
 JANELA_COBERTURA_DIAS = 7  # tolerancia p/ avisar que o espelho do Sienge nao cobre o manifesto
 JANELA_DATA_ORFAOS_DIAS = 15  # FIX_20260928f -- ver identificar_e_gravar_bills_orfaos
+# v0.45.0: "numero divergente" (mesmo CNPJ + valor, numero diferente) so' olha titulos com data de emissao
+# a ate' N dias da nota. Sem isso, com o espelho cobrindo o ano todo, a nota de agosto de um fornecedor
+# de valor fixo mensal (aluguel...) virava "Sienge tem a nota nº X" apontando pro titulo de julho.
+JANELA_NUMERO_DIVERGENTE_DIAS = 20
 
 
 # ─────────────────────────────────────────────
@@ -467,8 +472,22 @@ def _escolher_bill(candidatos: pd.DataFrame, usados: set, debtors_preferidos: Op
     return ordenados[0]
 
 
+def _montar_indice(bills: pd.DataFrame):
+    """(universo NFE/NF, {cnpj: titulos}, {chave: titulos}) -- pra classificar
+    milhares de notas sem varrer o espelho inteiro a cada uma (v0.45.0: o ano
+    todo da Energia, ~1.800 notas x ~15 mil titulos, levava ~18 s)."""
+    universo = bills[bills["document_identification_id"].astype(str).str.strip().isin(_CODIGOS_NOTA_FISCAL)] if not bills.empty else bills
+    if universo.empty:
+        return universo, {}, {}
+    por_cnpj = {k: g for k, g in universo.groupby("cnpj_normalizado")}
+    com_chave = universo[universo["access_key_number"] != ""]
+    por_chave = {k: g for k, g in com_chave.groupby("access_key_number")} if not com_chave.empty else {}
+    return universo, por_cnpj, por_chave
+
+
 def _classificar_nota(row, bills: pd.DataFrame, usados: Optional[set] = None,
-                      fases: tuple = FASES_CLASSIFICACAO, debtors_preferidos: Optional[set] = None) -> dict:
+                      fases: tuple = FASES_CLASSIFICACAO, debtors_preferidos: Optional[set] = None,
+                      indice=None) -> dict:
     """Classifica UMA nota do manifesto contra os titulos do Sienge.
 
     v0.44.3: `usados` (bill_ids ja' consumidos por outras notas na mesma
@@ -483,7 +502,10 @@ def _classificar_nota(row, bills: pd.DataFrame, usados: Optional[set] = None,
     valor = row["_valor_float"]
     chave = row.get("Chave") or ""
 
-    universo = bills[bills["document_identification_id"].isin(TIPOS_NOTA_FISCAL)] if not bills.empty else bills
+    if indice is None:
+        indice = _montar_indice(bills)
+    universo, por_cnpj, por_chave = indice
+    do_cnpj_todos = por_cnpj.get(cnpj, universo.iloc[0:0]) if not universo.empty else universo
 
     def _bate_valor(v):
         # FIX_20260928c (Rafael pediu pra conferir pendencias_nf_ENERGIA_07_2026.xlsx
@@ -508,12 +530,12 @@ def _classificar_nota(row, bills: pd.DataFrame, usados: Optional[set] = None,
     if "LANCADA" in fases:
         # 1º passe: chave de acesso idêntica (confiança máxima), só no universo restrito.
         if chave:
-            achou_chave = universo[universo["access_key_number"] == chave]
-            if not achou_chave.empty:
+            achou_chave = por_chave.get(chave)
+            if achou_chave is not None and not achou_chave.empty:
                 return _res("LANCADA", "CHAVE", _escolher_bill(achou_chave, usados, debtors_preferidos))
 
     # 2º passe: CNPJ + número exatos, dentro do universo NFE/NF.
-    candidatos = universo[(universo["cnpj_normalizado"] == cnpj) & (universo["numero_normalizado"] == numero)]
+    candidatos = do_cnpj_todos[do_cnpj_todos["numero_normalizado"] == numero]
     if not candidatos.empty:
         bate = candidatos[candidatos["total_invoice_amount"].apply(_bate_valor)]
         if not bate.empty:
@@ -528,9 +550,15 @@ def _classificar_nota(row, bills: pd.DataFrame, usados: Optional[set] = None,
     # CNPJ + valor batem, número não -- possível erro de digitação do número.
     # So' titulos que nenhuma outra nota da rodada consumiu (v0.44.3).
     if "NUMERO_DIVERGENTE" in fases:
-        do_cnpj = universo[universo["cnpj_normalizado"] == cnpj]   # filtra por CNPJ ANTES de comparar valor (14k titulos x 460 notas: 11s -> <1s)
+        do_cnpj = do_cnpj_todos   # ja' filtrado por CNPJ (indice) ANTES de comparar valor
         mesmo_cnpj_valor = do_cnpj[do_cnpj["total_invoice_amount"].apply(_bate_valor)
                                    & ~do_cnpj["bill_id"].astype(int).isin(usados)] if not do_cnpj.empty else do_cnpj
+        # v0.45.0: so' titulos com data proxima da nota (titulo sem data = sem informacao, nao exclui).
+        data_nota = row.get("_data_emissao")
+        if not mesmo_cnpj_valor.empty and data_nota is not None and pd.notna(data_nota):
+            datas = pd.to_datetime(mesmo_cnpj_valor["issue_date"], errors="coerce")
+            dist = (datas - pd.Timestamp(data_nota)).abs()
+            mesmo_cnpj_valor = mesmo_cnpj_valor[datas.isna() | (dist <= pd.Timedelta(days=JANELA_NUMERO_DIVERGENTE_DIAS))]
         if not mesmo_cnpj_valor.empty:
             b = _escolher_bill(mesmo_cnpj_valor, usados, debtors_preferidos)
             return _res("NUMERO_DIVERGENTE", "CNPJ_VALOR", b,
@@ -540,7 +568,8 @@ def _classificar_nota(row, bills: pd.DataFrame, usados: Optional[set] = None,
 
 
 def classificar_manifesto(manifesto: pd.DataFrame, bills: pd.DataFrame,
-                          mapa_debtor: Optional[dict] = None) -> dict:
+                          mapa_debtor: Optional[dict] = None,
+                          mapas_por_import: Optional[dict] = None) -> dict:
     """Classifica TODAS as notas do manifesto de uma rodada. Devolve
     {indice_da_linha: resultado}. Roda em fases pra um titulo nunca ser
     usado duas vezes como "numero divergente":
@@ -552,19 +581,31 @@ def classificar_manifesto(manifesto: pd.DataFrame, bills: pd.DataFrame,
     Em cada fase, titulo ja' consumido por outra nota so' e' reaproveitado
     quando a nota e' duplicada no manifesto (mesmo CNPJ+numero+valor).
     `mapa_debtor` ({debtor_id: empresa}) desempata entre titulos iguais
-    preferindo o devedor da empresa do manifesto."""
+    preferindo o devedor da empresa do manifesto.
+
+    v0.45.0: o manifesto pode juntar VARIOS meses da mesma empresa (coluna
+    `_import_id`); o consumo de titulos e' comum a todos (um titulo usado
+    por julho nao serve de "numero divergente" pra agosto). `mapas_por_import`
+    ({import_id: mapa}) mantem o mapa de devedores de cada import (o de cada
+    um nao conta a propria rodada -- ver _mapear_debtor_para_empresa)."""
     mapa_debtor = mapa_debtor or {}
     preferidos_por_empresa: dict = {}
     resultados: dict = {}
     usados: set = set()
+    indice = _montar_indice(bills)
     for fase in FASES_CLASSIFICACAO:
         for idx, row in manifesto.iterrows():
             if idx in resultados:
                 continue
             empresa = row.get("_empresa_codigo")
-            if empresa not in preferidos_por_empresa:
-                preferidos_por_empresa[empresa] = {d for d, e in mapa_debtor.items() if e == empresa}
-            r = _classificar_nota(row, bills, usados, (fase,), preferidos_por_empresa[empresa])
+            mapa_linha = mapa_debtor
+            imp = row.get("_import_id") if "_import_id" in row.index else None
+            if mapas_por_import and imp in mapas_por_import:
+                mapa_linha = mapas_por_import[imp]
+            chave_pref = (imp if mapas_por_import else None, empresa)
+            if chave_pref not in preferidos_por_empresa:
+                preferidos_por_empresa[chave_pref] = {d for d, e in mapa_linha.items() if e == empresa}
+            r = _classificar_nota(row, bills, usados, (fase,), preferidos_por_empresa[chave_pref], indice)
             if r["status"] != "NAO_ENCONTRADA":
                 resultados[idx] = r
                 usados.add(r["sienge_bill_id"])
@@ -725,7 +766,7 @@ def _filtrar_bills_orfaos(bills: pd.DataFrame, mapa_debtor: dict, empresa_codigo
     """
     if bills.empty:
         return bills
-    universo = bills[bills["document_identification_id"].isin(TIPOS_NOTA_FISCAL)].copy()
+    universo = bills[bills["document_identification_id"].astype(str).str.strip().isin(_CODIGOS_NOTA_FISCAL)].copy()
     if universo.empty:
         return universo
     universo["_empresa_do_debtor"] = universo["debtor_id"].apply(
@@ -851,10 +892,20 @@ def identificar_e_gravar_bills_orfaos(conn, import_id: str, empresa_codigo: str)
         )
 
         with conn.cursor() as cur:
+            # status manual: o deste import manda; senao, o de imports ANTIGOS do mesmo
+            # empresa+periodo (re-upload do mes -- v0.45.0).
             cur.execute(
-                "SELECT bill_id, pendencia_status FROM egc.nf_bills_orfaos "
-                "WHERE import_id = %s AND pendencia_status IS NOT NULL AND pendencia_status <> 'PENDENTE'",
-                (import_id,),
+                """
+                SELECT o.bill_id, o.pendencia_status FROM egc.nf_bills_orfaos o
+                WHERE o.pendencia_status IS NOT NULL AND o.pendencia_status <> 'PENDENTE'
+                  AND (o.import_id = %s::uuid OR o.import_id IN (
+                        SELECT DISTINCT m.import_id FROM egc.nf_manifesto_import m
+                        WHERE m.empresa_codigo = %s AND m.import_id <> %s::uuid
+                          AND m.periodo_referencia = (SELECT periodo_referencia FROM egc.nf_manifesto_import
+                                                      WHERE import_id = %s::uuid LIMIT 1)))
+                ORDER BY (o.import_id = %s::uuid) ASC, o.atualizado_em ASC NULLS FIRST
+                """,
+                (import_id, empresa_codigo, import_id, import_id, import_id),
             )
             status_preservados = {row[0]: row[1] for row in cur.fetchall()}
 
@@ -885,109 +936,261 @@ def identificar_e_gravar_bills_orfaos(conn, import_id: str, empresa_codigo: str)
     return len(orfaos)
 
 
-def conciliar_import(conn, import_id: str) -> dict:
-    """
-    Roda o matching pra todas as notas de um import_id contra o snapshot
-    já sincronizado (egc.nf_bills_sync/nf_creditors_sync), grava o
-    resultado em egc.nf_conciliacao e devolve um resumo (pros KPIs/
-    egc.nf_import_historico). Idempotente: rodar de novo pro mesmo
-    import_id apaga a conciliação anterior antes de regravar (pendências
-    já com status alterado manualmente -- ENVIADO_SUPRIMENTOS/RESOLVIDO/
-    DESCARTADO -- são preservadas, só o resultado de match é recalculado).
-    """
-    bills = _carregar_bills_creditores(conn)
+# ─────────────────────────────────────────────
+#  CONFERENCIA VIVA (v0.45.0)
+# ─────────────────────────────────────────────
+#
+# Rafael (02/10/2026): "o resultado anterior nao sera alterado pelo posterior?
+# ... nao conseguimos ir alimentando essa base, e a conferencia gerar 1 por mes,
+# completa, conforme upload?". Antes: cada upload era uma "rodada" congelada
+# (julho conferido antes de agosto existir, nada recalculava). Agora:
+#   - a conferencia VIGENTE de cada (empresa, periodo) e' o import mais recente
+#     daquele periodo (subir o mesmo mes de novo substitui; o antigo fica so'
+#     como auditoria e passa o status manual das pendencias adiante);
+#   - toda vez que entra manifesto novo OU o Sienge e' atualizado, TODOS os
+#     meses vigentes da empresa sao conferidos juntos (reconferir_empresa):
+#     consumo de titulo comum aos meses, "Sienge sem manifesto" olhando todos
+#     os meses, resultado independente da ordem dos uploads.
 
+_STATUS_RESUMO = {"LANCADA_OUTRA_EMPRESA": "outra_empresa", "VALOR_DIVERGENTE": "valor_divergente",
+                  "NUMERO_DIVERGENTE": "numero_divergente", "NAO_ENCONTRADA": "nao_encontradas"}
+
+
+@contextmanager
+def _transacao(conn):
+    """Em conexao autocommit (producao) agrupa as gravacoes numa transacao so':
+    ninguem enxerga a conferencia "pela metade" nem fica sem resultado se algo
+    falhar no meio. Em conexao ja' transacional nao mexe (quem chamou manda)."""
+    if not getattr(conn, "autocommit", False):
+        yield
+        return
+    conn.autocommit = False
+    try:
+        yield
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.autocommit = True
+
+
+def _chave_nota(chave, cnpj, numero) -> tuple:
+    """Identidade da nota entre uploads do mesmo periodo: chave de acesso (se
+    houver); senao CNPJ do fornecedor + numero."""
+    c = chave.strip() if isinstance(chave, str) else ""
+    return ("K", c) if c else ("N", str(cnpj or ""), str(numero or ""))
+
+
+def listar_vigentes(conn, empresa_codigo: Optional[str] = None) -> list[dict]:
+    """Imports VIGENTES: o mais recente de cada (empresa, periodo), mais novo
+    primeiro. Cada item: import_id, empresa_codigo, periodo_referencia,
+    arquivo_nome, enviado_em (quando o manifesto desse periodo entrou)."""
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT id, "Num" AS numero, "_numero_normalizado", "_cnpj_normalizado",
-                   "_valor_float", "Chave", "_empresa_codigo"
-            FROM (
-                SELECT id, numero_nota AS "Num", numero_normalizado AS "_numero_normalizado",
-                       cnpj_normalizado AS "_cnpj_normalizado", valor AS "_valor_float",
-                       chave_acesso AS "Chave", empresa_codigo AS "_empresa_codigo"
-                FROM egc.nf_manifesto_import WHERE import_id = %s
-            ) x
+            SELECT DISTINCT ON (empresa_codigo, periodo_referencia)
+                   import_id::text, empresa_codigo, periodo_referencia, arquivo_nome, ult
+            FROM (SELECT import_id, empresa_codigo, periodo_referencia,
+                         MAX(arquivo_nome) AS arquivo_nome, MAX(criado_em) AS ult
+                  FROM egc.nf_manifesto_import
+                  WHERE (%s::text IS NULL OR empresa_codigo = %s)
+                  GROUP BY import_id, empresa_codigo, periodo_referencia) x
+            ORDER BY empresa_codigo, periodo_referencia, ult DESC
             """,
-            (import_id,),
+            (empresa_codigo, empresa_codigo),
+        )
+        itens = [dict(import_id=r[0], empresa_codigo=r[1], periodo_referencia=r[2], arquivo_nome=r[3], enviado_em=r[4])
+                 for r in cur.fetchall()]
+    return sorted(itens, key=lambda i: (i["empresa_codigo"], _chave_periodo(i["periodo_referencia"])))
+
+
+def _chave_periodo(periodo) -> tuple:
+    """'07/2026' -> (2026, 7) pra ordenar; texto fora do padrao vai pro fim."""
+    m = re.match(r"^\s*(\d{1,2})\s*/\s*(\d{4})\s*$", str(periodo or ""))
+    return (int(m.group(2)), int(m.group(1))) if m else (9999, 99, str(periodo))
+
+
+def _tabela_existe(conn, nome: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass(%s) IS NOT NULL", (nome,))
+        return bool(cur.fetchone()[0])
+
+
+def _reconferir(conn, empresa_codigo: str, import_ids: list) -> dict:
+    """Confere JUNTOS os imports `import_ids` (todos da mesma empresa) contra o
+    espelho atual do Sienge e regrava egc.nf_conciliacao / nf_bills_orfaos /
+    nf_import_historico de cada um. Devolve {import_id: resumo}.
+    Status de acompanhamento manual (ENVIADO_SUPRIMENTOS/RESOLVIDO/DESCARTADO)
+    e' preservado. Idempotente."""
+    import_ids = [str(i) for i in import_ids]
+    if not import_ids:
+        return {}
+
+    # ── 1) leitura (tudo em memoria antes de gravar) ──────────────────────
+    with conn.cursor() as cur:
+        cur.execute("SELECT import_id::text, total_notas, total_lancadas, total_pendencias "
+                    "FROM egc.nf_import_historico WHERE import_id = ANY(%s::uuid[])", (import_ids,))
+        antes = {r[0]: {"notas": r[1], "lancadas": r[2], "pendencias": r[3]} for r in cur.fetchall()}
+        cur.execute(
+            """
+            SELECT id, import_id::text AS _import_id, periodo_referencia, numero_nota AS "Num",
+                   numero_normalizado AS "_numero_normalizado", cnpj_normalizado AS "_cnpj_normalizado",
+                   valor AS "_valor_float", chave_acesso AS "Chave", empresa_codigo AS "_empresa_codigo",
+                   data_emissao AS "_data_emissao", arquivo_nome, criado_por, criado_em
+            FROM egc.nf_manifesto_import WHERE import_id = ANY(%s::uuid[]) ORDER BY id
+            """,
+            (import_ids,),
         )
         cols = [d[0] for d in cur.description]
         manifesto = pd.DataFrame(cur.fetchall(), columns=cols)
 
-    resumo = {"total": len(manifesto), "lancadas": 0, "pendencias": 0, "orfaos_sienge": 0, "outra_empresa": 0,
-              "valor_divergente": 0, "numero_divergente": 0, "nao_encontradas": 0}
+    resumos = {i: {"total": 0, "lancadas": 0, "pendencias": 0, "orfaos_sienge": 0, "outra_empresa": 0,
+                   "valor_divergente": 0, "numero_divergente": 0, "nao_encontradas": 0,
+                   "periodo": None, "antes": antes.get(i)} for i in import_ids}
     if manifesto.empty:
-        return resumo
-    # de-para debtor -> empresa (sem contar esta propria rodada) e debtor de cada titulo
-    mapa_debtor = _mapear_debtor_para_empresa(conn, import_id)
+        return resumos
+
+    bills = _carregar_bills_creditores(conn)
+    mapas = {i: _mapear_debtor_para_empresa(conn, i) for i in import_ids}
     debtor_por_bill = {}
     if not bills.empty and "debtor_id" in bills.columns:
         debtor_por_bill = {int(b): d for b, d in zip(bills["bill_id"], bills["debtor_id"])}
 
-    # v0.44.3: matching em fases com consumo de titulo (classificar_manifesto)
-    classificacao = classificar_manifesto(manifesto, bills, mapa_debtor)
-    obs_ignoradas = observacoes_de_ignoradas(manifesto, listar_ignoradas(conn, import_id))
+    # matching em fases com consumo de titulo COMUM a todos os meses
+    classificacao = classificar_manifesto(manifesto, bills, None, mapas)
 
+    ignoradas_por_import = {i: listar_ignoradas(conn, i) for i in import_ids}
     with conn.cursor() as cur:
-        # Preserva status de acompanhamento manual (pendencia_status) já
-        # dado a linhas deste import_id -- só reseta o campo de MATCH.
         cur.execute(
-            "SELECT manifesto_id, pendencia_status FROM egc.nf_conciliacao "
-            "WHERE import_id = %s AND pendencia_status IS NOT NULL AND pendencia_status <> 'PENDENTE'",
-            (import_id,),
-        )
-        status_preservados = {row[0]: row[1] for row in cur.fetchall()}
+            "SELECT manifesto_id, pendencia_status FROM egc.nf_conciliacao WHERE import_id = ANY(%s::uuid[])",
+            (import_ids,))
+        proprios = {r[0]: r[1] for r in cur.fetchall()}   # status que cada nota JA tem neste import
 
-        cur.execute("DELETE FROM egc.nf_conciliacao WHERE import_id = %s", (import_id,))
-
-        for idx, row in manifesto.iterrows():
-            resultado = classificacao[idx]
-            if resultado.get("sienge_bill_id") is not None:
-                resultado = checar_empresa_do_lancamento(
-                    resultado, row["_empresa_codigo"], debtor_por_bill.get(int(resultado["sienge_bill_id"])), mapa_debtor,
-                )
-            status_final = resultado["status"]
-            if status_final != "LANCADA" and idx in obs_ignoradas:
-                resultado = dict(resultado)
-                resultado["observacao"] = " | ".join(x for x in (resultado.get("observacao"), obs_ignoradas[idx]) if x)
-            if status_final == "LANCADA":
-                resumo["lancadas"] += 1
-                pendencia_status = None
-            else:
-                resumo["pendencias"] += 1
-                pendencia_status = status_preservados.get(row["id"], "PENDENTE")
-
-            sql_ins = """
-                INSERT INTO egc.nf_conciliacao
-                    (import_id, manifesto_id, status, sienge_bill_id, sienge_valor,
-                     confianca, observacao, pendencia_status, atualizado_em)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
+    # status manual vindo de imports ANTIGOS do mesmo periodo (re-upload do mes)
+    herdados: dict = {}
+    periodos = {i: g["periodo_referencia"].iloc[0] for i, g in manifesto.groupby("_import_id")}
+    with conn.cursor() as cur:
+        for imp, periodo in periodos.items():
+            cur.execute(
                 """
-            params = (import_id, row["id"], resultado["status"], resultado["sienge_bill_id"],
-                      resultado["sienge_valor"], resultado["confianca"], resultado["observacao"], pendencia_status)
-            try:
-                cur.execute(sql_ins, params)
-            except psycopg2.errors.CheckViolation:
-                # CHECK de status ainda sem LANCADA_OUTRA_EMPRESA (bloco 19 do
-                # schema nao rodado): grava como LANCADA mantendo o alerta na
-                # observacao -- nunca perde a nota nem quebra a conferencia.
-                resumo["lancadas"] += 1
-                resumo["pendencias"] -= 1
-                status_final = "LANCADA"
-                cur.execute(sql_ins, params[:2] + ("LANCADA",) + params[3:7] + (None,))
-            chave_resumo = {"LANCADA_OUTRA_EMPRESA": "outra_empresa", "VALOR_DIVERGENTE": "valor_divergente",
-                            "NUMERO_DIVERGENTE": "numero_divergente", "NAO_ENCONTRADA": "nao_encontradas"}.get(status_final)
-            if chave_resumo:
-                resumo[chave_resumo] += 1
+                SELECT m.chave_acesso, m.cnpj_normalizado, m.numero_normalizado, c.pendencia_status
+                FROM egc.nf_conciliacao c JOIN egc.nf_manifesto_import m ON m.id = c.manifesto_id
+                WHERE m.empresa_codigo = %s AND m.periodo_referencia = %s AND m.import_id <> %s::uuid
+                  AND c.pendencia_status IS NOT NULL AND c.pendencia_status <> 'PENDENTE'
+                ORDER BY c.atualizado_em ASC NULLS FIRST
+                """,
+                (empresa_codigo, periodo, imp),
+            )
+            herdados[imp] = {_chave_nota(ch, cn, nu): st for ch, cn, nu, st in cur.fetchall()}
 
-    # FIX_20260928f -- direção reversa (Sienge sem nota no manifesto),
-    # roda depois do matching normal (usa o resultado dele: bill já
-    # associado a alguma nota, mesmo que divergente, não conta como orfao).
-    resumo["orfaos_sienge"] = identificar_e_gravar_bills_orfaos(
-        conn, import_id, manifesto["_empresa_codigo"].iloc[0]
-    )
+    # ── 2) gravacao da conferencia dos meses (uma transacao) ──────────────
+    with _transacao(conn):
+        with conn.cursor() as cur:
+            for imp in import_ids:
+                sub = manifesto[manifesto["_import_id"] == imp]
+                if sub.empty:
+                    continue
+                resumo = resumos[imp]
+                resumo["periodo"] = periodos[imp]
+                resumo["total"] = len(sub)
+                obs_ign = observacoes_de_ignoradas(sub, ignoradas_por_import[imp])
+                cur.execute("DELETE FROM egc.nf_conciliacao WHERE import_id = %s::uuid", (imp,))
+                for idx, row in sub.iterrows():
+                    resultado = classificacao[idx]
+                    if resultado.get("sienge_bill_id") is not None:
+                        resultado = checar_empresa_do_lancamento(
+                            resultado, row["_empresa_codigo"],
+                            debtor_por_bill.get(int(resultado["sienge_bill_id"])), mapas[imp])
+                    status_final = resultado["status"]
+                    if status_final != "LANCADA" and idx in obs_ign:
+                        resultado = dict(resultado)
+                        resultado["observacao"] = " | ".join(x for x in (resultado.get("observacao"), obs_ign[idx]) if x)
+                    if status_final == "LANCADA":
+                        resumo["lancadas"] += 1
+                        pendencia_status = None
+                    else:
+                        resumo["pendencias"] += 1
+                        if row["id"] in proprios:
+                            pendencia_status = proprios[row["id"]] or "PENDENTE"
+                        else:
+                            pendencia_status = herdados[imp].get(
+                                _chave_nota(row["Chave"], row["_cnpj_normalizado"], row["_numero_normalizado"]), "PENDENTE")
+                    params = (imp, row["id"], resultado["status"], resultado["sienge_bill_id"], resultado["sienge_valor"],
+                              resultado["confianca"], resultado["observacao"], pendencia_status)
+                    sql_ins = """
+                        INSERT INTO egc.nf_conciliacao
+                            (import_id, manifesto_id, status, sienge_bill_id, sienge_valor,
+                             confianca, observacao, pendencia_status, atualizado_em)
+                        VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s, now())
+                        """
+                    cur.execute("SAVEPOINT s_nota")
+                    try:
+                        cur.execute(sql_ins, params)
+                        cur.execute("RELEASE SAVEPOINT s_nota")
+                    except psycopg2.errors.CheckViolation:
+                        # CHECK de status ainda sem LANCADA_OUTRA_EMPRESA (bloco 19 nao rodado):
+                        # grava como LANCADA mantendo o alerta na observacao.
+                        cur.execute("ROLLBACK TO SAVEPOINT s_nota")
+                        resumo["lancadas"] += 1
+                        resumo["pendencias"] -= 1
+                        status_final = "LANCADA"
+                        cur.execute(sql_ins, params[:2] + ("LANCADA",) + params[3:7] + (None,))
+                    chave_resumo = _STATUS_RESUMO.get(status_final)
+                    if chave_resumo:
+                        resumo[chave_resumo] += 1
+                cur.execute(
+                    """
+                    INSERT INTO egc.nf_import_historico
+                        (import_id, empresa_codigo, periodo_referencia, total_notas,
+                         total_lancadas, total_pendencias, arquivo_nome, usuario, criado_em)
+                    VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (import_id) DO UPDATE SET
+                        total_notas = EXCLUDED.total_notas,
+                        total_lancadas = EXCLUDED.total_lancadas,
+                        total_pendencias = EXCLUDED.total_pendencias
+                    """,
+                    (imp, empresa_codigo, periodos[imp], resumo["total"], resumo["lancadas"], resumo["pendencias"],
+                     sub["arquivo_nome"].iloc[0], sub["criado_por"].iloc[0], sub["criado_em"].min()),
+                )
 
-    return resumo
+    # ── 3) direcao reversa ("Sienge sem manifesto"), DEPOIS de todos os meses
+    # estarem gravados: o escopo dela olha o resultado dos outros periodos.
+    if _tabela_existe(conn, "egc.nf_bills_orfaos"):
+        for imp in import_ids:
+            if resumos[imp]["total"]:
+                with _transacao(conn):
+                    resumos[imp]["orfaos_sienge"] = identificar_e_gravar_bills_orfaos(conn, imp, empresa_codigo)
+    return resumos
+
+
+def reconferir_empresa(conn, empresa_codigo: str) -> dict:
+    """Confere de novo, juntos, todos os meses VIGENTES da empresa contra o
+    Sienge atual. Devolve {periodo: resumo} (resumo["antes"] = totais da
+    conferencia anterior desse periodo, ou None)."""
+    vigentes = listar_vigentes(conn, empresa_codigo)
+    resumos = _reconferir(conn, empresa_codigo, [v["import_id"] for v in vigentes])
+    return {v["periodo_referencia"]: resumos[v["import_id"]] for v in vigentes}
+
+
+def reconferir_todas(conn) -> dict:
+    """reconferir_empresa de cada empresa que ja' tem manifesto. {empresa: {periodo: resumo}}"""
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT empresa_codigo FROM egc.nf_manifesto_import ORDER BY 1")
+        empresas = [r[0] for r in cur.fetchall()]
+    return {e: reconferir_empresa(conn, e) for e in empresas}
+
+
+def conciliar_import(conn, import_id: str) -> dict:
+    """Confere UM import isolado (comportamento de antes da v0.45.0; o app usa
+    reconferir_empresa). Idempotente; preserva o status manual das pendencias."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT empresa_codigo FROM egc.nf_manifesto_import WHERE import_id = %s::uuid LIMIT 1", (import_id,))
+        row = cur.fetchone()
+    if not row:
+        return {"total": 0, "lancadas": 0, "pendencias": 0, "orfaos_sienge": 0, "outra_empresa": 0,
+                "valor_divergente": 0, "numero_divergente": 0, "nao_encontradas": 0}
+    return _reconferir(conn, row[0], [import_id])[str(import_id)]
 
 
 def gravar_historico_import(conn, import_id: str, empresa_codigo: str, periodo_referencia: str,
@@ -1013,7 +1216,10 @@ def gravar_historico_import(conn, import_id: str, empresa_codigo: str, periodo_r
 #  CONSULTAS (KPI, histórico, pendências pra exportar)
 # ─────────────────────────────────────────────
 
-def listar_historico_importacoes(conn, empresa_codigo: Optional[str] = None) -> list[dict]:
+def listar_historico_importacoes(conn, empresa_codigo: Optional[str] = None, somente_vigentes: bool = False) -> list[dict]:
+    """Uploads ja' feitos (auditoria), mais recente primeiro. v0.45.0: cada item
+    traz `vigente` (True = e' a conferencia atual daquele empresa+periodo);
+    `somente_vigentes=True` devolve so' essas."""
     with conn.cursor() as cur:
         if empresa_codigo:
             cur.execute(
@@ -1023,7 +1229,49 @@ def listar_historico_importacoes(conn, empresa_codigo: Optional[str] = None) -> 
         else:
             cur.execute("SELECT * FROM egc.nf_import_historico ORDER BY criado_em DESC")
         cols = [d[0] for d in cur.description]
-        return [dict(zip(cols, row)) for row in cur.fetchall()]
+        linhas = [dict(zip(cols, row)) for row in cur.fetchall()]
+    ids_vigentes = {v["import_id"] for v in listar_vigentes(conn, empresa_codigo)}
+    for h in linhas:
+        h["vigente"] = str(h["import_id"]) in ids_vigentes
+    return [h for h in linhas if h["vigente"]] if somente_vigentes else linhas
+
+
+def resumo_vigentes(conn, empresa_codigo: Optional[str] = None) -> list[dict]:
+    """Uma linha por (empresa, periodo) vigente -- a "lista de CNPJ e periodo"
+    da tela: notas, lancadas, pendencias (notas do manifesto + titulos do Sienge
+    sem nota), arquivo e quando foi atualizada. Ordenada por empresa e periodo."""
+    vigentes = listar_vigentes(conn, empresa_codigo)
+    if not vigentes:
+        return []
+    ids = [v["import_id"] for v in vigentes]
+    com_orfaos = _tabela_existe(conn, "egc.nf_bills_orfaos")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT h.import_id::text, h.total_notas, h.total_lancadas, h.total_pendencias, h.usuario, h.criado_em,
+                   (SELECT MAX(c.atualizado_em) FROM egc.nf_conciliacao c WHERE c.import_id = h.import_id)
+            FROM egc.nf_import_historico h WHERE h.import_id = ANY(%s::uuid[])
+            """,
+            (ids,),
+        )
+        hist = {r[0]: r for r in cur.fetchall()}
+        orfaos = {}
+        if com_orfaos:
+            cur.execute("SELECT import_id::text, COUNT(*) FROM egc.nf_bills_orfaos WHERE import_id = ANY(%s::uuid[]) "
+                        "GROUP BY import_id", (ids,))
+            orfaos = {r[0]: int(r[1]) for r in cur.fetchall()}
+    saida = []
+    for v in vigentes:
+        h = hist.get(v["import_id"])
+        notas = int(h[1]) if h else 0
+        lancadas = int(h[2]) if h else 0
+        pend_notas = int(h[3]) if h else 0
+        n_orf = orfaos.get(v["import_id"], 0)
+        saida.append({**v, "total_notas": notas, "total_lancadas": lancadas, "pendencias_notas": pend_notas,
+                      "orfaos_sienge": n_orf, "total_pendencias": pend_notas + n_orf,
+                      "taxa": (lancadas / notas) if notas else None,
+                      "usuario": h[4] if h else None, "atualizado_em": (h[6] if h else None) or v["enviado_em"]})
+    return saida
 
 
 def listar_conciliacao(conn, import_id: str) -> pd.DataFrame:
@@ -1257,7 +1505,7 @@ def listar_orfaos_abertos(conn, empresa_codigo: Optional[str] = None, limite: in
 def buscar_notas(conn, numero: Optional[str] = None, fornecedor: Optional[str] = None,
                  cnpj: Optional[str] = None, empresa_codigo: Optional[str] = None, limite: int = 20) -> list[dict]:
     """Busca nota(s) fiscal(is) do manifesto com o resultado da conferencia
-    (qualquer rodada, a mais recente primeiro). Filtros opcionais e combinaveis:
+    (so' a conferencia VIGENTE de cada empresa+periodo -- v0.45.0). Filtros opcionais e combinaveis:
     numero (sem zeros a esquerda), trecho do nome do fornecedor, CNPJ. Usada pelo
     chat ("a nota 1234 do fornecedor X foi lancada?")."""
     filtros, params = [], []
@@ -1286,7 +1534,12 @@ def buscar_notas(conn, numero: Optional[str] = None, fornecedor: Optional[str] =
                    c.sienge_bill_id, c.sienge_valor, c.manifesto_id AS registro_id
             FROM egc.nf_manifesto_import m
             LEFT JOIN egc.nf_conciliacao c ON c.manifesto_id = m.id
-            WHERE {where}
+            WHERE m.import_id IN (
+                    SELECT DISTINCT ON (empresa_codigo, periodo_referencia) import_id
+                    FROM (SELECT import_id, empresa_codigo, periodo_referencia, MAX(criado_em) AS ult
+                          FROM egc.nf_manifesto_import GROUP BY import_id, empresa_codigo, periodo_referencia) z
+                    ORDER BY empresa_codigo, periodo_referencia, ult DESC)
+              AND {where}
             ORDER BY m.criado_em DESC, m.data_emissao DESC
             LIMIT %s
             """,
