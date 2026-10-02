@@ -11,9 +11,9 @@ on:
   workflow_dispatch:       # botao "Run workflow": rodar na mao, inclusive carga historica
     inputs:
       dias_retroativos:
-        description: 'Quantos dias pra tras sincronizar (diario = 90; desde 01/01 = 275)'
+        description: 'Quantos dias pra tras sincronizar (diario = 365 = janela movel de 1 ano)'
         required: false
-        default: '90'
+        default: '365'
 
 jobs:
   ingest:
@@ -33,7 +33,7 @@ jobs:
 
       - name: Rodar a ingestao
         env:
-          NF_DIAS_RETROATIVOS: ${{ github.event.inputs.dias_retroativos || '90' }}
+          NF_DIAS_RETROATIVOS: ${{ github.event.inputs.dias_retroativos || '365' }}
           SIENGE_BASE_URL: ${{ secrets.SIENGE_BASE_URL }}
           SIENGE_USER: ${{ secrets.SIENGE_USER }}
           SIENGE_PASSWORD: ${{ secrets.SIENGE_PASSWORD }}

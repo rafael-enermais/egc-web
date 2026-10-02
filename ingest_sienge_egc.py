@@ -22,7 +22,7 @@ Credenciais vêm de variável de ambiente (nunca hardcoded, nunca commitadas):
   DATABASE_URL  -- mesma connection string do Supabase (role egc_app) já
     usada pelo Streamlit Secrets (app/conexao.py:get_conn).
   NF_DIAS_RETROATIVOS (opcional, default 60) -- quantos dias pra trás
-    sincronizar de /v1/bills. O diário usa 90; pra carga histórica rode o
+    sincronizar de /v1/bills. O diário usa 365 (janela móvel de 1 ano, decisão do Rafael 02/10/2026; ~1 min por 90 dias); pra outra janela rode o
     workflow à mão (Run workflow) informando os dias (ex.: 275 = desde 01/01).
 
 Uso local (fora do GitHub Actions), pra testar antes de automatizar:
