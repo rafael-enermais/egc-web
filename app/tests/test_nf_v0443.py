@@ -162,17 +162,17 @@ def test_titulo_de_outra_nota_nao_vira_numero_divergente():
 
 
 def test_numero_divergente_real_continua_aparecendo_e_so_uma_vez():
-    # titulo 7 lancado com numero errado (99 em vez de 12); 2 notas (12 e 13) de 50,00 sem titulo proprio
-    res = nf_sienge.classificar_manifesto(_manifesto([("12", 50.0), ("13", 50.0)]), _bills([(7, "99", 50.0, 1)]))
+    # titulo 7 lancado com numero errado (1243 em vez de 1234); 2 notas (1234 e 1235) de 50,00 sem titulo proprio
+    res = nf_sienge.classificar_manifesto(_manifesto([("1234", 50.0), ("1235", 50.0)]), _bills([(7, "1243", 50.0, 1)]))
     status = sorted(r["status"] for r in res.values())
     assert status == ["NAO_ENCONTRADA", "NUMERO_DIVERGENTE"]       # o titulo 7 so' serve a UMA nota
     assert sorted(r["sienge_bill_id"] for r in res.values() if r["sienge_bill_id"]) == [7]
 
 
 def test_ordem_do_manifesto_nao_muda_o_resultado():
-    bills = _bills([(1, "10", 100.0, 1), (2, "99", 100.0, 1)])
-    a = nf_sienge.classificar_manifesto(_manifesto([("10", 100.0), ("11", 100.0)]), bills)
-    b = nf_sienge.classificar_manifesto(_manifesto([("11", 100.0), ("10", 100.0)]), bills)
+    bills = _bills([(1, "1000", 100.0, 1), (2, "1011", 100.0, 1)])
+    a = nf_sienge.classificar_manifesto(_manifesto([("1000", 100.0), ("1010", 100.0)]), bills)
+    b = nf_sienge.classificar_manifesto(_manifesto([("1010", 100.0), ("1000", 100.0)]), bills)
     assert a[0]["status"] == "LANCADA" and a[1]["status"] == "NUMERO_DIVERGENTE" and a[1]["sienge_bill_id"] == 2
     assert b[1]["status"] == "LANCADA" and b[0]["status"] == "NUMERO_DIVERGENTE" and b[0]["sienge_bill_id"] == 2
 

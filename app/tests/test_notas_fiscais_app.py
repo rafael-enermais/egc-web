@@ -260,3 +260,40 @@ def test_nf_atualizar_agora_nao_pede_datas_usa_365_dias_e_refaz_as_conferencias(
     assert (fim - ini).days == 365
     msg = " ".join(x.value for x in at.success)
     assert "7 título(s)" in msg and "07/2026: 1 → 0" in msg       # mostra o que mudou
+
+
+def test_nf_empresa_e_periodo_vem_do_arquivo_sem_campos_pra_contadora():
+    import streamlit as st
+    import nf_parser
+    from conexao import EMPRESAS_NF
+    conteudo = _xlsx_bytes("47040664000148", canceladas=0, meses=("2026.07",))
+    gravados = []
+
+    def _gravar(conn, empresa, periodo_, df, nome, usuario):
+        gravados.append((empresa, periodo_))
+        return "imp-1"
+
+    with patch.object(auth, "usuario_atual", return_value="t@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(st, "file_uploader", return_value=_ArquivoFake(conteudo)), \
+         patch.object(nf_sienge, "ultima_sincronizacao", return_value=datetime.datetime(2026, 10, 1, 4, 0)), \
+         patch.object(nf_sienge, "resumo_vigentes", return_value=[]), \
+         patch.object(nf_sienge, "listar_vigentes", return_value=[]), \
+         patch.object(nf_sienge, "listar_conciliacao", return_value=pd.DataFrame()), \
+         patch.object(nf_sienge, "listar_orfaos_sienge", return_value=pd.DataFrame()), \
+         patch.object(nf_sienge, "listar_historico_importacoes", return_value=[]), \
+         patch.object(nf_sienge, "gravar_manifesto", side_effect=_gravar), \
+         patch.object(nf_sienge, "gravar_ignoradas", return_value=0), \
+         patch.object(nf_sienge, "reconferir_empresa", return_value={"07/2026": dict(total=2, lancadas=1, pendencias=1, orfaos_sienge=0)}), \
+         patch.object(db, "registrar_evento", return_value=None):
+        at = AppTest.from_file(PAGE)
+        info = nf_parser.analisar_upload(conteudo, EMPRESAS_NF)
+        info["arquivo"] = "m.xlsx"
+        at.session_state["nf_upload_info"] = info
+        at.run(timeout=30)
+        assert not at.exception, at.exception
+        assert not any(sb.key == "nf_empresa_sel" for sb in at.selectbox)        # sem escolher empresa
+        assert not any(t.key == "nf_periodo_ref" for t in at.text_input)         # sem digitar periodo
+        at.button(key="nf_btn_rodar").click().run(timeout=30)
+    assert not at.exception, at.exception
+    assert gravados == [("ENERGIA", "07/2026")]

@@ -166,10 +166,11 @@ if st.button("🔄 Atualizar agora", key="nf_btn_sync",
 # ───────────── Empresa de cada devedor do Sienge (confere lançamento na empresa certa) ─────────────
 with st.expander("🏢 Empresa de cada devedor do Sienge — confere se a nota foi lançada na empresa certa"):
     st.caption(
-        "O Sienge é uma conta só das 6 empresas: o **devedor** do título diz em qual empresa a nota foi "
-        "lançada. Confirme abaixo a empresa de cada devedor (o app sugere pelo histórico). Na conferência, "
-        "nota que consta no manifesto de uma empresa mas está lançada no devedor de OUTRA aparece como "
-        "**LANCADA_OUTRA_EMPRESA** (pendência). Devedor sem empresa confirmada/sugerida não gera alerta."
+        "O Sienge é uma conta só das empresas: o **devedor** do título diz em qual empresa a nota foi "
+        "lançada. **Só vale o que está confirmado aqui** (a sugestão do histórico é só uma pista -- não é usada na "
+        "conferência). Nota do manifesto de uma empresa lançada no devedor de OUTRA aparece como "
+        "**LANCADA_OUTRA_EMPRESA** (pendência), e título de devedor confirmado sem nota no manifesto aparece como "
+        "\"Sienge sem manifesto\". Devedor sem confirmação não gera nenhum dos dois alertas."
     )
     try:
         _deb = nf_sienge.listar_debtors_sienge(conn)
@@ -179,6 +180,10 @@ with st.expander("🏢 Empresa de cada devedor do Sienge — confere se a nota f
     if _deb is not None and _deb.empty:
         st.caption("Nenhum título NFE/NF sincronizado ainda.")
     elif _deb is not None:
+        _sem_conf = [int(d) for d, c in zip(_deb["debtor_id"], _deb["empresa_confirmada"]) if not isinstance(c, str)]
+        if _sem_conf:
+            st.warning("Devedor(es) sem empresa confirmada: " + ", ".join(str(x) for x in _sem_conf)
+                       + ". Sem isso a conferência não checa empresa errada nem \"Sienge sem manifesto\" para eles.")
         _opcoes = ["(sem confirmação)"] + [cod for cod, _n, _c in EMPRESAS_NF]
         for _, d in _deb.iterrows():
             c1, c2, c3, c4 = st.columns([1, 1, 2, 1])
@@ -208,9 +213,6 @@ st.subheader("2. Subir o manifesto de NF-e (.xlsx da Receita Federal)")
 st.caption("Pode subir quando quiser, em qualquer ordem. O mês que já existe é substituído pelo arquivo novo, e todos os "
            "meses da empresa são conferidos juntos de novo.")
 
-nomes_emp = [f"{nome} ({cod})" for cod, nome, _cnpj in EMPRESAS_NF]
-idx = st.selectbox("Empresa", range(len(EMPRESAS_NF)), format_func=lambda i: nomes_emp[i], key="nf_empresa_sel")
-cod_empresa, nome_empresa, _cnpj_empresa = EMPRESAS_NF[idx]
 
 _sync_liberado = _ultima_sync is not None
 if not _sync_liberado:
@@ -226,11 +228,31 @@ _info_upload = st.session_state.get("nf_upload_info") if arquivo is not None els
 if _info_upload and _info_upload.get("arquivo") != arquivo.name:
     _info_upload = None  # info de outro arquivo (ex.: sessao antiga) nao vale
 
-periodo_referencia = st.text_input("Período de referência (ex.: 08/2026)", key="nf_periodo_ref",
-                                    disabled=not _sync_liberado)
+# v0.45.1 (menos funcao pra contadora): empresa e periodo saem do PROPRIO arquivo (coluna Filial e
+# Ano-Mes da Receita). Os campos so' aparecem quando o arquivo nao permite identificar.
+_info_ok = bool(_info_upload) and not _info_upload.get("erro")
+_empresa_detectada = _info_upload.get("empresa") if _info_ok else None
+_comps_arq = (_info_upload.get("competencias") or {}) if _info_ok else {}
+_mostrar_periodo = not _info_ok or not _comps_arq or sum(_comps_arq.values()) < (_info_upload.get("total") or 0)
+
+nomes_emp = [f"{nome} ({cod})" for cod, nome, _cnpj in EMPRESAS_NF]
+if arquivo is not None and not _empresa_detectada:
+    idx = st.selectbox("Empresa do arquivo", range(len(EMPRESAS_NF)), format_func=lambda i: nomes_emp[i],
+                       key="nf_empresa_sel", help="Só aparece quando o CNPJ da coluna Filial não identifica a empresa.")
+else:
+    idx = [c for c, _n, _c in EMPRESAS_NF].index(_empresa_detectada) if _empresa_detectada else 0
+cod_empresa, nome_empresa, _cnpj_empresa = EMPRESAS_NF[idx]
+
+periodo_referencia = ""
+if arquivo is not None and _mostrar_periodo:
+    periodo_referencia = st.text_input("Período de referência (ex.: 08/2026)", key="nf_periodo_ref",
+                                        disabled=not _sync_liberado)
 if _info_upload and not _info_upload.get("erro"):
     _linhas = []
-    if _info_upload.get("periodo") and periodo_referencia == _info_upload["periodo"]:
+    if _comps_arq and not _mostrar_periodo:
+        _linhas.append("📅 Períodos identificados no arquivo (mês de autorização da Receita): "
+                       + ", ".join(f"{c} ({n} nota(s))" for c, n in _comps_arq.items()) + ".")
+    elif _info_upload.get("periodo") and periodo_referencia == _info_upload["periodo"]:
         _linhas.append("💡 Período sugerido a partir das datas de emissão do arquivo -- confira antes de rodar.")
     if _info_upload.get("empresa"):
         _linhas.append(f"🏢 Empresa identificada pelo CNPJ do arquivo (coluna Filial): "
@@ -244,10 +266,9 @@ if _info_upload and not _info_upload.get("erro"):
         _linhas.append(f"↩️ {_info_upload['entradas']} nota(s) de Entrada (devolução/retorno) ficam fora da conferência.")
     if _info_upload.get("canceladas") or _info_upload.get("entradas"):
         _linhas.append("As que ficaram fora aparecem numa lista no resultado e na aba \"Ignoradas\" da planilha, pra conferir.")
-    _comps = _info_upload.get("competencias") or {}
-    if len(_comps) > 1:
-        _linhas.append("📅 O arquivo tem mais de um mês (" + ", ".join(f"{c}: {n} nota(s)" for c, n in _comps.items())
-                       + "): a conferência roda separada por mês, cada um com o seu período -- o campo acima é ignorado.")
+    if len(_comps_arq) > 1:
+        _linhas.append("O arquivo tem mais de um mês: cada mês vira uma conferência própria, e todos os meses da empresa "
+                       "são conferidos juntos.")
     for _l in _linhas:
         st.caption(_l)
 elif _info_upload and _info_upload.get("erro"):
@@ -287,7 +308,7 @@ if arquivo is not None and st.button("▶️ Enviar e conferir", key="nf_btn_rod
 
     # Um arquivo com varios meses (Ano-Mês da Receita) vira uma conferencia por mes.
     _grupos = nf_parser.dividir_por_competencia(df, _ignoradas_df)
-    if len(_grupos) == 1 and not periodo_referencia.strip():
+    if len(_grupos) == 1 and not (_grupos[0][0] and not _mostrar_periodo) and not periodo_referencia.strip():
         st.warning("Informe o período de referência antes de rodar a conferência.")
         st.stop()
 
@@ -302,7 +323,8 @@ if arquivo is not None and st.button("▶️ Enviar e conferir", key="nf_btn_rod
     with st.spinner(f"Gravando {len(df)} nota(s) e conferindo todos os meses de {nome_empresa} contra o Sienge..."):
         try:
             for _comp, _df_mes, _ign_mes in _grupos:
-                _periodo = (periodo_referencia.strip() if len(_grupos) == 1 else _comp) or periodo_referencia.strip()
+                _periodo = (_comp if (_comp and (len(_grupos) > 1 or not _mostrar_periodo)) else periodo_referencia.strip()) \
+                    or periodo_referencia.strip()
                 if not _periodo:
                     st.error("Há notas sem mês de competência no arquivo e o período de referência está vazio.")
                     st.stop()
