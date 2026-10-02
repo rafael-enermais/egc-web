@@ -58,6 +58,28 @@ def chave_ordenacao_previa(r: dict):
     return ("~", _dt.date.max, 9, r["arquivo"])  # "~" fica depois de qualquer CNPJ/nome real
 
 
+# Janela entre o instante em que os lancamentos foram gravados e o registro do
+# evento em egc.importacoes (gravado logo depois, no mesmo clique de "Gravar").
+JANELA_EVENTO_APOS_LANCAMENTO_SEG = 120
+JANELA_EVENTO_ANTES_LANCAMENTO_SEG = 30
+
+
+def evento_esta_ativo(criado_evento, criacoes_ativas) -> bool:
+    """True quando o import do evento e' a geracao ATIVA do periodo: existe
+    lancamento ativo criado no instante desse import (ver
+    db.geracoes_ativas_por_periodo). `criacoes_ativas` vazio = periodo sem nada
+    ativo (desfeito/arquivado) -> False."""
+    if not criado_evento or not criacoes_ativas:
+        return False
+    for t in criacoes_ativas:
+        if t is None:
+            continue
+        delta = (criado_evento - t).total_seconds()
+        if -JANELA_EVENTO_ANTES_LANCAMENTO_SEG <= delta <= JANELA_EVENTO_APOS_LANCAMENTO_SEG:
+            return True
+    return False
+
+
 def agrupar_historico_importacoes(
     brutos: list[dict], limite: int = 10, janela_segundos: int = JANELA_MESMO_EVENTO_SEGUNDOS,
 ) -> list[dict]:

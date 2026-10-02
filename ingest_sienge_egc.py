@@ -22,8 +22,8 @@ Credenciais vêm de variável de ambiente (nunca hardcoded, nunca commitadas):
   DATABASE_URL  -- mesma connection string do Supabase (role egc_app) já
     usada pelo Streamlit Secrets (app/conexao.py:get_conn).
   NF_DIAS_RETROATIVOS (opcional, default 60) -- quantos dias pra trás
-    sincronizar de /v1/bills. 60 dias cobre reprocessamento de período
-    fechado com folga sem puxar o histórico inteiro toda vez.
+    sincronizar de /v1/bills. O diário usa 90; pra carga histórica rode o
+    workflow à mão (Run workflow) informando os dias (ex.: 275 = desde 01/01).
 
 Uso local (fora do GitHub Actions), pra testar antes de automatizar:
   export SIENGE_BASE_URL=... SIENGE_USER=... SIENGE_PASSWORD=... DATABASE_URL=...
@@ -69,8 +69,12 @@ def main() -> None:
 
     try:
         print(f"Sincronizando /v1/bills de {data_inicio} a {data_fim}...")
-        n_bills = nf_sienge.sincronizar_bills(conn, base_url, sienge_user, sienge_pass, data_inicio, data_fim)
-        print(f"  {n_bills} título(s) sincronizado(s).")
+        # v0.44.3: mes a mes e com protecao de teto (antes: 1 chamada so', que parava
+        # calada em 10.000 registros). Cada linha impressa mostra o volume real do mes.
+        por_mes = nf_sienge.sincronizar_bills_por_mes(conn, base_url, sienge_user, sienge_pass,
+                                                       data_inicio, data_fim, log=print)
+        n_bills = sum(por_mes.values())
+        print(f"  {n_bills} título(s) NFE/NF sincronizado(s) em {len(por_mes)} mês(es).")
 
         print("Sincronizando /v1/creditors...")
         n_cred = nf_sienge.sincronizar_creditores(conn, base_url, sienge_user, sienge_pass)

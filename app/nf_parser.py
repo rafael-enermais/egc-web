@@ -38,6 +38,10 @@ ALIASES = {
     "emissor cnpj/cpf": "Emissor CNPJ/CPF", "cnpj": "Emissor CNPJ/CPF", "cnpj fornecedor": "Emissor CNPJ/CPF",
     "uf": "UF",
     "chave": "Chave", "chave de acesso": "Chave", "chave acesso": "Chave",
+    # v0.44.3 -- colunas do export bruto da Receita usadas pra detectar a
+    # empresa (Filial = CNPJ do destinatario) e ignorar nota cancelada.
+    "filial": "Filial", "can": "Can", "tipodoc": "TipoDoc",
+    "ano-mês": "Ano-Mês", "ano-mes": "Ano-Mês",
 }
 
 
@@ -95,6 +99,59 @@ def normalizar_numero_nota(valor) -> str:
     return digitos.lstrip("0") or "0"
 
 
+_FORMATOS_DATA = ("%Y.%m.%d", "%d/%m/%Y", "%Y-%m-%d", "%d.%m.%Y", "%d-%m-%Y", "%Y/%m/%d")
+
+
+def parse_data_emissao(valor):
+    """Converte a data de emissao da planilha em datetime.date (ou None).
+
+    v0.44.3: a Receita exporta "AAAA.MM.DD" (ex.: "2026.07.06"). O parse
+    antigo (`pd.to_datetime(..., dayfirst=True)`) lia isso como 2026-06-07 /
+    01-2026 e sugeria o periodo errado. Aqui cada formato e' explicito --
+    nunca adivinha dia/mes. Aceita tambem datetime/Timestamp e texto com
+    hora ("2026-07-06 10:30:00")."""
+    import datetime as _dt
+    if valor is None:
+        return None
+    if isinstance(valor, _dt.datetime):
+        return valor.date()
+    if isinstance(valor, _dt.date):
+        return valor
+    try:
+        if pd.isna(valor):
+            return None
+    except (TypeError, ValueError):
+        pass
+    texto = str(valor).strip()
+    if not texto:
+        return None
+    texto = texto.split(" ")[0].split("T")[0]
+    for fmt in _FORMATOS_DATA:
+        try:
+            return _dt.datetime.strptime(texto, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def competencia_da_linha(ano_mes, data_emissao) -> Optional[str]:
+    """"MM/AAAA" a partir de "AAAA.MM" (coluna Ano-Mês); sem ela, do mes de emissao."""
+    import datetime as _dt
+    if ano_mes is not None and not (isinstance(ano_mes, float) and pd.isna(ano_mes)):
+        m = re.match(r"^\s*(\d{4})[.\-/](\d{2})\s*$", str(ano_mes))
+        if m and 1 <= int(m.group(2)) <= 12:
+            return f"{m.group(2)}/{m.group(1)}"
+    if isinstance(data_emissao, _dt.date):
+        return f"{data_emissao.month:02d}/{data_emissao.year}"
+    return None
+
+
+def raiz_cnpj(valor) -> str:
+    """Primeiros 8 digitos do CNPJ (a raiz e' igual entre matriz e filiais)."""
+    d = normalizar_cnpj(valor)
+    return d[:8] if len(d) >= 14 else ""
+
+
 def ler_manifesto_xlsx(caminho_ou_buffer) -> pd.DataFrame:
     """
     Lê a planilha e devolve um DataFrame já normalizado, 1 linha por nota,
@@ -123,6 +180,9 @@ def ler_manifesto_xlsx(caminho_ou_buffer) -> pd.DataFrame:
     for opcional in ["Tipo", "DtEmi", "CFOP", "Emissor Nome", "UF", "Chave"]:
         if opcional not in df.columns:
             df[opcional] = None
+    for opcional in ["Filial", "Can", "TipoDoc", "Ano-Mês"]:
+        if opcional not in df.columns:
+            df[opcional] = None
 
     df["_numero_normalizado"] = df["Num"].apply(normalizar_numero_nota)
     df["_cnpj_normalizado"] = df["Emissor CNPJ/CPF"].apply(normalizar_cnpj)
@@ -132,6 +192,24 @@ def ler_manifesto_xlsx(caminho_ou_buffer) -> pd.DataFrame:
         else df["Valor"],
         errors="coerce",
     )
+
+    df["_data_emissao"] = df["DtEmi"].apply(parse_data_emissao)
+    df["_empresa_raiz"] = df["Filial"].apply(raiz_cnpj)
+    # Competencia = "Ano-Mês" da Receita (mes de AUTORIZACAO/captura, e' como a
+    # planilha de cada mes vem fatiada: nota emitida em 31/07 e autorizada em
+    # 03/08 vem no arquivo de agosto). Sem a coluna, cai no mes de emissao.
+    df["_competencia"] = [
+        competencia_da_linha(am, de) for am, de in zip(df["Ano-Mês"], df["_data_emissao"])
+    ]
+    # cancelada: coluna "Can" = X, ou o 2o "Status" (pandas renomeia pra
+    # "Status.1") diz "Cancelamento ... homologado"
+    colunas_status = [c for c in df.columns if str(c).startswith("Status")]
+    texto_status = df[colunas_status].fillna("").astype(str).agg(" ".join, axis=1) if colunas_status else ""
+    cancelada_por_status = (
+        texto_status.str.contains("cancelamento", case=False, na=False)
+        if len(colunas_status) else pd.Series(False, index=df.index)
+    )
+    df["_cancelada"] = (df["Can"].fillna("").astype(str).str.strip().str.upper() == "X") | cancelada_por_status
 
     decodificadas = df["Chave"].apply(decodificar_chave_acesso)
     df["_chave_cnpj"] = decodificadas.apply(lambda d: d["cnpj_emissor"] if d else None)
@@ -164,19 +242,23 @@ def sugerir_periodo_referencia(df: pd.DataFrame) -> Optional[str]:
     confiável quando a chave existe -- ver decodificar_chave_acesso).
     Devolve None se não der pra determinar nada em nenhuma das 2 fontes
     (nunca inventa um período do nada)."""
-    if "DtEmi" in df.columns:
-        # dayfirst so' desambigua formato "DD/MM/AAAA" -- "AAAA.MM.DD" (como
-        # a Receita as vezes exporta) ja' e' inambiguo, mas o pandas avisa
-        # mesmo assim; suprime warning aqui porque o resultado esta certo
-        # nos 2 formatos (confirmado em test_nf_parser.py).
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            datas = pd.to_datetime(df["DtEmi"], errors="coerce", dayfirst=True)
-        datas = datas.dropna()
-        if not datas.empty:
-            competencias = datas.dt.strftime("%m/%Y")
-            return competencias.mode().iloc[0]
+    if "_competencia" in df.columns:
+        comp = df["_competencia"].dropna()
+        if not comp.empty:
+            return comp.mode().iloc[0]
+    datas = pd.Series(dtype="object")
+    if "_data_emissao" in df.columns:
+        datas = df["_data_emissao"].dropna()
+    elif "DtEmi" in df.columns:
+        datas = df["DtEmi"].apply(parse_data_emissao).dropna()
+    if not datas.empty:
+        competencias = datas.apply(lambda d: f"{d.month:02d}/{d.year}")
+        return competencias.mode().iloc[0]
+
+    if "Ano-Mês" in df.columns:
+        am = df["Ano-Mês"].dropna().astype(str).str.extract(r"^(\d{4})[.\-/](\d{2})$").dropna()
+        if not am.empty:
+            return (am[1] + "/" + am[0]).mode().iloc[0]
 
     if "Chave" in df.columns:
         aamms = df["Chave"].apply(decodificar_chave_acesso).apply(lambda d: d["aamm"] if d else None).dropna()
@@ -186,3 +268,107 @@ def sugerir_periodo_referencia(df: pd.DataFrame) -> Optional[str]:
             return f"{mais_comum[2:4]}/20{mais_comum[0:2]}"
 
     return None
+
+
+MOTIVO_CANCELADA = "Cancelada"
+MOTIVO_ENTRADA = "Entrada (devolução/retorno)"
+
+
+def filtrar_manifesto(df: pd.DataFrame) -> tuple[pd.DataFrame, dict, pd.DataFrame]:
+    """Tira da conferencia o que nao gera titulo a pagar:
+
+      - CANCELADAS (coluna Can = X ou status "Cancelamento ... homologado");
+      - ENTRADA (TipoDoc = Entrada): nos dados reais de 07/2026 as 7 sao
+        devolucoes de venda, retorno de bem locado/remessa e "outras
+        entradas" -- sao notas que o proprio fornecedor emite como entrada,
+        nao compra nossa; a contadora tirava todas a mao.
+
+    Devolve (df_filtrado, contagens, ignoradas). `ignoradas` = DataFrame das
+    notas retiradas (colunas: numero_nota, data_emissao, valor, cfop,
+    fornecedor_nome, fornecedor_cnpj, cnpj_normalizado, tipo_doc, natureza,
+    motivo, competencia) -- gravado junto da conferencia e listado na tela e
+    na planilha pra a contadora confirmar que nada saiu por engano."""
+    idx = df.index
+    canceladas = df["_cancelada"].fillna(False).astype(bool) if "_cancelada" in df.columns else pd.Series(False, index=idx)
+    entradas = (df["TipoDoc"].fillna("").astype(str).str.strip().str.lower().str.startswith("entrada")
+                if "TipoDoc" in df.columns else pd.Series(False, index=idx))
+    entradas = entradas & ~canceladas
+    ignorar = canceladas | entradas
+    contagens = {"canceladas": int(canceladas.sum()), "entradas": int(entradas.sum())}
+
+    ign = df[ignorar]
+    natureza = ign["Natureza"] if "Natureza" in ign.columns else pd.Series(None, index=ign.index)
+    ignoradas = pd.DataFrame({
+        "numero_nota": ign["Num"].astype(str).str.lstrip("0").replace("", "0"),
+        "data_emissao": ign["_data_emissao"] if "_data_emissao" in ign.columns else None,
+        "valor": ign["_valor_float"],
+        "cfop": ign["CFOP"],
+        "fornecedor_nome": ign["Emissor Nome"],
+        "fornecedor_cnpj": ign["Emissor CNPJ/CPF"],
+        "cnpj_normalizado": ign["_cnpj_normalizado"],
+        "tipo_doc": ign["TipoDoc"] if "TipoDoc" in ign.columns else None,
+        "natureza": natureza,
+        "motivo": [MOTIVO_CANCELADA if c else MOTIVO_ENTRADA for c in canceladas[ignorar]],
+        "competencia": ign["_competencia"] if "_competencia" in ign.columns else None,
+    }).reset_index(drop=True)
+    return df[~ignorar].reset_index(drop=True), contagens, ignoradas
+
+
+def dividir_por_competencia(df: pd.DataFrame, ignoradas: Optional[pd.DataFrame] = None) -> list:
+    """Quebra o manifesto por competencia (Ano-Mês). Um arquivo com 2 meses
+    (ex.: "SETTE 07-08") vira 2 conferencias separadas, cada uma com o seu
+    periodo -- antes o arquivo todo ficava com UM periodo e metade das notas
+    com o rotulo errado. Devolve [(competencia, df_do_mes, ignoradas_do_mes)]
+    em ordem cronologica; competencia None = linhas sem como determinar."""
+    def ordem(c):
+        return (c is None, c[3:] + c[:2] if c else "")
+    comps = sorted({c if isinstance(c, str) else None for c in df["_competencia"]}, key=ordem)
+    saida = []
+    for c in comps:
+        mask = df["_competencia"] == c if c is not None else df["_competencia"].isna()
+        ign = None
+        if ignoradas is not None and "competencia" in ignoradas.columns:
+            ign = ignoradas[(ignoradas["competencia"] == c) if c is not None else ignoradas["competencia"].isna()].reset_index(drop=True)
+        saida.append((c, df[mask].reset_index(drop=True), ign))
+    return saida
+
+
+def detectar_empresa_manifesto(df: pd.DataFrame, empresas_fixas) -> Optional[str]:
+    """Codigo da empresa dona do manifesto, pela raiz do CNPJ da coluna
+    Filial (destinatario). So' devolve quando TODAS as notas com Filial
+    apontam pra UMA unica empresa conhecida; misto/desconhecido -> None
+    (a tela cai pra escolha manual). `empresas_fixas` = [(codigo, nome, cnpj)]."""
+    if "_empresa_raiz" not in df.columns:
+        return None
+    raizes = {r for r in df["_empresa_raiz"].dropna() if r}
+    if len(raizes) != 1:
+        return None
+    raiz = next(iter(raizes))
+    achadas = [cod for cod, _nome, cnpj in empresas_fixas if raiz_cnpj(cnpj) == raiz]
+    return achadas[0] if len(achadas) == 1 else None
+
+
+def analisar_upload(conteudo: bytes, empresas_fixas) -> dict:
+    """Le o arquivo recem-enviado e devolve o que a tela precisa pra
+    pre-preencher e validar ANTES de rodar a conferencia:
+      periodo (MM/AAAA sugerido), empresa (codigo detectado pela Filial ou
+      None), raizes (raizes de CNPJ distintas em Filial), total,
+      canceladas, entradas, erro (texto, quando a planilha nao abre).
+    Nunca levanta -- planilha invalida vira {'erro': ...}."""
+    import io
+    try:
+        df = ler_manifesto_xlsx(io.BytesIO(conteudo))
+    except Exception as exc:  # planilha invalida -> o erro de verdade aparece no "Rodar"
+        return {"erro": str(exc), "periodo": None, "empresa": None, "raizes": [],
+                "total": 0, "canceladas": 0, "entradas": 0, "competencias": {}}
+    filtrado, contagens, _ign = filtrar_manifesto(df)
+    base = filtrado if len(filtrado) else df
+    return {
+        "erro": None,
+        "periodo": sugerir_periodo_referencia(base),
+        "empresa": detectar_empresa_manifesto(base, empresas_fixas),
+        "raizes": sorted({r for r in base["_empresa_raiz"].dropna() if r}),
+        "total": len(filtrado),
+        "competencias": {c: len(d) for c, d, _i in dividir_por_competencia(filtrado) if c} if len(filtrado) else {},
+        **contagens,
+    }

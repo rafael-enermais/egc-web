@@ -849,3 +849,45 @@ CREATE POLICY egc_app_full_access ON egc.chat_acao FOR ALL TO egc_app USING (tru
 ALTER TABLE egc.lancamentos ADD COLUMN IF NOT EXISTS lote uuid;
 CREATE INDEX IF NOT EXISTS idx_lancamentos_lote ON egc.lancamentos (lote) WHERE lote IS NOT NULL;
 -- Fim do bloco 21. Rodar so' este bloco no SQL Editor do Supabase.
+
+-- =====================================================================
+-- BLOCO 22 — v0.44.3: empresa SETTE (so' no fluxo de Notas Fiscais) + notas
+-- que o upload retira da conferencia (canceladas / Entrada), pra a contadora
+-- confirmar pela planilha. Aditivo e idempotente. Sem este bloco o app
+-- continua funcionando (so' sem a aba "Ignoradas" e sem a empresa SETTE).
+-- =====================================================================
+INSERT INTO egc.empresas (codigo, nome, cnpj) VALUES
+  ('SETTE', 'Sette Locacoes', '44.914.462/0001-90')
+ON CONFLICT (codigo) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS egc.nf_manifesto_ignoradas (
+  id                  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  import_id           uuid NOT NULL,
+  empresa_codigo      text NOT NULL,
+  periodo_referencia  text NOT NULL,
+  numero_nota         text,
+  data_emissao        date,
+  valor               numeric(14,2),
+  cfop                text,
+  fornecedor_nome     text,
+  fornecedor_cnpj     text,
+  cnpj_normalizado    text,
+  tipo_doc            text,
+  natureza            text,
+  motivo              text NOT NULL,
+  criado_por          text,
+  criado_em           timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_nf_ignoradas_import ON egc.nf_manifesto_ignoradas (import_id);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON egc.nf_manifesto_ignoradas TO egc_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA egc TO egc_app;
+ALTER TABLE egc.nf_manifesto_ignoradas ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS egc_app_full_access ON egc.nf_manifesto_ignoradas;
+CREATE POLICY egc_app_full_access ON egc.nf_manifesto_ignoradas FOR ALL TO egc_app USING (true) WITH CHECK (true);
+
+-- Devedor 21 do Sienge = Sette Locacoes (confirmado pelo Rafael com o print do Sienge)
+INSERT INTO egc.nf_debtor_empresa (debtor_id, empresa_codigo, atualizado_por)
+VALUES (21, 'SETTE', 'seed_sienge')
+ON CONFLICT (debtor_id) DO NOTHING;
+-- Fim do bloco 22. Rodar so' este bloco no SQL Editor do Supabase.
