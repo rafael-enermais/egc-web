@@ -101,10 +101,10 @@ def test_classificar_2_centavos_de_diferenca_continua_divergente():
 
 def test_classificar_numero_divergente_mesmo_cnpj_e_valor():
     bills = _bills([
-        [400, 591, "NFE ", "777", 500.00, None, "07.393.522/0001-40", "07393522000140", "777"],
+        [400, 591, "NFE ", "7770", 500.00, None, "07.393.522/0001-40", "07393522000140", "7770"],
     ])
-    row = {"_cnpj_normalizado": "07393522000140", "_numero_normalizado": "999",
-           "_valor_float": 500.00, "Chave": None, "Num": "999"}
+    row = {"_cnpj_normalizado": "07393522000140", "_numero_normalizado": "7707",
+           "_valor_float": 500.00, "Chave": None, "Num": "7707"}
     r = nf_sienge._classificar_nota(row, bills)
     assert r["status"] == "NUMERO_DIVERGENTE"
     assert r["sienge_bill_id"] == 400
@@ -272,23 +272,14 @@ def test_filtrar_orfaos_bills_vazio_nao_quebra():
     assert r.empty
 
 
-def test_mapear_debtor_para_empresa_inequivoco(monkeypatch):
+def test_mapear_debtor_usa_so_o_confirmado_e_ignora_o_historico(monkeypatch):
+    # v0.45.1: historico "inequivoco" NAO vira regra (so' sugestao na tela) -- a 1a empresa
+    # conferida nao pode adotar um devedor que so' tocou por acaso.
     monkeypatch.setattr(nf_sienge, "carregar_mapa_debtor_manual", lambda conn: {})
     cur = FakeCursor(fetchall_result=[(591, "ENERGIA", 12)])
-    conn = FakeConn(cur)
-    mapa = nf_sienge._mapear_debtor_para_empresa(conn)
-    assert mapa == {591: "ENERGIA"}
-
-
-def test_mapear_debtor_para_empresa_ambiguo_fica_de_fora(monkeypatch):
-    monkeypatch.setattr(nf_sienge, "carregar_mapa_debtor_manual", lambda conn: {})
-    # Mesmo debtor_id ja' bateu LANCADA com 2 empresas diferentes em algum
-    # momento do historico -- relacao ambigua, nao confia (nao deveria
-    # acontecer, mas ja' teve mais de 1 bug de dado real neste projeto).
-    cur = FakeCursor(fetchall_result=[(591, "ENERGIA", 5), (591, "SMG", 1)])
-    conn = FakeConn(cur)
-    mapa = nf_sienge._mapear_debtor_para_empresa(conn)
-    assert mapa == {}
+    assert nf_sienge._mapear_debtor_para_empresa(FakeConn(cur)) == {}
+    monkeypatch.setattr(nf_sienge, "carregar_mapa_debtor_manual", lambda conn: {591: "CONST"})
+    assert nf_sienge._mapear_debtor_para_empresa(FakeConn(cur)) == {591: "CONST"}
 
 
 def test_checar_empresa_do_lancamento_marca_outra_empresa_01_10():
@@ -380,3 +371,11 @@ def test_ultima_sincronizacao_none_quando_nunca_sincronizou():
     cur = FakeCursor(fetchall_result=[(None,)])
     conn = FakeConn(cur)
     assert nf_sienge.ultima_sincronizacao(conn) is None
+
+
+def test_numeros_parecidos_so_erro_de_digitacao():
+    p = nf_sienge.numeros_parecidos
+    assert p("1234", "1243") and p("1908", "19080") and p("1908", "20261908") and p("12345", "1245")
+    assert not p("14327", "14281")        # nota recorrente do mesmo fornecedor (3 digitos diferentes)
+    assert not p("21115", "1277603")      # nada a ver
+    assert not p("10", "11") and not p("", "11")   # numero curto: qualquer um "parece"

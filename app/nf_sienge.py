@@ -69,6 +69,7 @@ JANELA_DATA_ORFAOS_DIAS = 15  # FIX_20260928f -- ver identificar_e_gravar_bills_
 # a ate' N dias da nota. Sem isso, com o espelho cobrindo o ano todo, a nota de agosto de um fornecedor
 # de valor fixo mensal (aluguel...) virava "Sienge tem a nota nº X" apontando pro titulo de julho.
 JANELA_NUMERO_DIVERGENTE_DIAS = 20
+DISTANCIA_MAX_NUMERO_DIVERGENTE = 2   # v0.45.1: "erro de digitacao" = numeros PARECIDOS (ate' 2 digitos de diferenca)
 
 
 # ─────────────────────────────────────────────
@@ -472,6 +473,35 @@ def _escolher_bill(candidatos: pd.DataFrame, usados: set, debtors_preferidos: Op
     return ordenados[0]
 
 
+def _distancia_edicao(a: str, b: str) -> int:
+    """Levenshtein (numeros de nota, strings curtas)."""
+    if a == b:
+        return 0
+    if not a or not b:
+        return max(len(a), len(b))
+    anterior = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        atual = [i]
+        for j, cb in enumerate(b, 1):
+            atual.append(min(anterior[j] + 1, atual[j - 1] + 1, anterior[j - 1] + (ca != cb)))
+        anterior = atual
+    return anterior[-1]
+
+
+def numeros_parecidos(a, b) -> bool:
+    """v0.45.1: NUMERO_DIVERGENTE so' vale quando os numeros PARECEM o mesmo digitado errado: ate' 2 digitos
+    de diferenca (troca, falta ou sobra), ou um e' o final do outro (serie/prefixo colado, ex.: 1908 x 20261908).
+    Antes bastava CNPJ+valor+data: fornecedor com nota recorrente de mesmo valor (14327 x 14281, 2.753,20) ou valor
+    redondo (R$ 301,34 x NFE 1277603) virava 'erro de digitacao' falso."""
+    a, b = str(a or "").lstrip("0"), str(b or "").lstrip("0")
+    if not a or not b:
+        return False
+    curto, longo = sorted((a, b), key=len)
+    if len(curto) >= 4 and longo.endswith(curto):
+        return True
+    return len(curto) >= 3 and _distancia_edicao(a, b) <= DISTANCIA_MAX_NUMERO_DIVERGENTE
+
+
 def _montar_indice(bills: pd.DataFrame):
     """(universo NFE/NF, {cnpj: titulos}, {chave: titulos}) -- pra classificar
     milhares de notas sem varrer o espelho inteiro a cada uma (v0.45.0: o ano
@@ -559,6 +589,8 @@ def _classificar_nota(row, bills: pd.DataFrame, usados: Optional[set] = None,
             datas = pd.to_datetime(mesmo_cnpj_valor["issue_date"], errors="coerce")
             dist = (datas - pd.Timestamp(data_nota)).abs()
             mesmo_cnpj_valor = mesmo_cnpj_valor[datas.isna() | (dist <= pd.Timedelta(days=JANELA_NUMERO_DIVERGENTE_DIAS))]
+        if not mesmo_cnpj_valor.empty:
+            mesmo_cnpj_valor = mesmo_cnpj_valor[mesmo_cnpj_valor["numero_normalizado"].map(lambda n: numeros_parecidos(n, numero))]
         if not mesmo_cnpj_valor.empty:
             b = _escolher_bill(mesmo_cnpj_valor, usados, debtors_preferidos)
             return _res("NUMERO_DIVERGENTE", "CNPJ_VALOR", b,
@@ -668,20 +700,17 @@ def _historico_debtor_empresas(conn, excluir_import_id: Optional[str] = None) ->
 
 
 def _mapear_debtor_para_empresa(conn, excluir_import_id: Optional[str] = None) -> dict:
-    """Devolve {debtor_id: empresa_codigo}.
+    """Devolve {debtor_id: empresa_codigo} -- SO' o que foi confirmado em
+    egc.nf_debtor_empresa ("o app segue o que o Sienge dita": o debtor do
+    titulo diz a qual empresa ele foi lancado).
 
-    Duas fontes (a manual vence):
-      1) APRENDIDA -- debtor_id que bateu SEMPRE com a mesma empresa em todo
-         o historico de matches LANCADA (sem contar `excluir_import_id`, pra
-         a rodada que esta' sendo recalculada nao se auto-confirmar);
-      2) MANUAL -- egc.nf_debtor_empresa, confirmada pela contadora na tela
-         ("o app segue o que o Sienge dita": o debtor do titulo diz a
-         qual empresa ele foi lancado).
-    """
-    por_debtor = _historico_debtor_empresas(conn, excluir_import_id)
-    mapa = {d: next(iter(emp)) for d, emp in por_debtor.items() if len(emp) == 1}
-    mapa.update(carregar_mapa_debtor_manual(conn))
-    return mapa
+    v0.45.1: o mapa APRENDIDO do historico deixou de valer como regra (so'
+    aparece como sugestao na tela). Motivo, visto em producao: sem o mapa
+    confirmado, a 1a empresa conferida "adotava" um devedor que so' tinha tocado
+    por acaso (devedor 5 = Construtora virou ENERGIA) e a Construtora saiu com
+    55 notas "lancadas em outra empresa" e 55 titulos como orfaos da Energia.
+    `excluir_import_id` fica na assinatura por compatibilidade."""
+    return carregar_mapa_debtor_manual(conn)
 
 
 def carregar_mapa_debtor_manual(conn) -> dict:

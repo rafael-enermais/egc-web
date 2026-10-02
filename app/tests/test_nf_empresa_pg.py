@@ -3,7 +3,7 @@
 Notas Fiscais x empresa, contra Postgres de verdade (schema.sql real):
   - nota lancada no Sienge no devedor de OUTRA empresa -> LANCADA_OUTRA_EMPRESA
   - "Sienge sem nota" traz CFOP/valor da mesma nota em outro manifesto
-  - mapa debtor->empresa confirmado manualmente vence o aprendido
+  - mapa debtor->empresa: so' o confirmado vale (v0.45.1); o aprendido e' so' sugestao
 """
 import sys
 import uuid
@@ -94,7 +94,7 @@ def test_orfao_do_sienge_traz_cfop_do_manifesto_de_outra_empresa(conn):
     assert len(ab) == 1 and ab.iloc[0]["cfop"] == "1556"
 
 
-def test_mapa_manual_vence_o_aprendido(conn):
+def test_mapa_so_confirmado_vale_o_aprendido_e_so_sugestao(conn):
     nf_sienge.salvar_mapa_debtor(conn, 10, "SOL", "t")
     assert nf_sienge._mapear_debtor_para_empresa(conn)[10] == "SOL"
     nf_sienge.salvar_mapa_debtor(conn, 10, None, "t")

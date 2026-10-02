@@ -112,27 +112,27 @@ def test_subir_o_mes_de_novo_substitui_e_leva_o_status_manual(conn):
 
 
 def test_numero_divergente_respeita_limite_de_data(conn):
-    _bill(conn, 1, "10", 100.0, "2026-07-10")
+    _bill(conn, 1, "1000", 100.0, "2026-07-10")
     # valor igual, numero diferente, 31 dias depois: NAO e' erro de digitacao do titulo de julho
-    _import(conn, "ENERGIA", "08/2026", [("11", 100.0, "2026-08-10")])
+    _import(conn, "ENERGIA", "08/2026", [("1001", 100.0, "2026-08-10")])
     r = nf_sienge.reconferir_empresa(conn, "ENERGIA")["08/2026"]
     assert (r["numero_divergente"], r["nao_encontradas"]) == (0, 1)
     # mesmo caso, mas a 5 dias: continua sendo "numero divergente"
-    _import(conn, "CONST", "07/2026", [("11", 100.0, "2026-07-15")])
+    _import(conn, "CONST", "07/2026", [("1001", 100.0, "2026-07-15")])
     r2 = nf_sienge.reconferir_empresa(conn, "CONST")["07/2026"]
     assert r2["numero_divergente"] == 1
 
 
 def test_titulo_usado_por_um_mes_nao_vira_numero_divergente_do_outro(conn):
-    _bill(conn, 1, "10", 100.0, "2026-07-30")
-    jul = _import(conn, "ENERGIA", "07/2026", [("10", 100.0, "2026-07-30")])
-    ago = _import(conn, "ENERGIA", "08/2026", [("11", 100.0, "2026-08-05")])   # mesmo fornecedor e valor, 6 dias depois
+    _bill(conn, 1, "1000", 100.0, "2026-07-30")
+    jul = _import(conn, "ENERGIA", "07/2026", [("1000", 100.0, "2026-07-30")])
+    ago = _import(conn, "ENERGIA", "08/2026", [("1001", 100.0, "2026-08-05")])   # mesmo fornecedor e valor, 6 dias depois
     # como era (cada import sozinho): agosto enxergava o titulo de julho como livre
     assert nf_sienge.conciliar_import(conn, ago)["numero_divergente"] == 1
     res = nf_sienge.reconferir_empresa(conn, "ENERGIA")
     assert res["07/2026"]["lancadas"] == 1
     assert (res["08/2026"]["numero_divergente"], res["08/2026"]["nao_encontradas"]) == (0, 1)
-    assert _status(conn, jul) == {"10": "LANCADA"} and _status(conn, ago) == {"11": "NAO_ENCONTRADA"}
+    assert _status(conn, jul) == {"1000": "LANCADA"} and _status(conn, ago) == {"1001": "NAO_ENCONTRADA"}
 
 
 def test_falha_no_meio_nao_perde_o_resultado_anterior(conn, monkeypatch):
@@ -161,3 +161,27 @@ def test_resumo_vigentes_e_reconferir_todas(conn):
     assert (e["total_notas"], e["total_lancadas"], e["pendencias_notas"], e["orfaos_sienge"], e["total_pendencias"]) == (2, 1, 1, 1, 2)
     assert e["arquivo_nome"] == "en.xlsx" and e["taxa"] == 0.5
     assert linhas[("CONST", "07/2026")]["total_pendencias"] == 1
+
+
+def test_devedor_sem_confirmacao_nao_e_adotado_pela_primeira_empresa(conn):
+    # v0.45.1: Energia tem 1 nota casada num titulo do devedor 7 (sem confirmacao). Antes, o historico
+    # "ensinava" 7 = ENERGIA e a Construtora saia com tudo "lancado em outra empresa".
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO egc.nf_creditors_sync (creditor_id, nome, cnpj) VALUES (592,'X','11.111.111/0001-11') ON CONFLICT DO NOTHING")
+        cur.execute("INSERT INTO egc.nf_bills_sync (bill_id, debtor_id, creditor_id, document_identification_id, document_number, issue_date, total_invoice_amount) "
+                    "VALUES (9, 7, 592, 'NFE ', '77', '2026-07-10', 70)")
+    imp = _import(conn, "ENERGIA", "07/2026", [("77", 70.0, "2026-07-10")])
+    with conn.cursor() as cur:
+        cur.execute("UPDATE egc.nf_manifesto_import SET cnpj_normalizado='11111111000111' WHERE import_id=%s::uuid", (imp,))
+    nf_sienge.reconferir_empresa(conn, "ENERGIA")
+    assert nf_sienge._mapear_debtor_para_empresa(conn).get(7) is None
+    assert _status(conn, imp) == {"77": "LANCADA"}       # casou, sem alarme de empresa
+    d = nf_sienge.listar_debtors_sienge(conn).set_index("debtor_id")
+    assert d.loc[7, "empresa_aprendida"] == "ENERGIA" and d.loc[7, "empresa_confirmada"] is None   # fica como sugestao
+
+
+def test_numero_divergente_exige_numero_parecido(conn):
+    _bill(conn, 1, "14281", 2753.2, "2026-07-01")
+    _import(conn, "ENERGIA", "07/2026", [("14327", 2753.2, "2026-07-06")])       # recorrente: mesmo valor, outro numero
+    r = nf_sienge.reconferir_empresa(conn, "ENERGIA")["07/2026"]
+    assert (r["numero_divergente"], r["nao_encontradas"]) == (0, 1)
