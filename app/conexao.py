@@ -17,7 +17,7 @@ import psycopg2
 # (mesma regra de sempre, so' que agora com 1 casa a mais de folga antes
 # do "1.0" oficial). Reiniciado em 0.1.0 nesta mudanca (era "0.7"/"0.8"/
 # "0.9" de 1 casa so').
-APP_VERSION = "0.44.2"
+APP_VERSION = "0.44.3"
 
 EMPRESAS_FIXAS = [
     ("ENERGIA", "Enermais Energia Ltda", "47.040.664/0001-48"),
@@ -27,6 +27,11 @@ EMPRESAS_FIXAS = [
     ("CONST", "Enermais Construtora Ltda", "55.244.465/0001-80"),
     ("SOL", "Enermais Solucoes Ltda", "60.353.219/0001-04"),
 ]
+
+# v0.44.3: a Sette Locacoes (devedor 21 do Sienge) entra SO' no fluxo de Notas
+# Fiscais; BP/DRE, Visao Grupo e relatorios continuam com as 6 de EMPRESAS_FIXAS.
+EMPRESAS_NF = EMPRESAS_FIXAS + [("SETTE", "Sette Locacoes", "44.914.462/0001-90")]
+
 
 def empresa_por_cnpj(cnpj: str) -> tuple[str, str] | None:
     """

@@ -36,9 +36,52 @@ ROTULOS = {
     "pendencia_status": "Acompanhamento",
     "atualizado_em": "Atualizado em",
 }
+ROTULOS_IGNORADAS = {
+    "numero_nota": "Nº da nota", "data_emissao": "Emissão", "valor": "Valor (manifesto)", "cfop": "CFOP",
+    "fornecedor_nome": "Fornecedor", "fornecedor_cnpj": "CNPJ do fornecedor", "tipo_doc": "Tipo (Receita)",
+    "natureza": "Natureza da operação", "motivo": "Motivo de ter ficado fora",
+}
 COLUNAS_MOEDA = ["Valor (manifesto)", "Valor (Sienge)"]
 COLUNAS_DATA = ["Emissão"]
 COLUNAS_INTERNAS = ["registro_id", "origem"]
+
+# v0.44.3: rotulos amigaveis dos status (filtro, KPIs e Resumo do Excel).
+# A coluna "Status" das tabelas continua com o codigo (e' o que a contadora ja' viu).
+ROTULO_STATUS = {
+    "LANCADA": "Lançadas",
+    "LANCADA_OUTRA_EMPRESA": "Lançadas em outra empresa",
+    "VALOR_DIVERGENTE": "Valor divergente",
+    "NUMERO_DIVERGENTE": "Número divergente",
+    "NAO_ENCONTRADA": "Não encontradas no Sienge",
+    "SIENGE_SEM_MANIFESTO": "Sienge sem manifesto",
+}
+ORDEM_STATUS = list(ROTULO_STATUS)
+
+
+def contar_por_status(tabela: pd.DataFrame) -> dict:
+    """{status: n} na ordem de ORDEM_STATUS, incluindo zeros -- fonte unica
+    pros KPIs da tela e pro Resumo do Excel (os dois sempre batem)."""
+    contagem = tabela["status"].value_counts().to_dict() if len(tabela) and "status" in tabela.columns else {}
+    resultado = {st: int(contagem.get(st, 0)) for st in ORDEM_STATUS}
+    for st, n in contagem.items():  # status inesperado nunca some
+        resultado.setdefault(st, int(n))
+    return resultado
+
+
+def resumo_conferencia(tabela: pd.DataFrame) -> dict:
+    """Numeros do topo da conferencia. `pendencias` = tudo que NAO e'
+    LANCADA (notas do manifesto + Sienge sem manifesto) = linhas da aba
+    "Pendencias" do Excel e do botao "Baixar so as pendencias"."""
+    manifesto = tabela[tabela["origem"] == "MANIFESTO"] if "origem" in tabela.columns else tabela
+    orfaos = len(tabela) - len(manifesto)
+    total = len(manifesto)
+    lancadas = int((manifesto["status"] == "LANCADA").sum()) if total else 0
+    return {
+        "total": total, "lancadas": lancadas, "notas_pendentes": total - lancadas,
+        "sienge_sem_manifesto": int(orfaos), "pendencias": int((tabela["status"] != "LANCADA").sum()) if len(tabela) else 0,
+        "taxa": (lancadas / total) if total else None,
+        "por_status": contar_por_status(tabela),
+    }
 
 
 def preparar_tabela(tabela: pd.DataFrame) -> pd.DataFrame:
@@ -83,6 +126,7 @@ def _escrever_aba(writer, nome: str, df: pd.DataFrame) -> None:
 def gerar_xlsx_conferencia(
     tabela: pd.DataFrame, empresa_nome: str, periodo_referencia: str,
     arquivo_manifesto: Optional[str] = None, gerado_em: Optional[str] = None,
+    ignoradas: Optional[pd.DataFrame] = None,
 ) -> bytes:
     """
     Planilha completa da conferencia. `tabela` = saida de
@@ -91,23 +135,26 @@ def gerar_xlsx_conferencia(
     notas do manifesto + titulos do Sienge sem nota), Pendências (tudo que
     nao e' LANCADA) e Sienge sem nota.
     """
-    manifesto = tabela[tabela["origem"] == "MANIFESTO"] if "origem" in tabela.columns else tabela
     orfaos = tabela[tabela["origem"] == "SIENGE_ORFAO"] if "origem" in tabela.columns else tabela.iloc[0:0]
-    total = len(manifesto)
-    lancadas = int((manifesto["status"] == "LANCADA").sum()) if total else 0
-    por_status = manifesto["status"].value_counts().to_dict() if total else {}
+    r = resumo_conferencia(tabela)
 
     resumo_linhas = [
         ("Empresa", empresa_nome),
         ("Período de referência", periodo_referencia),
         ("Arquivo do manifesto", arquivo_manifesto or "—"),
         ("Gerado em", gerado_em or "—"),
-        ("Notas no manifesto", total),
-        ("Lançadas no Sienge", lancadas),
-        ("Pendências (nota sem Sienge ou divergente)", total - lancadas),
-        ("Títulos no Sienge sem nota no manifesto", len(orfaos)),
-        ("Taxa de conciliação", (lancadas / total) if total else None),
-    ] + [(f"  · {st}", n) for st, n in sorted(por_status.items())]
+        ("Notas no manifesto", r["total"]),
+        ("Lançadas no Sienge", r["lancadas"]),
+        ("Taxa de conciliação", r["taxa"]),
+        ("Notas do manifesto com pendência", r["notas_pendentes"]),
+        ("Títulos no Sienge sem nota no manifesto", r["sienge_sem_manifesto"]),
+        ("Total de pendências (aba Pendências)", r["pendencias"]),
+        ("Detalhe por status", None),
+    ] + [(f"  · {ROTULO_STATUS.get(st, st)}", n) for st, n in r["por_status"].items()]
+    if ignoradas is not None and len(ignoradas):
+        por_motivo = ignoradas["motivo"].value_counts().to_dict()
+        resumo_linhas += [("Notas do arquivo que ficaram FORA da conferência (aba Ignoradas)", len(ignoradas))] + [
+            (f"  · {m}", int(n)) for m, n in sorted(por_motivo.items())]
     resumo = pd.DataFrame(resumo_linhas, columns=["Item", "Valor"])
 
     buf = io.BytesIO()
@@ -122,4 +169,7 @@ def gerar_xlsx_conferencia(
         _escrever_aba(writer, "Conferência completa", preparar_tabela(tabela))
         _escrever_aba(writer, "Pendências", preparar_tabela(tabela[tabela["status"] != "LANCADA"]))
         _escrever_aba(writer, "Sienge sem nota", preparar_tabela(orfaos))
+        if ignoradas is not None and len(ignoradas):
+            cols = [c for c in ROTULOS_IGNORADAS if c in ignoradas.columns]
+            _escrever_aba(writer, "Ignoradas", ignoradas[cols].rename(columns=ROTULOS_IGNORADAS).copy())
     return buf.getvalue()

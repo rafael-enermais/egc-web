@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 import pandas as pd
@@ -44,6 +44,8 @@ import psycopg2
 import requests
 from requests.auth import HTTPBasicAuth
 from psycopg2.extras import execute_values
+
+import nf_parser
 
 TIPOS_NOTA_FISCAL = ("NFE ", "NF  ")
 _CODIGOS_NOTA_FISCAL = {t.strip() for t in TIPOS_NOTA_FISCAL}  # {"NFE", "NF"}
@@ -59,6 +61,8 @@ def eh_nota_fiscal(tipo_documento) -> bool:
     return (tipo_documento or "").strip().upper() in _CODIGOS_NOTA_FISCAL
 TOLERANCIA_VALOR = 0.01  # 1 centavo
 LIMITE_PAGINA = 200      # teto documentado da API REST do Sienge
+PROXIMIDADE_VALOR_IGNORADA = 0.05  # nota ignorada com valor ate' 5% diferente conta como "par provavel"
+JANELA_COBERTURA_DIAS = 7  # tolerancia p/ avisar que o espelho do Sienge nao cobre o manifesto
 JANELA_DATA_ORFAOS_DIAS = 15  # FIX_20260928f -- ver identificar_e_gravar_bills_orfaos
 
 
@@ -80,6 +84,13 @@ def _sessao_sienge(base_url: str, usuario: str, senha: str):
     return base_url.rstrip("/"), sessao
 
 
+class SincronizacaoTruncada(Exception):
+    """A janela de datas tem mais registros do que cabem em max_paginas x 200:
+    parar aqui deixaria titulos de fora SEM ninguem saber (v0.44.3 -- antes o
+    loop terminava calado no teto de 10.000 e a conferencia mostrava "nao
+    encontrada" falso). Quem chama divide a janela (sincronizar_bills_por_mes)."""
+
+
 def sincronizar_bills(conn, base_url: str, usuario: str, senha: str,
                        data_inicio: date, data_fim: date, max_paginas: int = 50) -> int:
     """
@@ -95,6 +106,7 @@ def sincronizar_bills(conn, base_url: str, usuario: str, senha: str,
     base, sessao = _sessao_sienge(base_url, usuario, senha)
     total = 0
     offset = 0
+    terminou = False
     with conn.cursor() as cur:
         while offset < LIMITE_PAGINA * max_paginas:
             params = {
@@ -108,6 +120,7 @@ def sincronizar_bills(conn, base_url: str, usuario: str, senha: str,
             data = r.json()
             registros = data.get("results", data) if isinstance(data, dict) else data
             if not registros:
+                terminou = True
                 break
             # 01/10/2026: so' NFE/NF entram no snapshot (ver eh_nota_fiscal).
             # Filtra DEPOIS de ler a pagina -- a API nao tem filtro por tipo
@@ -124,6 +137,7 @@ def sincronizar_bills(conn, base_url: str, usuario: str, senha: str,
             ]
             if not linhas:
                 if len(registros) < LIMITE_PAGINA:
+                    terminou = True
                     break
                 offset += LIMITE_PAGINA
                 continue
@@ -151,9 +165,57 @@ def sincronizar_bills(conn, base_url: str, usuario: str, senha: str,
             )
             total += len(linhas)
             if len(registros) < LIMITE_PAGINA:
+                terminou = True
                 break
             offset += LIMITE_PAGINA
+    if not terminou:
+        raise SincronizacaoTruncada(
+            f"A janela {data_inicio} a {data_fim} tem mais de {LIMITE_PAGINA * max_paginas} registros no Sienge "
+            f"(limite por chamada); divida o periodo."
+        )
     return total
+
+
+def _meses_da_janela(data_inicio: date, data_fim: date) -> list:
+    """[(inicio, fim)] por mes civil, cobrindo exatamente [data_inicio, data_fim]."""
+    janelas = []
+    atual = data_inicio
+    while atual <= data_fim:
+        prox_mes = (atual.replace(day=1) + timedelta(days=32)).replace(day=1)
+        fim_mes = min(prox_mes - timedelta(days=1), data_fim)
+        janelas.append((atual, fim_mes))
+        atual = fim_mes + timedelta(days=1)
+    return janelas
+
+
+def sincronizar_bills_adaptativo(conn, base_url, usuario, senha, data_inicio: date, data_fim: date,
+                                  max_paginas: int = 50) -> int:
+    """sincronizar_bills; se a janela estourar o teto por chamada, divide ao meio
+    (recursivo, ate' 1 dia) em vez de truncar calado. Upsert e' idempotente,
+    entao reler um trecho nao duplica nada."""
+    try:
+        return sincronizar_bills(conn, base_url, usuario, senha, data_inicio, data_fim, max_paginas)
+    except SincronizacaoTruncada:
+        if data_inicio >= data_fim:
+            raise
+        meio = data_inicio + (data_fim - data_inicio) // 2
+        return (sincronizar_bills_adaptativo(conn, base_url, usuario, senha, data_inicio, meio, max_paginas)
+                + sincronizar_bills_adaptativo(conn, base_url, usuario, senha, meio + timedelta(days=1), data_fim,
+                                               max_paginas))
+
+
+def sincronizar_bills_por_mes(conn, base_url, usuario, senha, data_inicio: date, data_fim: date,
+                               log=None) -> dict:
+    """Sincroniza mes a mes (cada mes com a protecao de teto). Devolve
+    {"AAAA-MM": n_titulos_NFE_NF}. `log(texto)` (opcional) recebe 1 linha por mes
+    -- o GitHub Actions imprime isso, entao da' pra ver o volume real do Sienge."""
+    por_mes: dict = {}
+    for ini, fim in _meses_da_janela(data_inicio, data_fim):
+        n = sincronizar_bills_adaptativo(conn, base_url, usuario, senha, ini, fim)
+        por_mes[f"{ini:%Y-%m}"] = por_mes.get(f"{ini:%Y-%m}", 0) + n
+        if log:
+            log(f"  {ini} a {fim}: {n} titulo(s) NFE/NF")
+    return por_mes
 
 
 def sincronizar_creditores(conn, base_url: str, usuario: str, senha: str, max_paginas: int = 50) -> int:
@@ -209,6 +271,11 @@ def gravar_manifesto(conn, empresa_codigo: str, periodo_referencia: str,
     import_id = str(uuid.uuid4())
     with conn.cursor() as cur:
         for _, row in df.iterrows():
+            # v0.44.3: data ja' parseada (date) -- nunca a string crua da Receita
+            # ("2026.07.06"), que o Postgres/pandas podiam ler com dia/mes trocados.
+            data_emissao = row.get("_data_emissao") if "_data_emissao" in row.index else None
+            if data_emissao is None or (not isinstance(data_emissao, date) and pd.isna(data_emissao)):
+                data_emissao = nf_parser.parse_data_emissao(row.get("DtEmi"))
             cur.execute(
                 """
                 INSERT INTO egc.nf_manifesto_import
@@ -222,13 +289,111 @@ def gravar_manifesto(conn, empresa_codigo: str, periodo_referencia: str,
                 (
                     import_id, empresa_codigo, periodo_referencia,
                     str(row.get("Num") or ""), row.get("_numero_normalizado"),
-                    row.get("Tipo"), row.get("DtEmi"), row.get("_valor_float"), row.get("CFOP"),
+                    row.get("Tipo"), data_emissao, row.get("_valor_float"), row.get("CFOP"),
                     row.get("Emissor Nome"), row.get("Emissor CNPJ/CPF"), row.get("_cnpj_normalizado"),
                     row.get("UF"), row.get("Chave"), row.get("_chave_modelo"),
                     row.get("_chave_serie"), row.get("_chave_numero"), nome_arquivo, usuario,
                 ),
             )
     return import_id
+
+
+def gravar_ignoradas(conn, import_id: str, empresa_codigo: str, periodo_referencia: str,
+                      ignoradas: Optional[pd.DataFrame], usuario: str) -> int:
+    """Grava as notas que o upload retirou da conferencia (canceladas e
+    Entrada) em egc.nf_manifesto_ignoradas, pra a contadora conferir depois
+    (aba "Ignoradas" da planilha e expander da tela). Tabela ainda inexistente
+    (bloco 22 do schema nao rodado) -> 0, sem quebrar a conferencia."""
+    if ignoradas is None or ignoradas.empty:
+        return 0
+    try:
+        with conn.cursor() as cur:
+            for _, r in ignoradas.iterrows():
+                data = r.get("data_emissao")
+                data = None if (data is None or (not isinstance(data, date) and pd.isna(data))) else data
+                valor = r.get("valor")
+                cur.execute(
+                    """
+                    INSERT INTO egc.nf_manifesto_ignoradas
+                        (import_id, empresa_codigo, periodo_referencia, numero_nota, data_emissao, valor, cfop,
+                         fornecedor_nome, fornecedor_cnpj, cnpj_normalizado, tipo_doc, natureza, motivo, criado_por, criado_em)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
+                    """,
+                    (import_id, empresa_codigo, periodo_referencia, r.get("numero_nota"), data,
+                     None if valor is None or pd.isna(valor) else float(valor),
+                     None if pd.isna(r.get("cfop")) else r.get("cfop"),
+                     None if pd.isna(r.get("fornecedor_nome")) else r.get("fornecedor_nome"),
+                     None if pd.isna(r.get("fornecedor_cnpj")) else r.get("fornecedor_cnpj"),
+                     r.get("cnpj_normalizado"),
+                     None if pd.isna(r.get("tipo_doc")) else r.get("tipo_doc"),
+                     None if pd.isna(r.get("natureza")) else r.get("natureza"),
+                     r.get("motivo"), usuario),
+                )
+        return len(ignoradas)
+    except psycopg2.errors.UndefinedTable:
+        return 0
+
+
+COLUNAS_IGNORADAS = ["numero_nota", "data_emissao", "valor", "cfop", "fornecedor_nome", "fornecedor_cnpj",
+                     "tipo_doc", "natureza", "motivo", "cnpj_normalizado"]  # a ultima e' interna (casa com o manifesto)
+
+
+def listar_ignoradas(conn, import_id: str) -> pd.DataFrame:
+    """Notas retiradas da conferencia desta rodada (vazio se a tabela nao existe)."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT " + ", ".join(COLUNAS_IGNORADAS) + " FROM egc.nf_manifesto_ignoradas "
+                "WHERE import_id = %s ORDER BY motivo, numero_nota", (import_id,))
+            return pd.DataFrame(cur.fetchall(), columns=COLUNAS_IGNORADAS)
+    except psycopg2.errors.UndefinedTable:
+        return pd.DataFrame(columns=COLUNAS_IGNORADAS)
+
+
+def _brl(v) -> str:
+    return "R$ " + f"{float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def observacoes_de_ignoradas(manifesto: pd.DataFrame, ignoradas: pd.DataFrame) -> dict:
+    """{indice_da_nota: texto} para nota PENDENTE cujo fornecedor tem uma nota
+    de ENTRADA (devolucao/retorno) ignorada no mesmo upload, de valor igual ou
+    proximo -- caso das notas 5700 (devolvida pela 5735) e 29968 (devolucao
+    71713) da Energia 07/2026, que a contadora tirou a mao. NAO exclui nada: so' avisa, a
+    contadora decide pela planilha. Valor igual (+-1 centavo) vem primeiro."""
+    if ignoradas is None or ignoradas.empty or manifesto.empty:
+        return {}
+    por_cnpj: dict = {}
+    for _, g in ignoradas.iterrows():
+        # So' ENTRADA (devolucao/retorno) pode anular uma compra. Nota cancelada
+        # + reemissao e' o fluxo normal (224 cancelada -> 225 emitida) e a
+        # reemitida E' a nota valida -- avisar nela so' faria ruido.
+        if not str(g["motivo"]).startswith("Entrada"):
+            continue
+        por_cnpj.setdefault(g["cnpj_normalizado"], []).append(g)
+    obs: dict = {}
+    for idx, row in manifesto.iterrows():
+        outras = por_cnpj.get(row["_cnpj_normalizado"])
+        if not outras:
+            continue
+        valor = row["_valor_float"]
+
+        def _igual(g):
+            return pd.notna(g["valor"]) and pd.notna(valor) and round(abs(float(g["valor"]) - float(valor)), 2) <= TOLERANCIA_VALOR
+
+        def _proximo(g):   # devolucao parcial/quase igual (ex.: 7.879,50 x 7.809,60)
+            return pd.notna(g["valor"]) and pd.notna(valor) and float(valor) != 0 \
+                and abs(float(g["valor"]) - float(valor)) / abs(float(valor)) <= PROXIMIDADE_VALOR_IGNORADA
+
+        relevantes = sorted((g for g in outras if _igual(g) or _proximo(g)), key=lambda g: (not _igual(g), str(g["numero_nota"])))
+        if not relevantes:
+            continue   # mesmo fornecedor mas valor sem relacao: nao polui a observacao
+        partes = []
+        for g in relevantes[:3]:
+            tipo = "devolução/entrada"
+            igual = "mesmo valor" if _igual(g) else f"{_brl(g['valor'])}, valor próximo"
+            partes.append(f"{tipo} nº {g['numero_nota']} ({igual})")
+        obs[idx] = "Mesmo fornecedor tem, neste manifesto, " + "; ".join(partes) + " — confira se anula esta nota."
+    return obs
 
 
 def ultima_sincronizacao(conn):
@@ -287,7 +452,32 @@ def _carregar_bills_creditores(conn) -> pd.DataFrame:
     return df
 
 
-def _classificar_nota(row, bills: pd.DataFrame) -> dict:
+FASES_CLASSIFICACAO = ("LANCADA", "VALOR_DIVERGENTE", "NUMERO_DIVERGENTE")
+
+
+def _escolher_bill(candidatos: pd.DataFrame, usados: set, debtors_preferidos: Optional[set]):
+    """Escolhe 1 titulo entre os candidatos. Prefere (1) titulo ainda nao
+    consumido por outra nota e (2) titulo cujo devedor e' da empresa do
+    manifesto; desempate pelo menor bill_id (resultado deterministico)."""
+    def chave(b):
+        usado = int(b["bill_id"]) in usados
+        fora = bool(debtors_preferidos) and (pd.isna(b.get("debtor_id")) or int(b["debtor_id"]) not in debtors_preferidos)
+        return (usado, fora, int(b["bill_id"]))
+    ordenados = sorted((r for _, r in candidatos.iterrows()), key=chave)
+    return ordenados[0]
+
+
+def _classificar_nota(row, bills: pd.DataFrame, usados: Optional[set] = None,
+                      fases: tuple = FASES_CLASSIFICACAO, debtors_preferidos: Optional[set] = None) -> dict:
+    """Classifica UMA nota do manifesto contra os titulos do Sienge.
+
+    v0.44.3: `usados` (bill_ids ja' consumidos por outras notas na mesma
+    rodada) e `fases` permitem que classificar_manifesto rode o matching em
+    fases (LANCADA -> VALOR_DIVERGENTE -> NUMERO_DIVERGENTE) sem que um titulo
+    seja "candidato de numero divergente" de uma nota quando ele ja' e' o
+    titulo certo de OUTRA nota (causava ~75% de NUMERO_DIVERGENTE falso).
+    Sem esses parametros o comportamento e' o de sempre (nota isolada)."""
+    usados = usados if usados is not None else set()
     cnpj = row["_cnpj_normalizado"]
     numero = row["_numero_normalizado"]
     valor = row["_valor_float"]
@@ -305,39 +495,83 @@ def _classificar_nota(row, bills: pd.DataFrame) -> dict:
         # o "<=" mesmo a diferenca sendo exatamente 1 centavo. round() pros
         # centavos antes de comparar elimina o erro de ponto flutuante sem
         # afrouxar a tolerancia real (ainda rejeita 2+ centavos de diferenca).
-        return v is not None and valor is not None and round(abs(float(v) - float(valor)), 2) <= TOLERANCIA_VALOR
+        return v is not None and pd.notna(v) and valor is not None and pd.notna(valor) \
+            and round(abs(float(v) - float(valor)), 2) <= TOLERANCIA_VALOR
 
-    # 1º passe: chave de acesso idêntica (confiança máxima), só no universo restrito.
-    if chave and not universo.empty:
-        achou_chave = universo[universo["access_key_number"] == chave]
-        if not achou_chave.empty:
-            b = achou_chave.iloc[0]
-            return dict(status="LANCADA", confianca="CHAVE", sienge_bill_id=int(b["bill_id"]),
-                        sienge_valor=float(b["total_invoice_amount"]), observacao=None)
+    def _res(status, confianca, b, observacao=None):
+        return dict(status=status, confianca=confianca, sienge_bill_id=int(b["bill_id"]),
+                    sienge_valor=float(b["total_invoice_amount"]), observacao=observacao)
+
+    if universo.empty:
+        return dict(status="NAO_ENCONTRADA", confianca=None, sienge_bill_id=None, sienge_valor=None, observacao=None)
+
+    if "LANCADA" in fases:
+        # 1º passe: chave de acesso idêntica (confiança máxima), só no universo restrito.
+        if chave:
+            achou_chave = universo[universo["access_key_number"] == chave]
+            if not achou_chave.empty:
+                return _res("LANCADA", "CHAVE", _escolher_bill(achou_chave, usados, debtors_preferidos))
 
     # 2º passe: CNPJ + número exatos, dentro do universo NFE/NF.
-    if not universo.empty:
-        candidatos = universo[(universo["cnpj_normalizado"] == cnpj) & (universo["numero_normalizado"] == numero)]
-        if not candidatos.empty:
-            bate = candidatos[candidatos["total_invoice_amount"].apply(_bate_valor)]
-            if not bate.empty:
-                b = bate.iloc[0]
-                return dict(status="LANCADA", confianca="NUMERO_CNPJ_VALOR", sienge_bill_id=int(b["bill_id"]),
-                            sienge_valor=float(b["total_invoice_amount"]), observacao=None)
-            b = candidatos.iloc[0]
-            return dict(status="VALOR_DIVERGENTE", confianca="NUMERO_CNPJ", sienge_bill_id=int(b["bill_id"]),
-                        sienge_valor=float(b["total_invoice_amount"]),
-                        observacao=f"Sienge tem R$ {b['total_invoice_amount']}, manifesto tem R$ {valor}")
+    candidatos = universo[(universo["cnpj_normalizado"] == cnpj) & (universo["numero_normalizado"] == numero)]
+    if not candidatos.empty:
+        bate = candidatos[candidatos["total_invoice_amount"].apply(_bate_valor)]
+        if not bate.empty:
+            if "LANCADA" in fases:
+                return _res("LANCADA", "NUMERO_CNPJ_VALOR", _escolher_bill(bate, usados, debtors_preferidos))
+        elif "VALOR_DIVERGENTE" in fases:
+            b = _escolher_bill(candidatos, usados, debtors_preferidos)
+            return _res("VALOR_DIVERGENTE", "NUMERO_CNPJ", b,
+                        f"Sienge tem R$ {b['total_invoice_amount']}, manifesto tem R$ {valor}")
+        return dict(status="NAO_ENCONTRADA", confianca=None, sienge_bill_id=None, sienge_valor=None, observacao=None)
 
-        # CNPJ + valor batem, número não -- possível erro de digitação do número.
-        mesmo_cnpj_valor = universo[(universo["cnpj_normalizado"] == cnpj) & (universo["total_invoice_amount"].apply(_bate_valor))]
+    # CNPJ + valor batem, número não -- possível erro de digitação do número.
+    # So' titulos que nenhuma outra nota da rodada consumiu (v0.44.3).
+    if "NUMERO_DIVERGENTE" in fases:
+        do_cnpj = universo[universo["cnpj_normalizado"] == cnpj]   # filtra por CNPJ ANTES de comparar valor (14k titulos x 460 notas: 11s -> <1s)
+        mesmo_cnpj_valor = do_cnpj[do_cnpj["total_invoice_amount"].apply(_bate_valor)
+                                   & ~do_cnpj["bill_id"].astype(int).isin(usados)] if not do_cnpj.empty else do_cnpj
         if not mesmo_cnpj_valor.empty:
-            b = mesmo_cnpj_valor.iloc[0]
-            return dict(status="NUMERO_DIVERGENTE", confianca="CNPJ_VALOR", sienge_bill_id=int(b["bill_id"]),
-                        sienge_valor=float(b["total_invoice_amount"]),
-                        observacao=f"Sienge tem nota nº {b['document_number']}, manifesto tem nº {row.get('Num')}")
+            b = _escolher_bill(mesmo_cnpj_valor, usados, debtors_preferidos)
+            return _res("NUMERO_DIVERGENTE", "CNPJ_VALOR", b,
+                        f"Sienge tem nota nº {b['document_number']}, manifesto tem nº {row.get('Num')}")
 
     return dict(status="NAO_ENCONTRADA", confianca=None, sienge_bill_id=None, sienge_valor=None, observacao=None)
+
+
+def classificar_manifesto(manifesto: pd.DataFrame, bills: pd.DataFrame,
+                          mapa_debtor: Optional[dict] = None) -> dict:
+    """Classifica TODAS as notas do manifesto de uma rodada. Devolve
+    {indice_da_linha: resultado}. Roda em fases pra um titulo nunca ser
+    usado duas vezes como "numero divergente":
+
+      1. LANCADA   (chave, ou CNPJ+numero+valor)
+      2. VALOR_DIVERGENTE (CNPJ+numero, valor diferente)
+      3. NUMERO_DIVERGENTE (CNPJ+valor, so' com titulos ainda sem dono)
+
+    Em cada fase, titulo ja' consumido por outra nota so' e' reaproveitado
+    quando a nota e' duplicada no manifesto (mesmo CNPJ+numero+valor).
+    `mapa_debtor` ({debtor_id: empresa}) desempata entre titulos iguais
+    preferindo o devedor da empresa do manifesto."""
+    mapa_debtor = mapa_debtor or {}
+    preferidos_por_empresa: dict = {}
+    resultados: dict = {}
+    usados: set = set()
+    for fase in FASES_CLASSIFICACAO:
+        for idx, row in manifesto.iterrows():
+            if idx in resultados:
+                continue
+            empresa = row.get("_empresa_codigo")
+            if empresa not in preferidos_por_empresa:
+                preferidos_por_empresa[empresa] = {d for d, e in mapa_debtor.items() if e == empresa}
+            r = _classificar_nota(row, bills, usados, (fase,), preferidos_por_empresa[empresa])
+            if r["status"] != "NAO_ENCONTRADA":
+                resultados[idx] = r
+                usados.add(r["sienge_bill_id"])
+    for idx in manifesto.index:
+        resultados.setdefault(idx, dict(status="NAO_ENCONTRADA", confianca=None, sienge_bill_id=None,
+                                        sienge_valor=None, observacao=None))
+    return resultados
 
 
 # ─────────────────────────────────────────────
@@ -369,17 +603,9 @@ def _classificar_nota(row, bills: pd.DataFrame) -> dict:
 STATUS_LANCADA_OUTRA_EMPRESA = "LANCADA_OUTRA_EMPRESA"
 
 
-def _mapear_debtor_para_empresa(conn, excluir_import_id: Optional[str] = None) -> dict:
-    """Devolve {debtor_id: empresa_codigo}.
-
-    Duas fontes (a manual vence):
-      1) APRENDIDA -- debtor_id que bateu SEMPRE com a mesma empresa em todo
-         o historico de matches LANCADA (sem contar `excluir_import_id`, pra
-         a rodada que esta' sendo recalculada nao se auto-confirmar);
-      2) MANUAL -- egc.nf_debtor_empresa, confirmada pela contadora na tela
-         ("o app segue o que o Sienge dita": o debtor do titulo diz a
-         qual empresa ele foi lancado).
-    """
+def _historico_debtor_empresas(conn, excluir_import_id: Optional[str] = None) -> dict:
+    """{debtor_id: {empresa_codigo: n_matches}} a partir dos matches LANCADA
+    (e LANCADA_OUTRA_EMPRESA nao conta: ela ja' foi gerada USANDO o mapa)."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -395,9 +621,24 @@ def _mapear_debtor_para_empresa(conn, excluir_import_id: Optional[str] = None) -
         )
         linhas = cur.fetchall()
     por_debtor: dict = {}
-    for debtor_id, empresa_codigo, _n in linhas:
-        por_debtor.setdefault(debtor_id, set()).add(empresa_codigo)
-    mapa = {debtor_id: next(iter(empresas)) for debtor_id, empresas in por_debtor.items() if len(empresas) == 1}
+    for debtor_id, empresa_codigo, n in linhas:
+        por_debtor.setdefault(int(debtor_id), {})[empresa_codigo] = int(n)
+    return por_debtor
+
+
+def _mapear_debtor_para_empresa(conn, excluir_import_id: Optional[str] = None) -> dict:
+    """Devolve {debtor_id: empresa_codigo}.
+
+    Duas fontes (a manual vence):
+      1) APRENDIDA -- debtor_id que bateu SEMPRE com a mesma empresa em todo
+         o historico de matches LANCADA (sem contar `excluir_import_id`, pra
+         a rodada que esta' sendo recalculada nao se auto-confirmar);
+      2) MANUAL -- egc.nf_debtor_empresa, confirmada pela contadora na tela
+         ("o app segue o que o Sienge dita": o debtor do titulo diz a
+         qual empresa ele foi lancado).
+    """
+    por_debtor = _historico_debtor_empresas(conn, excluir_import_id)
+    mapa = {d: next(iter(emp)) for d, emp in por_debtor.items() if len(emp) == 1}
     mapa.update(carregar_mapa_debtor_manual(conn))
     return mapa
 
@@ -424,10 +665,16 @@ def listar_debtors_sienge(conn) -> pd.DataFrame:
         )
         df = pd.DataFrame(cur.fetchall(), columns=["debtor_id", "titulos"])
     manual = carregar_mapa_debtor_manual(conn)
-    aprendido = _mapear_debtor_para_empresa(conn)
-    aprendido = {d: e for d, e in aprendido.items() if d not in manual}
+    historico = _historico_debtor_empresas(conn)
+    # aprendida = so' quando o historico aponta UMA empresa (e nao ha' manual)
+    aprendido = {d: next(iter(emp)) for d, emp in historico.items() if len(emp) == 1 and d not in manual}
     df["empresa_aprendida"] = df["debtor_id"].map(lambda d: aprendido.get(int(d)))
     df["empresa_confirmada"] = df["debtor_id"].map(lambda d: manual.get(int(d)))
+    # v0.44.3: historico ambiguo ("ENERGIA (2283), CONST (59)") aparece na tela
+    # em vez de virar "—" sem explicacao.
+    df["historico_ambiguo"] = df["debtor_id"].map(
+        lambda d: ", ".join(f"{e} ({n})" for e, n in sorted(historico.get(int(d), {}).items(), key=lambda x: -x[1]))
+        if len(historico.get(int(d), {})) > 1 else None)
     return df
 
 
@@ -497,6 +744,78 @@ def _filtrar_bills_orfaos(bills: pd.DataFrame, mapa_debtor: dict, empresa_codigo
     return universo.drop(columns=["_empresa_do_debtor"])
 
 
+def _bills_associados_no_escopo(conn, import_id: str, empresa_codigo: str) -> set:
+    """Titulos que ja' tem dono "valido" pra efeito de 'Sienge sem manifesto':
+      - os associados a notas DESTA rodada (qualquer status);
+      - os associados na ULTIMA rodada de cada OUTRO periodo da MESMA empresa
+        (titulo de julho que foi conferido no manifesto de agosto nao e' orfao).
+    v0.44.3: antes olhava QUALQUER rodada de QUALQUER empresa -- (a) rodada
+    antiga/duplicada do mesmo periodo escondia orfao de verdade e o resultado
+    dependia da ordem em que as conferencias foram rodadas; (b) titulo
+    lancado no devedor de uma empresa mas com nota no manifesto de OUTRA
+    nunca aparecia como orfao da primeira. Agora so' conta o escopo da propria
+    empresa; o caso (b) vira orfao com a observacao 'consta no manifesto de X'."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT c.sienge_bill_id
+            FROM egc.nf_conciliacao c
+            WHERE c.sienge_bill_id IS NOT NULL
+              AND (c.import_id = %s
+                   OR c.import_id IN (
+                        SELECT DISTINCT ON (periodo_referencia) import_id
+                        FROM egc.nf_manifesto_import
+                        WHERE empresa_codigo = %s
+                          AND periodo_referencia IS DISTINCT FROM (
+                                SELECT periodo_referencia FROM egc.nf_manifesto_import
+                                WHERE import_id = %s LIMIT 1)
+                        ORDER BY periodo_referencia, criado_em DESC))
+            """,
+            (import_id, empresa_codigo, import_id),
+        )
+        return {int(r[0]) for r in cur.fetchall()}
+
+
+def avisos_conciliacao(conn, import_id: str, empresa_codigo: str) -> list:
+    """Avisos que a tela mostra junto do resultado, pra "0 Sienge sem
+    manifesto" nunca significar "nao deu pra verificar" sem a contadora saber:
+      1) nenhum devedor do Sienge esta' associado a esta empresa -> a direcao
+         reversa nao roda;
+      2) o espelho do Sienge nao cobre o periodo do manifesto (titulos so'
+         a partir de X / ate' Y) -> 'nao encontrada' pode ser falta de dado."""
+    avisos: list = []
+    try:
+        mapa = _mapear_debtor_para_empresa(conn)
+        if empresa_codigo not in set(mapa.values()):
+            avisos.append(
+                f"Nenhum devedor do Sienge está associado à empresa {empresa_codigo}: a checagem "
+                f"\"Sienge sem manifesto\" NÃO foi feita (o resultado 0 não significa 'sem divergência'). "
+                f"Confirme o devedor no painel \"Empresa de cada devedor do Sienge\" e rode de novo."
+            )
+        with conn.cursor() as cur:
+            cur.execute("SELECT MIN(data_emissao), MAX(data_emissao) FROM egc.nf_manifesto_import WHERE import_id = %s",
+                        (import_id,))
+            man_min, man_max = cur.fetchone() or (None, None)
+            cur.execute("SELECT MIN(issue_date), MAX(issue_date) FROM egc.nf_bills_sync "
+                        "WHERE UPPER(TRIM(document_identification_id)) IN ('NFE','NF')")
+            esp_min, esp_max = cur.fetchone() or (None, None)
+        tol = pd.Timedelta(days=JANELA_COBERTURA_DIAS)
+        if man_min and esp_min and pd.Timestamp(esp_min) - pd.Timestamp(man_min) > tol:
+            avisos.append(
+                f"O espelho do Sienge só tem títulos a partir de {pd.Timestamp(esp_min):%d/%m/%Y}, mas o manifesto "
+                f"tem notas desde {pd.Timestamp(man_min):%d/%m/%Y}: notas anteriores podem aparecer como "
+                f"\"não encontrada\" só por falta de dado. Ajuste o \"De\" do passo 1 e atualize do Sienge."
+            )
+        if man_max and esp_max and pd.Timestamp(man_max) - pd.Timestamp(esp_max) > tol:
+            avisos.append(
+                f"O espelho do Sienge só tem títulos até {pd.Timestamp(esp_max):%d/%m/%Y}, mas o manifesto "
+                f"tem notas até {pd.Timestamp(man_max):%d/%m/%Y}: atualize do Sienge antes de conferir."
+            )
+    except psycopg2.Error:
+        conn.rollback()
+    return avisos
+
+
 def identificar_e_gravar_bills_orfaos(conn, import_id: str, empresa_codigo: str) -> int:
     """
     Roda o filtro reverso pra um import_id (chamado por conciliar_import,
@@ -525,9 +844,7 @@ def identificar_e_gravar_bills_orfaos(conn, import_id: str, empresa_codigo: str)
         mapa_debtor = _mapear_debtor_para_empresa(conn)
         bills = _carregar_bills_creditores(conn)
 
-        with conn.cursor() as cur:
-            cur.execute("SELECT DISTINCT sienge_bill_id FROM egc.nf_conciliacao WHERE sienge_bill_id IS NOT NULL")
-            ja_associados = {row[0] for row in cur.fetchall()}
+        ja_associados = _bills_associados_no_escopo(conn, import_id, empresa_codigo)
 
         orfaos = _filtrar_bills_orfaos(
             bills, mapa_debtor, empresa_codigo, ja_associados, data_min_janela, data_max_janela
@@ -597,7 +914,8 @@ def conciliar_import(conn, import_id: str) -> dict:
         cols = [d[0] for d in cur.description]
         manifesto = pd.DataFrame(cur.fetchall(), columns=cols)
 
-    resumo = {"total": len(manifesto), "lancadas": 0, "pendencias": 0, "orfaos_sienge": 0, "outra_empresa": 0}
+    resumo = {"total": len(manifesto), "lancadas": 0, "pendencias": 0, "orfaos_sienge": 0, "outra_empresa": 0,
+              "valor_divergente": 0, "numero_divergente": 0, "nao_encontradas": 0}
     if manifesto.empty:
         return resumo
     # de-para debtor -> empresa (sem contar esta propria rodada) e debtor de cada titulo
@@ -605,6 +923,10 @@ def conciliar_import(conn, import_id: str) -> dict:
     debtor_por_bill = {}
     if not bills.empty and "debtor_id" in bills.columns:
         debtor_por_bill = {int(b): d for b, d in zip(bills["bill_id"], bills["debtor_id"])}
+
+    # v0.44.3: matching em fases com consumo de titulo (classificar_manifesto)
+    classificacao = classificar_manifesto(manifesto, bills, mapa_debtor)
+    obs_ignoradas = observacoes_de_ignoradas(manifesto, listar_ignoradas(conn, import_id))
 
     with conn.cursor() as cur:
         # Preserva status de acompanhamento manual (pendencia_status) já
@@ -618,15 +940,17 @@ def conciliar_import(conn, import_id: str) -> dict:
 
         cur.execute("DELETE FROM egc.nf_conciliacao WHERE import_id = %s", (import_id,))
 
-        for _, row in manifesto.iterrows():
-            resultado = _classificar_nota(row, bills)
+        for idx, row in manifesto.iterrows():
+            resultado = classificacao[idx]
             if resultado.get("sienge_bill_id") is not None:
                 resultado = checar_empresa_do_lancamento(
                     resultado, row["_empresa_codigo"], debtor_por_bill.get(int(resultado["sienge_bill_id"])), mapa_debtor,
                 )
-            if resultado["status"] == STATUS_LANCADA_OUTRA_EMPRESA:
-                resumo["outra_empresa"] += 1
-            if resultado["status"] == "LANCADA":
+            status_final = resultado["status"]
+            if status_final != "LANCADA" and idx in obs_ignoradas:
+                resultado = dict(resultado)
+                resultado["observacao"] = " | ".join(x for x in (resultado.get("observacao"), obs_ignoradas[idx]) if x)
+            if status_final == "LANCADA":
                 resumo["lancadas"] += 1
                 pendencia_status = None
             else:
@@ -647,10 +971,14 @@ def conciliar_import(conn, import_id: str) -> dict:
                 # CHECK de status ainda sem LANCADA_OUTRA_EMPRESA (bloco 19 do
                 # schema nao rodado): grava como LANCADA mantendo o alerta na
                 # observacao -- nunca perde a nota nem quebra a conferencia.
-                resumo["outra_empresa"] -= 1
                 resumo["lancadas"] += 1
                 resumo["pendencias"] -= 1
+                status_final = "LANCADA"
                 cur.execute(sql_ins, params[:2] + ("LANCADA",) + params[3:7] + (None,))
+            chave_resumo = {"LANCADA_OUTRA_EMPRESA": "outra_empresa", "VALOR_DIVERGENTE": "valor_divergente",
+                            "NUMERO_DIVERGENTE": "numero_divergente", "NAO_ENCONTRADA": "nao_encontradas"}.get(status_final)
+            if chave_resumo:
+                resumo[chave_resumo] += 1
 
     # FIX_20260928f -- direção reversa (Sienge sem nota no manifesto),
     # roda depois do matching normal (usa o resultado dele: bill já

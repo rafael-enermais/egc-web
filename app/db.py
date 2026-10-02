@@ -136,6 +136,26 @@ def arquivos_ativos_por_periodo(conn, empresa_codigo: str) -> dict:
         return out
 
 
+def geracoes_ativas_por_periodo(conn, empresa_codigo: str) -> dict:
+    """{periodo: [criado_em, ...]} -- instantes de criacao (distintos, ao segundo)
+    dos lancamentos ATIVOS da empresa. v0.44.3: o historico de importacoes usa
+    pra saber se ESTE import e' a geracao em uso. Comparar so' o NOME do
+    arquivo (v0.44.0) dava "Ativo" errado quando o mesmo PDF foi reimportado
+    e depois desfeito/substituido -- a geracao anterior reativada tem o mesmo
+    nome. O instante de criacao distingue as duas. Correcao manual nao muda
+    criado_em das linhas existentes (so' atualizado_em)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT DISTINCT periodo, date_trunc('second', criado_em) FROM egc.lancamentos
+               WHERE empresa_codigo = %s AND status = 'ATIVO'""",
+            (empresa_codigo,),
+        )
+        out: dict = {}
+        for per, criado in cur.fetchall():
+            out.setdefault(per, []).append(criado)
+        return out
+
+
 def listar_periodos_completos_detalhado(conn, empresa_codigo: str, status: str = "ATIVO") -> list[dict]:
     """
     v0.40.0: (periodo, granularidade) em que a empresa tem BP **E** DRE

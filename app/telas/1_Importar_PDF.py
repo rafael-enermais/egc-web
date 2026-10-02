@@ -52,7 +52,7 @@ from parser_egc import processar_pdf, extrair_despesas_admin_itens  # noqa: E402
 from validacoes import checar_fechamento_bp, formatar_br  # noqa: E402
 from importacoes_ui import (  # noqa: E402
     chave_ordenacao_previa, agrupar_historico_importacoes, detectar_conflitos_lote, chave_documento_item,
-    assinatura_item, inferir_granularidade_nome,
+    assinatura_item, inferir_granularidade_nome, evento_esta_ativo,
 )
 import formatacao  # noqa: E402
 
@@ -704,7 +704,7 @@ else:
         cod_ev = ev["empresa_codigo"]
         if cod_ev not in periodos_ativos_por_empresa:
             try:
-                periodos_ativos_por_empresa[cod_ev] = db.arquivos_ativos_por_periodo(conn, cod_ev)
+                periodos_ativos_por_empresa[cod_ev] = db.geracoes_ativas_por_periodo(conn, cod_ev)
             except Exception:
                 # nao trava a lista inteira por isso -- so' deixa de
                 # mostrar a situacao atual (fica "?" mais abaixo).
@@ -721,13 +721,11 @@ else:
         tipos_label = ", ".join(t for t, _msg in ev["tipos"]) or "?"
         _periodos_empresa = periodos_ativos_por_empresa.get(cod_ev)
         situacao_desconhecida = _periodos_empresa is None
-        # v0.44.0: "ativo" = ESTE import (pelo nome do arquivo) e' a versao em uso. Se o
-        # log nao tem nome de arquivo (linha antiga), cai no criterio antigo (periodo).
-        _arqs_ativos = (_periodos_empresa or {}).get(periodo_ev, set())
-        _arqs_evento = set(ev.get("arquivos") or [])
-        ainda_ativo = (not situacao_desconhecida) and bool(_arqs_ativos) and (
-            (not _arqs_evento) or bool(_arqs_evento & _arqs_ativos) or ("" in _arqs_ativos)
-        )
+        # v0.44.3: "ativo" = ESTE import e' a GERACAO em uso (instante de criacao dos
+        # lancamentos ativos == instante do evento). Antes comparava so' o nome do
+        # arquivo, que dava "Ativo" errado quando o mesmo PDF era reimportado.
+        ainda_ativo = (not situacao_desconhecida) and evento_esta_ativo(
+            ev["criado_em"], (_periodos_empresa or {}).get(periodo_ev, []))
         col_a, col_b = st.columns([4, 1])
         col_a.write(
             f"**{nome_ev}** — {periodo_ev.strftime('%m/%Y')} · {tipos_label} · "
