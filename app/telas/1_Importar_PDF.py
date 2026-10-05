@@ -341,7 +341,7 @@ if resultados:
             if r["bp_rows"]:
                 st.write(f"**BP — {len(r['bp_rows'])} contas**")
                 st.dataframe(pd.DataFrame(r["bp_rows"], columns=COLUNAS_BP),
-                             use_container_width=True, hide_index=True)
+                             width="stretch", hide_index=True)
                 total_ativo, total_passivo = checar_fechamento_bp(r["bp_rows"])
                 if total_ativo is not None and total_passivo is not None:
                     diferenca = round(total_ativo - total_passivo, 2)
@@ -355,7 +355,7 @@ if resultados:
             if r["dre_rows"]:
                 st.write(f"**DRE — {len(r['dre_rows'])} contas**")
                 st.dataframe(pd.DataFrame(r["dre_rows"], columns=COLUNAS_DRE),
-                             use_container_width=True, hide_index=True)
+                             width="stretch", hide_index=True)
 
     # FIX_20260930c (BUG REAL, Rafael em produção: relatório dá "não tem
     # BP/DRE gravado" mesmo depois de subir e gravar os 2 juntos -- o

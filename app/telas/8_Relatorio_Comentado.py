@@ -156,7 +156,7 @@ with st.expander("📋 Painel de pendências — o que está pronto pra gerar", 
                 f"{n_incompletos} período(s)/granularidade(s) com pelo menos 1 empresa faltando BP e/ou DRE "
                 "— o relatório dessa empresa nesse período ainda não pode ser gerado."
             )
-        st.dataframe(resumo_fmt, hide_index=True, use_container_width=True)
+        st.dataframe(resumo_fmt, hide_index=True, width="stretch")
 
 st.divider()
 

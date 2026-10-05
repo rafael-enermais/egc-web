@@ -112,7 +112,7 @@ with col_dash:
                 [(k, formatacao.moeda_br(v) if isinstance(v, float) and k.lower().startswith(("valor", "novo valor")) else v)
                  for k, v in _pr["resumo"]], columns=["Campo", "Valor"],
             )
-            st.dataframe(_linhas.astype({"Valor": str}), hide_index=True, use_container_width=True)
+            st.dataframe(_linhas.astype({"Valor": str}), hide_index=True, width="stretch")
             _ed = {}
             _edit = _pr.get("editaveis") or {}
             if "novo_status" in _edit:
@@ -174,7 +174,7 @@ with col_dash:
                 modo = st.radio("Ver como", _modos, horizontal=True, key="assistente_visao", label_visibility="collapsed")
                 _graf_sel = tipo_graf = ys_sel = None
                 if modo == "Tabela":
-                    st.dataframe(chat_visual.tabela_exibicao(prep), hide_index=True, use_container_width=True)
+                    st.dataframe(chat_visual.tabela_exibicao(prep), hide_index=True, width="stretch")
                 if modo in ("Gráfico", "Relatório") and prep["graficos"]:
                     _nomes_g = list(prep["graficos"])
                     cg1, cg2 = st.columns([3, 2])
@@ -187,7 +187,7 @@ with col_dash:
                                                 max_selections=3) or _graf_sel["ys"]
                     if modo == "Gráfico":
                         st.plotly_chart(chat_visual.figura(_graf_sel, tipo_graf, True, ys_sel),
-                                        use_container_width=True, config={"displaylogo": False})
+                                        width="stretch", config={"displaylogo": False})
                         st.caption("Gráfico direto do resultado consultado — passe o mouse para ver o valor completo em R$.")
                 if modo == "Relatório":
                     st.caption("Baixe o resultado como planilha (números reais, abre no Excel) ou PDF (com o gráfico escolhido acima).")
@@ -232,7 +232,7 @@ with col_dash:
         st.dataframe(
             df_rapida,
             column_config={"valor": st.column_config.TextColumn("Valor")},
-            hide_index=True, use_container_width=True,
+            hide_index=True, width="stretch",
         )
 
 # ─────────────────────────────────────────────

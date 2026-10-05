@@ -215,7 +215,7 @@ def pagina_inicio():
         tabela_ind_fmt["EBITDA"] = tabela_ind_fmt["EBITDA"].apply(formatacao.moeda_br)
         for col in ["Endividamento Geral", "Margem Bruta", "Margem Líquida", "ROA", "ROE", "Margem EBITDA"]:
             tabela_ind_fmt[col] = tabela_ind_fmt[col].apply(formatacao.pct_br)
-        st.dataframe(tabela_ind_fmt, use_container_width=True)
+        st.dataframe(tabela_ind_fmt, width="stretch")
         st.caption(
             "Liquidez seca não entra: as 6 empresas do grupo (EPC/energia) não têm "
             "conta de Estoques no BP extraído hoje — ficaria idêntica à Liquidez "

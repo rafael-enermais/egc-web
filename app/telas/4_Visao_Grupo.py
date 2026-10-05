@@ -177,9 +177,9 @@ with f_per:
              "para ver a evolução até a atualidade; as contas e variações de cada período usam só o seu documento.",
     )
     bt1, bt2, _bt3 = st.columns([1, 1.4, 2])
-    bt1.button("Selecionar todos", on_click=_sel_todos, key="grupo_btn_todos", use_container_width=True)
+    bt1.button("Selecionar todos", on_click=_sel_todos, key="grupo_btn_todos", width="stretch")
     bt2.button(f"Só {indicadores.rotulo_granularidade(base_padrao).lower()}", on_click=_sel_base_padrao,
-               key="grupo_btn_base_padrao", use_container_width=True)
+               key="grupo_btn_base_padrao", width="stretch")
 if not pares_sel:
     st.info("Selecione ao menos 1 período.")
     st.stop()
@@ -434,7 +434,7 @@ with tab_empresas:
     tab_emp["Endividamento Geral"] = tab_emp["Endividamento Geral"].apply(formatacao.pct_br)
     tab_emp.index = [NOME_POR_COD.get(c, c) for c in tab_emp.index]
     tab_emp.index.name = "Empresa"
-    st.dataframe(tab_emp, use_container_width=True)
+    st.dataframe(tab_emp, width="stretch")
     st.caption("Empresa sem documento nesse período e base aparece com '—' (não é zero).")
 
 with tab_estrutura:
@@ -522,7 +522,7 @@ with tab_detalhe:
                 saida_fmt[NOME_POR_COD[cod]] = saida_fmt[NOME_POR_COD[cod]].apply(formatacao.moeda_br)
                 column_config[NOME_POR_COD[cod]] = st.column_config.TextColumn(f"{NOME_POR_COD[cod]} ({cod})")
 
-        st.dataframe(saida_fmt, column_config=column_config, hide_index=True, use_container_width=True)
+        st.dataframe(saida_fmt, column_config=column_config, hide_index=True, width="stretch")
         st.caption(f"{len(pivot)} conta(s) distinta(s) de {tipo_sel} · {len(cods_selecionados)} empresa(s) selecionada(s).")
 
     if not algum_dado:

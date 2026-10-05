@@ -117,12 +117,22 @@ except Exception as exc:
     _ultima_sync = None
     _log_erro("Falha ao ler a última sincronização do Sienge", detalhe=str(exc))
 
+def _aberto(chave: str) -> bool:
+    return bool(st.session_state.get(chave))
+
+
+def _manter(chave: str) -> None:
+    """Callback de widget: marca a caixa (expander) como aberta. Sem isso o Streamlit recolhe a caixa a cada
+    interacao (marcar um checkbox, trocar um select) e a contadora tinha que reabrir no meio da tarefa."""
+    st.session_state[chave] = True
+
+
 JANELA_ATUALIZAR_DIAS = 365   # "ano sempre atualizado": mesma janela do sync diário (ingest-sienge.yml)
 
 if _ultima_sync:
     st.caption(f"🔄 Última sincronização: {formatacao.hora_br(_ultima_sync)}. O Sienge é copiado sozinho todo dia às 04h "
                "(ano inteiro) e as conferências são refeitas na sequência -- use o botão só se precisar do dado de agora. "
-               "O botão copia o ano inteiro e pode levar vários minutos: não feche a página enquanto roda.")
+               "O botão copia o ano inteiro e leva cerca de 2 minutos: não feche a página enquanto roda.")
 else:
     st.error(
         "Ainda não há nenhuma sincronização registrada com o Sienge. "
@@ -143,7 +153,7 @@ def _total_pendencias_vigentes() -> dict:
 
 
 if st.button("🔄 Atualizar agora", key="nf_btn_sync",
-             help=f"Copia do Sienge os últimos {JANELA_ATUALIZAR_DIAS} dias e refaz todas as conferências (leva vários minutos)."):
+             help=f"Copia do Sienge os últimos {JANELA_ATUALIZAR_DIAS} dias e refaz todas as conferências (leva cerca de 2 minutos)."):
     try:
         base_url = st.secrets["SIENGE_BASE_URL"]
         sienge_user = st.secrets["SIENGE_USER"]
@@ -188,7 +198,8 @@ if st.button("🔄 Atualizar agora", key="nf_btn_sync",
     _ultima_sync = nf_sienge.ultima_sincronizacao(conn)
 
 # ───────────── Empresa de cada devedor do Sienge (confere lançamento na empresa certa) ─────────────
-with st.expander("🏢 Empresa de cada devedor do Sienge — confere se a nota foi lançada na empresa certa"):
+with st.expander("🏢 Empresa de cada devedor do Sienge — confere se a nota foi lançada na empresa certa",
+                 expanded=_aberto("nf_exp_devedores")):
     st.caption(
         "O Sienge é uma conta só das empresas: o **devedor** do título diz em qual empresa a nota foi "
         "lançada. **Só vale o que está confirmado aqui** (a sugestão do histórico é só uma pista -- não é usada na "
@@ -225,7 +236,8 @@ with st.expander("🏢 Empresa de cada devedor do Sienge — confere se a nota f
             else:
                 c3.caption("Sugestão do histórico: —")
             nova = c4.selectbox("Empresa", _opcoes, index=_opcoes.index(atual) if atual in _opcoes else 0,
-                                key=f"nf_debtor_{int(d['debtor_id'])}", label_visibility="collapsed")
+                                key=f"nf_debtor_{int(d['debtor_id'])}", label_visibility="collapsed",
+                                on_change=_manter, args=("nf_exp_devedores",))
             if nova != atual:
                 try:
                     nf_sienge.salvar_mapa_debtor(conn, int(d["debtor_id"]), None if nova == _opcoes[0] else nova, usuario)
@@ -437,7 +449,7 @@ else:
         "Arquivo": v.get("arquivo_nome") or "",
         "Atualizado em": formatacao.hora_br(v["atualizado_em"]) if v.get("atualizado_em") else "",
     } for v in vigentes])
-    st.dataframe(_tab, hide_index=True, use_container_width=True)
+    st.dataframe(_tab, hide_index=True, width="stretch")
 
     _empresas_vig = []
     for v in vigentes:
@@ -459,11 +471,12 @@ else:
     _pers = [v["periodo_referencia"] for v in _vig_emp]
     _por_periodo = {v["periodo_referencia"]: v for v in _vig_emp}
     _chave_pers = f"nf_det_periodos_{emp_det}"
-    _atual = [p for p in (st.session_state.get(_chave_pers) or []) if p in _por_periodo]
-    if _chave_pers not in st.session_state:
-        st.session_state[_chave_pers] = list(_pers)            # padrao: todos os meses da empresa
-    elif len(_atual) != len(st.session_state[_chave_pers] or []):
-        st.session_state[_chave_pers] = _atual                 # mes que deixou de existir sai da selecao
+    _chave_vistos = f"_nf_pers_vistos_{emp_det}"
+    if _chave_pers not in st.session_state or st.session_state.get(_chave_vistos) != _pers:
+        # primeira vez, ou o conjunto de meses da empresa mudou (upload, arquivar, restaurar):
+        # volta ao padrao = todos os meses (senao um mes que reapareceu ficaria de fora do detalhe).
+        st.session_state[_chave_pers] = list(_pers)
+        st.session_state[_chave_vistos] = list(_pers)
     _sel_pers = st.multiselect(
         "Períodos no detalhe e no download", _pers, key=_chave_pers,
         format_func=lambda p: f"{p} · {_por_periodo[p]['total_notas']} nota(s) · {_por_periodo[p]['total_pendencias']} pendência(s)",
@@ -539,7 +552,7 @@ else:
             _rpp["Taxa de conciliação"] = _rpp["Taxa de conciliação"].apply(
                 lambda t: formatacao.pct_br(t) if pd.notna(t) else "—")
             with st.expander("Resumo por período (os números acima, mês a mês)"):
-                st.dataframe(_rpp, hide_index=True, use_container_width=True)
+                st.dataframe(_rpp, hide_index=True, width="stretch")
 
         _status_presentes = [x for x in nf_export.ORDEM_STATUS if x in set(tabela["status"])] + \
             sorted(set(tabela["status"]) - set(nf_export.ORDEM_STATUS))
@@ -572,7 +585,7 @@ else:
             tabela_fmt["Atualizado em"] = tabela_fmt["Atualizado em"].apply(
                 lambda v: "" if pd.isna(v) else formatacao.hora_br(v))
         tabela_fmt = tabela_fmt.astype(object).where(tabela_fmt.notna(), "")
-        st.dataframe(tabela_fmt, hide_index=True, use_container_width=True)
+        st.dataframe(tabela_fmt, hide_index=True, width="stretch")
 
         pendencias_df = tabela[tabela["status"] != "LANCADA"]
         _sufixo_arq = nf_export.sufixo_arquivo(_pers_sel)
@@ -633,9 +646,10 @@ else:
                 _ign_fmt = nf_export.preparar_ignoradas(_ign_rodada)
                 if "Valor (manifesto)" in _ign_fmt.columns:
                     _ign_fmt["Valor (manifesto)"] = _ign_fmt["Valor (manifesto)"].apply(formatacao.moeda_br)
-                st.dataframe(_ign_fmt, hide_index=True, use_container_width=True)
+                st.dataframe(_ign_fmt, hide_index=True, width="stretch")
 
-        with st.expander("Atualizar status de uma pendência (lastro até corrigir no Sienge)"):
+        with st.expander("Atualizar status de uma pendência (lastro até corrigir no Sienge)",
+                         expanded=_aberto("nf_exp_status")):
             st.caption(
                 "Marca o acompanhamento da pendência (não lança nada no Sienge, é só controle "
                 "aqui) -- fica registrado quem mudou e quando."
@@ -650,12 +664,13 @@ else:
                     _rot[_k] = (f"{_l['periodo']} · " if "periodo" in _l.index else "") + \
                         f"{_l['numero_nota']} · {str(_l.get('fornecedor_nome') or '')[:30]} · " \
                         f"{nf_export.ROTULO_STATUS.get(_l['status'], _l['status'])}"
-                chave_sel = st.selectbox("Nota", _chaves, format_func=lambda k: _rot.get(k, k), key="nf_pendencia_nota_sel")
+                chave_sel = st.selectbox("Nota", _chaves, format_func=lambda k: _rot.get(k, k), key="nf_pendencia_nota_sel",
+                                         on_change=_manter, args=("nf_exp_status",))
                 novo_status = st.selectbox(
                     "Novo status", ["PENDENTE", "ENVIADO_SUPRIMENTOS", "RESOLVIDO", "DESCARTADO"],
-                    key="nf_pendencia_status_sel",
+                    key="nf_pendencia_status_sel", on_change=_manter, args=("nf_exp_status",),
                 )
-                if st.button("Salvar status", key="nf_btn_salvar_status"):
+                if st.button("Salvar status", key="nf_btn_salvar_status", on_click=_manter, args=("nf_exp_status",)):
                     # FIX_20260928f: origem + registro_id (= manifesto_id ou orfao_id) vem pronto da linha
                     # selecionada -- nunca casa por numero_nota (2 notas podem ter o mesmo numero).
                     _origem, _rid = chave_sel.split(":")
@@ -702,15 +717,18 @@ else:
                         _rot_a[_k] = (f"{_marca}{_l['periodo']} · {_l['numero_nota']} · "
                                       f"{str(_l.get('fornecedor_nome') or '')[:30]} · "
                                       f"{nf_export.ROTULO_STATUS.get(_l['status'], _l['status'])}")
-                    ref_sel = st.selectbox("Linha", _refs, format_func=lambda k: _rot_a.get(k, k), key="nf_anot_linha")
+                    ref_sel = st.selectbox("Linha", _refs, format_func=lambda k: _rot_a.get(k, k), key="nf_anot_linha",
+                                       on_change=_manter, args=("nf_anot_aberto",))
                     _linha_a = pendencias_df[pendencias_df["chave_ref"] == ref_sel].iloc[0]
                     _atual_a = _linha_a.get("anotacao") if isinstance(_linha_a.get("anotacao"), str) else ""
                     if _atual_a:
                         st.caption(f"Anotação atual: {_atual_a}")
                     _modelos = ["(escrever livremente)"] + MODELOS_ANOTACAO
-                    modelo = st.selectbox("Modelo rápido (opcional)", _modelos, key="nf_anot_modelo")
+                    modelo = st.selectbox("Modelo rápido (opcional)", _modelos, key="nf_anot_modelo",
+                                      on_change=_manter, args=("nf_anot_aberto",))
                     _n_anot = st.session_state.get("nf_anot_n", 0)     # muda a chave depois de salvar -> o campo volta vazio
-                    texto_livre = st.text_input("Complemento / texto livre", key=f"nf_anot_texto_{_n_anot}", max_chars=500)
+                    texto_livre = st.text_input("Complemento / texto livre", key=f"nf_anot_texto_{_n_anot}", max_chars=500,
+                                              on_change=_manter, args=("nf_anot_aberto",))
                     b1, b2 = st.columns(2)
                     if b1.button("Salvar anotação", key="nf_btn_salvar_anot", type="primary"):
                         _partes = [x for x in ((modelo if modelo != _modelos[0] else ""), texto_livre.strip()) if x]
@@ -748,7 +766,7 @@ def _rotulo_envio(e: dict) -> str:
             f"{nf_export.rotulo_periodos(e['periodos'])} · enviado {formatacao.hora_br(e['enviado_em'])}")
 
 
-with st.expander("🗃️ Arquivar ou restaurar um envio (subiu o arquivo errado?)"):
+with st.expander("🗃️ Arquivar ou restaurar um envio (subiu o arquivo errado?)", expanded=_aberto("nf_exp_arq")):
     st.caption(
         "**Nada é apagado.** Arquivar tira o envio (todos os meses daquele arquivo) das conferências, dos totais, dos "
         "downloads e do assistente; se existia um envio anterior do mesmo mês, ele volta a valer. O envio arquivado fica "
@@ -776,7 +794,8 @@ with st.expander("🗃️ Arquivar ou restaurar um envio (subiu o arquivo errado
             st.caption("Nenhum envio ativo.")
         else:
             _id_arq = st.selectbox("Envio", [e["envio_id"] for e in _ativos], key="nf_arq_sel",
-                                   format_func=lambda i: _rotulo_envio(_por_envio[i]))
+                                   format_func=lambda i: _rotulo_envio(_por_envio[i]),
+                                   on_change=_manter, args=("nf_exp_arq",))
             _e = _por_envio[_id_arq]
             try:
                 _previa = nf_sienge.previa_arquivamento(conn, _e["import_ids"])
@@ -788,10 +807,11 @@ with st.expander("🗃️ Arquivar ou restaurar um envio (subiu o arquivo errado
                     f"volta a valer o envio anterior ({_p['passa_a_valer']})" if _p["passa_a_valer"]
                     else "fica sem conferência (não há outro envio desse mês)"))
             _motivo = st.text_input("Motivo (opcional)", key=f"nf_arq_motivo_{_id_arq}",
-                                    placeholder="ex.: arquivo da empresa errada")
+                                    placeholder="ex.: arquivo da empresa errada",
+                                    on_change=_manter, args=("nf_exp_arq",))
             _ok = st.checkbox("Confirmo: arquivar este envio (nada é apagado; dá para restaurar depois)",
-                              key=f"nf_arq_ok_{_id_arq}")
-            if st.button("🗃️ Arquivar envio", key="nf_btn_arquivar", disabled=not _ok):
+                              key=f"nf_arq_ok_{_id_arq}", on_change=_manter, args=("nf_exp_arq",))
+            if st.button("🗃️ Arquivar envio", key="nf_btn_arquivar", disabled=not _ok, on_click=_manter, args=("nf_exp_arq",)):
                 try:
                     _res = nf_sienge.arquivar_envio(conn, _e["import_ids"], usuario, _motivo)
                 except nf_sienge.ArquivamentoIndisponivel as exc:
@@ -826,11 +846,12 @@ with st.expander("🗃️ Arquivar ou restaurar um envio (subiu o arquivo errado
                 "Arquivado em": formatacao.hora_br(e["arquivado_em"]),
                 "Arquivado por": e.get("arquivado_por") or "",
                 "Motivo": e.get("arquivado_motivo") or "",
-            } for e in _arquivados]), hide_index=True, use_container_width=True)
+            } for e in _arquivados]), hide_index=True, width="stretch")
             _id_rest = st.selectbox("Restaurar o envio", [e["envio_id"] for e in _arquivados], key="nf_rest_sel",
-                                    format_func=lambda i: _rotulo_envio(_por_envio[i]))
+                                    format_func=lambda i: _rotulo_envio(_por_envio[i]),
+                                    on_change=_manter, args=("nf_exp_arq",))
             st.caption("Restaurar põe o envio de volta na disputa: em cada mês vale o envio mais recente.")
-            if st.button("♻️ Restaurar envio", key="nf_btn_restaurar"):
+            if st.button("♻️ Restaurar envio", key="nf_btn_restaurar", on_click=_manter, args=("nf_exp_arq",)):
                 _e = _por_envio[_id_rest]
                 try:
                     nf_sienge.restaurar_envio(conn, _e["import_ids"], usuario)
@@ -868,14 +889,15 @@ with st.expander("🗂️ Histórico de arquivos enviados (auditoria)"):
         df_hist = df_hist.rename(columns={"periodo_referencia": "Período", "total_notas": "Notas",
                                            "arquivo_nome": "Arquivo", "usuario": "Enviado por"})
         st.dataframe(df_hist[["Enviado em", "Empresa", "Período", "Situação", "Notas", "Arquivo", "Enviado por"]],
-                     hide_index=True, use_container_width=True)
+                     hide_index=True, width="stretch")
 
 # ─────────────────────────── Log de eventos desta tela ───────────────────────
 # v0.46.0: tudo que esta tela (e o sync diario das 04h) faz ou falha vai pra egc.eventos_sistema
 # (origem "notas_fiscais"). Aqui da' pra ler sem abrir o Supabase -- e' por onde se acha o que quebrou.
 st.divider()
-with st.expander("📋 Log de eventos de Notas Fiscais (envios, arquivamentos, sincronizações e erros)"):
-    _so_erros = st.checkbox("Mostrar só os erros", key="nf_log_so_erros")
+with st.expander("📋 Log de eventos de Notas Fiscais (envios, arquivamentos, sincronizações e erros)",
+                 expanded=_aberto("nf_exp_log")):
+    _so_erros = st.checkbox("Mostrar só os erros", key="nf_log_so_erros", on_change=_manter, args=("nf_exp_log",))
     try:
         _eventos = db.listar_eventos_recentes(conn, limite=60, origem="notas_fiscais", nivel="ERRO" if _so_erros else None)
     except Exception as exc:
@@ -889,4 +911,4 @@ with st.expander("📋 Log de eventos de Notas Fiscais (envios, arquivamentos, s
         _df_ev["Quando"] = _df_ev["criado_em"].apply(formatacao.hora_br)
         _df_ev = _df_ev.rename(columns={"nivel": "Nível", "usuario": "Usuário", "mensagem": "Mensagem", "detalhe": "Detalhe"})
         st.dataframe(_df_ev[["Quando", "Nível", "Empresa", "Usuário", "Mensagem", "Detalhe"]],
-                     hide_index=True, use_container_width=True)
+                     hide_index=True, width="stretch")

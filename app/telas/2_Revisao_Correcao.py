@@ -110,7 +110,7 @@ with st.expander("🔎 Achei uma conta que editei e não lembro onde? Busque aqu
         st.dataframe(
             df_manuais[["Empresa", "Período", "Tipo", "Conta", "Valor do PDF", "Valor atual",
                         "Usuário", "Corrigido em"]],
-            hide_index=True, use_container_width=True,
+            hide_index=True, width="stretch",
         )
 
 nomes_emp = [f"{nome} ({cod})" for cod, nome, _cnpj in EMPRESAS_FIXAS]
@@ -238,7 +238,7 @@ for cod, periodo, granularidade in combinacoes:
             df_edit = st.data_editor(
                 df,
                 column_config=COLUMN_CONFIG,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 key=f"editor_{cod}_{periodo}_{granularidade}_{tipo}_v{st.session_state.get('revisao_editor_versao', 0)}",
             )
@@ -357,5 +357,5 @@ with st.expander("📋 Log de eventos desta tela (últimas correções, mais rec
         })
         st.dataframe(
             df_eventos[["Quando", "Nível", "Empresa", "Período", "Usuário", "Mensagem", "Detalhe (conta: valor antigo → novo)"]],
-            hide_index=True, use_container_width=True,
+            hide_index=True, width="stretch",
         )
