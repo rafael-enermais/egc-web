@@ -432,3 +432,63 @@ def test_nf_log_de_eventos_aparece_na_tela_e_filtra_so_erros():
         at.checkbox(key="nf_log_so_erros").check().run(timeout=30)
         assert chamadas[-1] == ("ERRO", "notas_fiscais")
         assert any("Falha ao arquivar envio" in str(d.value.to_dict("records")) for d in at.dataframe)
+
+
+def _tela_anotacao(disponivel=True, salvar=None):
+    chamadas = {"salvar": []}
+
+    def _salvar(conn, emp, ref, texto, usuario):
+        chamadas["salvar"].append((emp, ref, texto, usuario))
+
+    patches = [
+        patch.object(auth, "usuario_atual", return_value="t@enermais.com.br"),
+        patch.object(conexao, "get_conn", return_value=None),
+        patch.object(nf_sienge, "ultima_sincronizacao", return_value=datetime.datetime(2026, 10, 1, 4, 0)),
+        patch.object(nf_sienge, "resumo_vigentes", return_value=VIG),
+        patch.object(nf_sienge, "listar_historico_importacoes", return_value=HIST),
+        patch.object(nf_sienge, "listar_envios", return_value=[]),
+        patch.object(nf_sienge, "tem_anotacao", return_value=disponivel),
+        patch.object(nf_sienge, "carregar_anotacoes", return_value={}),
+        patch.object(nf_sienge, "salvar_anotacao", side_effect=salvar or _salvar),
+        patch.object(nf_sienge, "listar_conciliacao", side_effect=lambda c, i: _tabela(i)),
+        patch.object(nf_sienge, "listar_orfaos_sienge", return_value=pd.DataFrame()),
+        patch.object(db, "registrar_evento", return_value=None),
+    ]
+    return patches, chamadas
+
+
+def test_nf_anotar_pendencia_chama_salvar_anotacao_com_modelo_e_complemento():
+    patches, chamadas = _tela_anotacao()
+    with _entrar(patches):
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        assert not at.exception, at.exception
+        at.selectbox(key="nf_anot_modelo").select("Aguardando o fornecedor reemitir/corrigir a nota")
+        at.text_input(key="nf_anot_texto").set_value("prometeu até sexta")
+        at.run(timeout=30)
+        at.button(key="nf_btn_salvar_anot").click().run(timeout=30)
+        assert not at.exception, at.exception
+        assert len(chamadas["salvar"]) == 1
+        emp, ref, texto, usuario = chamadas["salvar"][0]
+        assert emp == "ENERGIA" and ref.startswith("ENERGIA|") and usuario == "t@enermais.com.br"
+        assert texto == "Aguardando o fornecedor reemitir/corrigir a nota — prometeu até sexta"
+
+
+def test_nf_anotar_sem_texto_nem_modelo_avisa_e_nao_grava():
+    patches, chamadas = _tela_anotacao()
+    with _entrar(patches):
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        at.button(key="nf_btn_salvar_anot").click().run(timeout=30)
+        assert not at.exception, at.exception
+        assert chamadas["salvar"] == [] and any("Escolha um modelo" in w.value for w in at.warning)
+
+
+def test_nf_anotar_sem_bloco_24_explica_em_vez_de_quebrar():
+    patches, _ = _tela_anotacao(disponivel=False)
+    with _entrar(patches):
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        assert not at.exception, at.exception
+        assert any("BLOCO 24" in i.value for i in at.info)
+        assert not any(b.key == "nf_btn_salvar_anot" for b in at.button)

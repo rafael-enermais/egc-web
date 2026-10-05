@@ -770,6 +770,25 @@ def listar_debtors_sienge(conn) -> pd.DataFrame:
                GROUP BY debtor_id ORDER BY COUNT(*) DESC"""
         )
         df = pd.DataFrame(cur.fetchall(), columns=["debtor_id", "titulos"])
+    # v0.46.3: 3 titulos recentes de cada devedor (nº, credor, valor) pra conferir no Sienge a que empresa pertence.
+    exemplos: dict = {}
+    if not df.empty:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT debtor_id, bill_id, document_identification_id, document_number, creditor_nome, total_invoice_amount
+                   FROM (
+                     SELECT b.debtor_id, b.bill_id, b.document_identification_id, b.document_number,
+                            COALESCE(cr.nome, 'credor ' || b.creditor_id::text) AS creditor_nome, b.total_invoice_amount,
+                            ROW_NUMBER() OVER (PARTITION BY b.debtor_id ORDER BY b.issue_date DESC NULLS LAST, b.bill_id DESC) AS rn
+                     FROM egc.nf_bills_sync b
+                     LEFT JOIN egc.nf_creditors_sync cr ON cr.creditor_id = b.creditor_id
+                     WHERE b.debtor_id IS NOT NULL AND UPPER(TRIM(b.document_identification_id)) IN ('NFE','NF')
+                   ) x WHERE rn <= 3 ORDER BY debtor_id, rn"""
+            )
+            for d, bid, tipo, num, cred, val in cur.fetchall():
+                exemplos.setdefault(int(d), []).append(
+                    f"título {bid} ({(tipo or '').strip()} {num}) · {str(cred or '')[:28]} · R$ {float(val or 0):,.2f}")
+    df["exemplos"] = df["debtor_id"].map(lambda d: exemplos.get(int(d), []))
     manual = carregar_mapa_debtor_manual(conn)
     historico = _historico_debtor_empresas(conn)
     # aprendida = so' quando o historico aponta UMA empresa (e nao ha' manual)
@@ -1794,6 +1813,109 @@ def buscar_notas(conn, numero: Optional[str] = None, fornecedor: Optional[str] =
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
+# ───────────── v0.46.3: observacao automatica de combustivel + anotacoes da contadora ─────────────
+# CFOP de compra de combustivel/lubrificante (posto, distribuidora). Na Energia 01-08/2026 foram 59% das "Nao
+# encontradas" (461 de 783) e so' 6,5% das notas com esses CFOP estao lancadas no Sienge: na pratica nao passam
+# pelo contas a pagar. E' so' uma PISTA (a linha segue nas pendencias, nada e' excluido); a contadora decide.
+CFOPS_COMBUSTIVEL = frozenset({"5929", "5667", "5656"})
+OBS_COMBUSTIVEL = ("Provável compra de combustível (CFOP 5929/5667/5656) — em geral não passa pelo contas a pagar; "
+                   "confirmar se é caso de lançar.")
+
+
+def observacao_combustivel(cfop) -> Optional[str]:
+    """Texto da pista 'provavel fora do AP' quando TODOS os CFOP da nota sao de combustivel; senao None."""
+    if cfop is None or (not isinstance(cfop, str)):
+        return None
+    codigos = [c for c in re.split(r"\D+", cfop) if c]
+    if codigos and all(c in CFOPS_COMBUSTIVEL for c in codigos):
+        return OBS_COMBUSTIVEL
+    return None
+
+
+_TAB_ANOTACAO = {"ok": False}
+
+
+def tem_anotacao(conn) -> bool:
+    """True se a tabela egc.nf_anotacao existe (bloco 24). Sem ela o app segue sem a coluna Anotacao."""
+    if _TAB_ANOTACAO["ok"]:
+        return True
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('egc.nf_anotacao') IS NOT NULL")
+        achou = bool(cur.fetchone()[0])
+    if achou:
+        _TAB_ANOTACAO["ok"] = True
+    return achou
+
+
+def _num_normalizado(numero) -> str:
+    d = re.sub(r"\D", "", str(numero or "")).lstrip("0")
+    return d or "0"
+
+
+def chave_anotacao(origem: str, empresa_codigo: str, numero_nota=None, cnpj=None, bill_id=None) -> str:
+    """Chave estavel da anotacao: sobrevive a novo upload, 'Atualizar agora' e arquivar/restaurar.
+    Nota do manifesto = empresa|cnpj|numero (iguais ao matching); titulo do Sienge sem nota = empresa|bill|id."""
+    if origem == "SIENGE_ORFAO":
+        if bill_id is not None and not pd.isna(bill_id):
+            return f"{empresa_codigo}|bill|{int(bill_id)}"
+        return f"{empresa_codigo}|orfao|{numero_nota}"
+    cnpj_digitos = re.sub(r"\D", "", str(cnpj or ""))
+    return f"{empresa_codigo}|{cnpj_digitos}|{_num_normalizado(numero_nota)}"
+
+
+def carregar_anotacoes(conn, empresa_codigos) -> dict:
+    """{chave_ref: texto} das empresas pedidas ({} sem a tabela)."""
+    if not tem_anotacao(conn):
+        return {}
+    with conn.cursor() as cur:
+        cur.execute("SELECT chave_ref, texto FROM egc.nf_anotacao WHERE empresa_codigo = ANY(%s)",
+                    (list(empresa_codigos),))
+        return {r[0]: r[1] for r in cur.fetchall()}
+
+
+def salvar_anotacao(conn, empresa_codigo: str, chave_ref: str, texto: str, usuario: str) -> None:
+    """Grava (ou, com texto vazio, remove) a anotacao da linha. Exige o bloco 24."""
+    if not tem_anotacao(conn):
+        raise RuntimeError("Anotações ainda não estão disponíveis: falta rodar o BLOCO 24 no Supabase.")
+    texto = (texto or "").strip()
+    with conn.cursor() as cur:
+        if not texto:
+            cur.execute("DELETE FROM egc.nf_anotacao WHERE chave_ref = %s", (chave_ref,))
+        else:
+            cur.execute(
+                """INSERT INTO egc.nf_anotacao (chave_ref, empresa_codigo, texto, atualizado_por, atualizado_em)
+                   VALUES (%s, %s, %s, %s, now())
+                   ON CONFLICT (chave_ref) DO UPDATE SET texto = EXCLUDED.texto,
+                       atualizado_por = EXCLUDED.atualizado_por, atualizado_em = now()""",
+                (chave_ref, empresa_codigo, texto[:1000], usuario),
+            )
+
+
+def _enriquecer_conferencia(conn, tabela: pd.DataFrame, empresas: list) -> pd.DataFrame:
+    """Acrescenta chave_ref (interna), anotacao (editavel pela contadora) e a pista de combustivel na observacao."""
+    if tabela.empty:
+        return tabela
+    t = tabela.copy()
+    t["chave_ref"] = [
+        chave_anotacao(o, e, numero_nota=n, cnpj=c, bill_id=b)
+        for o, e, n, c, b in zip(t["origem"], t["empresa_codigo"], t["numero_nota"], t["fornecedor_cnpj"],
+                                 t["sienge_bill_id"])
+    ]
+    try:
+        notas = carregar_anotacoes(conn, empresas)
+    except Exception:
+        notas = {}
+    t["anotacao"] = t["chave_ref"].map(notas)
+    obs = t["observacao"].copy()
+    for i in t.index[t["status"] == "NAO_ENCONTRADA"]:
+        pista = observacao_combustivel(t.at[i, "cfop"])
+        if pista and (pd.isna(obs.at[i]) or not obs.at[i]):
+            obs.at[i] = pista
+    t["observacao"] = obs
+    return t
+
+
+
 def tabela_conferencia(conn, vigentes: list) -> pd.DataFrame:
     """v0.46.0: conferencia de VARIOS periodos numa tabela so' (notas do manifesto + titulos do Sienge sem
     nota), com a coluna `periodo`. `vigentes` = itens de resumo_vigentes/listar_vigentes (import_id +
@@ -1810,10 +1932,12 @@ def tabela_conferencia(conn, vigentes: list) -> pd.DataFrame:
         if not t.empty:
             t = t.copy()
             t.insert(0, "periodo", v["periodo_referencia"])
+            t["empresa_codigo"] = v["empresa_codigo"]
             partes.append(t)
     if not partes:
         return pd.DataFrame()
-    return pd.concat(partes, ignore_index=True)
+    return _enriquecer_conferencia(conn, pd.concat(partes, ignore_index=True),
+                                   sorted({v["empresa_codigo"] for v in vigentes}))
 
 
 def ignoradas_conferencia(conn, vigentes: list) -> pd.DataFrame:
