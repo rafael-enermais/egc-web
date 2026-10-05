@@ -73,6 +73,12 @@ def numero_br(v: Optional[float], sufixo: str = "", vazio: str = "—", forcar_s
 _TZ_BR = _dt.timezone(_dt.timedelta(hours=-3))  # America/Sao_Paulo, sem horario de verao desde 2019
 
 
+def agora_br(formato: str = "%d/%m/%Y %H:%M") -> str:
+    """Hora ATUAL de Brasilia formatada. O servidor roda em UTC: datetime.now()
+    naive imprimia 3h a frente (v0.46.2)."""
+    return _dt.datetime.now(_TZ_BR).strftime(formato)
+
+
 def hora_br(v, vazio: str = "—", formato: str = "%d/%m/%Y %H:%M") -> str:
     """Formata um datetime pro horario de Brasilia antes de exibir.
 
