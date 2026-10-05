@@ -73,15 +73,21 @@ def require_login() -> str:
         client = _auth_client()
         st.title("EGC — Gestão Contábil EnerMais")
         st.subheader("Login")
-        email = st.text_input("E-mail")
-        senha = st.text_input("Senha", type="password")
-        if st.button("Entrar", type="primary"):
-            try:
-                resp = client.auth.sign_in_with_password({"email": email, "password": senha})
-                st.session_state["auth_session"] = resp.session
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Login inválido: {exc}")
+        # v0.46.4: st.form -> apertar ENTER no campo envia o login (antes so' o clique em "Entrar").
+        with st.form("login_egc", clear_on_submit=False):
+            email = st.text_input("E-mail")
+            senha = st.text_input("Senha", type="password")
+            enviou = st.form_submit_button("Entrar", type="primary")
+        if enviou:
+            if not email.strip() or not senha:
+                st.error("Informe o e-mail e a senha.")
+            else:
+                try:
+                    resp = client.auth.sign_in_with_password({"email": email.strip(), "password": senha})
+                    st.session_state["auth_session"] = resp.session
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Login inválido: {exc}")
         st.stop()
         return ""  # inalcancavel
 

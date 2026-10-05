@@ -464,7 +464,7 @@ def test_nf_anotar_pendencia_chama_salvar_anotacao_com_modelo_e_complemento():
         at.run(timeout=30)
         assert not at.exception, at.exception
         at.selectbox(key="nf_anot_modelo").select("Aguardando o fornecedor reemitir/corrigir a nota")
-        at.text_input(key="nf_anot_texto").set_value("prometeu até sexta")
+        at.text_input(key="nf_anot_texto_0").set_value("prometeu até sexta")
         at.run(timeout=30)
         at.button(key="nf_btn_salvar_anot").click().run(timeout=30)
         assert not at.exception, at.exception

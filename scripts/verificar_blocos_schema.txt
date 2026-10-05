@@ -1,0 +1,25 @@
+-- EGC-WEB | CONFERE se TODOS os blocos do schema.sql ja foram rodados no Supabase (so' leitura, pode rodar quando quiser).
+-- Resultado VAZIO (0 linhas) = tudo certo. Cada linha devolvida = algo que falta (o texto diz o que).
+WITH esperado_tabelas(t) AS (VALUES
+  ('chat_acao'),('chat_mensagem'),('config_relatorio'),('contatos_relatorio'),('contexto_fiscal'),
+  ('despesas_admin_itens'),('empresas'),('eventos_sistema'),('importacoes'),('lancamentos'),('nf_anotacao'),
+  ('nf_bills_orfaos'),('nf_bills_sync'),('nf_conciliacao'),('nf_creditors_sync'),('nf_debtor_empresa'),
+  ('nf_import_historico'),('nf_manifesto_ignoradas'),('nf_manifesto_import'),('projecoes'),('projecoes_ajustes'),
+  ('relatorios_gerados'),('textos_relatorio')),
+esperado_colunas(t, c) AS (VALUES
+  ('lancamentos','granularidade'),('lancamentos','lote'),('lancamentos','periodo_inicio'),
+  ('nf_manifesto_import','arquivado_em'),('nf_manifesto_import','arquivado_motivo'),
+  ('nf_manifesto_import','arquivado_por'),('nf_manifesto_import','lote_id'))
+SELECT 'FALTA TABELA egc.' || t AS problema FROM esperado_tabelas WHERE to_regclass('egc.' || t) IS NULL
+UNION ALL
+SELECT 'FALTA COLUNA egc.' || e.t || '.' || e.c FROM esperado_colunas e
+  WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns i WHERE i.table_schema='egc' AND i.table_name=e.t AND i.column_name=e.c)
+UNION ALL
+SELECT 'FALTA status LANCADA_OUTRA_EMPRESA na regra de egc.nf_conciliacao (bloco 19)'
+  WHERE NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = to_regclass('egc.nf_conciliacao')
+                    AND pg_get_constraintdef(oid) LIKE '%LANCADA_OUTRA_EMPRESA%')
+UNION ALL
+SELECT 'FALTA mapa do devedor ' || d || ' em egc.nf_debtor_empresa (confirmar na tela de Notas Fiscais)'
+  FROM (VALUES (1),(2),(3),(4),(5),(6),(21)) v(d)
+  WHERE to_regclass('egc.nf_debtor_empresa') IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM egc.nf_debtor_empresa m WHERE m.debtor_id = v.d);
