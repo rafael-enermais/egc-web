@@ -61,8 +61,8 @@ def test_dois_meses_juntos_nao_deixam_orfao_de_borda(conn):
     _bill(conn, 1, "10", 100.0, "2026-07-20")
     _bill(conn, 2, "20", 200.0, "2026-08-02")     # titulo de agosto, perto da fronteira de julho
     jul = _import(conn, "ENERGIA", "07/2026", [("10", 100.0, "2026-07-20")])
-    # como era: julho conferido ANTES de agosto existir -> titulo de agosto vira orfao de julho
-    assert nf_sienge.conciliar_import(conn, jul)["orfaos_sienge"] == 1
+    # v0.45.2: titulo de agosto NAO e' orfao de julho nem com julho conferido sozinho (so' o mes-calendario conta)
+    assert nf_sienge.conciliar_import(conn, jul)["orfaos_sienge"] == 0
     ago = _import(conn, "ENERGIA", "08/2026", [("20", 200.0, "2026-08-01")])
     res = nf_sienge.reconferir_empresa(conn, "ENERGIA")
     assert set(res) == {"07/2026", "08/2026"}
@@ -185,3 +185,52 @@ def test_numero_divergente_exige_numero_parecido(conn):
     _import(conn, "ENERGIA", "07/2026", [("14327", 2753.2, "2026-07-06")])       # recorrente: mesmo valor, outro numero
     r = nf_sienge.reconferir_empresa(conn, "ENERGIA")["07/2026"]
     assert (r["numero_divergente"], r["nao_encontradas"]) == (0, 1)
+
+
+# ───────────────────────── v0.45.2: orfao so' no mes-calendario do periodo ─────────────────────────
+
+def test_orfao_aparece_em_um_unico_periodo_e_so_no_proprio_mes(conn):
+    # titulos sem nota: 28/06 (junho), 02/07 e 31/07 (julho), 02/08 (agosto), 02/09 (setembro, sem manifesto)
+    for i, (num, data) in enumerate([("90", "2026-06-28"), ("91", "2026-07-02"), ("92", "2026-07-31"),
+                                     ("93", "2026-08-02"), ("94", "2026-09-02")], start=1):
+        _bill(conn, i, num, 10.0 * i, data)
+    jul = _import(conn, "ENERGIA", "07/2026", [("10", 1.0, "2026-07-10")])
+    ago = _import(conn, "ENERGIA", "08/2026", [("20", 1.0, "2026-08-10")])
+    nf_sienge.reconferir_empresa(conn, "ENERGIA")
+    o_jul = nf_sienge.listar_orfaos_sienge(conn, jul)
+    o_ago = nf_sienge.listar_orfaos_sienge(conn, ago)
+    assert sorted(o_jul["sienge_bill_id"]) == [2, 3]          # so' 02/07 e 31/07
+    assert sorted(o_ago["sienge_bill_id"]) == [4]             # so' 02/08; 02/09 nao tem manifesto
+    with conn.cursor() as cur:                                # nenhum titulo em 2 periodos
+        cur.execute("SELECT count(*), count(DISTINCT bill_id) FROM egc.nf_bills_orfaos")
+        assert cur.fetchone() == (3, 3)
+
+
+def test_titulo_do_mes_seguinte_que_casa_com_nota_nao_vira_orfao(conn):
+    _bill(conn, 1, "10", 100.0, "2026-08-02")   # nota autorizada em 31/07, lancada no Sienge em 02/08
+    jul = _import(conn, "ENERGIA", "07/2026", [("10", 100.0, "2026-07-31")])
+    res = nf_sienge.reconferir_empresa(conn, "ENERGIA")["07/2026"]
+    assert res["lancadas"] == 1 and res["orfaos_sienge"] == 0
+    assert nf_sienge.listar_orfaos_sienge(conn, jul).empty
+
+
+def test_janela_orfaos_e_o_mes_calendario():
+    ini, fim = nf_sienge.janela_orfaos("02/2026", None, None)
+    assert (str(ini.date()), str(fim.date())) == ("2026-02-01", "2026-02-28")
+    ini, fim = nf_sienge.janela_orfaos(" 8 / 2026 ", None, None)
+    assert (str(ini.date()), str(fim.date())) == ("2026-08-01", "2026-08-31")
+    assert nf_sienge.janela_orfaos("julho", None, None) is None
+    # periodo fora do padrao: cai no min/max das notas +-15 dias
+    import pandas as pd
+    ini, fim = nf_sienge.janela_orfaos("julho", pd.Timestamp("2026-07-10"), pd.Timestamp("2026-07-20"))
+    assert (str(ini.date()), str(fim.date())) == ("2026-06-25", "2026-08-04")
+
+
+def test_orfaos_abertos_do_chat_so_olham_a_conferencia_vigente(conn):
+    _bill(conn, 1, "91", 10.0, "2026-07-05")
+    antigo = _import(conn, "ENERGIA", "07/2026", [("10", 1.0, "2026-07-10")], criado_em="2026-10-01")
+    nf_sienge.reconferir_empresa(conn, "ENERGIA")
+    novo = _import(conn, "ENERGIA", "07/2026", [("10", 1.0, "2026-07-10")])
+    nf_sienge.reconferir_empresa(conn, "ENERGIA")
+    df = nf_sienge.listar_orfaos_abertos(conn, "ENERGIA")
+    assert len(df) == 1                       # antes da v0.45.2 o import antigo (substituido) contava de novo

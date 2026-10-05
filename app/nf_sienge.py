@@ -886,29 +886,49 @@ def avisos_conciliacao(conn, import_id: str, empresa_codigo: str) -> list:
     return avisos
 
 
+def janela_orfaos(periodo_referencia, data_min, data_max):
+    """Intervalo de datas (issue_date do titulo) em que um titulo do Sienge pode ser "Sienge sem
+    manifesto" de UM periodo.
+
+    v0.45.2: e' o MES-CALENDARIO do periodo ("08/2026" -> 01/08 a 31/08), sem folga. Antes era
+    min/max das notas do import +-15 dias: as janelas de meses vizinhos se sobrepunham (o mesmo titulo
+    virava orfao de 2 ou 3 periodos) e o ultimo mes pegava titulos do mes seguinte, que ainda nem tem
+    manifesto. Titulo que pertence a nota de outro mes nao precisa de folga: ele casa com a nota (o
+    casamento nao depende de data) e some dos orfaos. Periodo fora do padrao MM/AAAA: cai no
+    comportamento antigo (min/max das notas +-JANELA_DATA_ORFAOS_DIAS). Devolve (inicio, fim) ou None."""
+    m = re.match(r"^\s*(\d{1,2})\s*/\s*(\d{4})\s*$", str(periodo_referencia or ""))
+    if m and 1 <= int(m.group(1)) <= 12:
+        ini = pd.Timestamp(year=int(m.group(2)), month=int(m.group(1)), day=1)
+        return ini, ini + pd.offsets.MonthEnd(0)
+    if data_min and data_max:
+        folga = pd.Timedelta(days=JANELA_DATA_ORFAOS_DIAS)
+        return pd.Timestamp(data_min) - folga, pd.Timestamp(data_max) + folga
+    return None
+
+
 def identificar_e_gravar_bills_orfaos(conn, import_id: str, empresa_codigo: str) -> int:
     """
     Roda o filtro reverso pra um import_id (chamado por conciliar_import,
     logo depois do matching normal) e grava o resultado em
     egc.nf_bills_orfaos. Idempotente como conciliar_import: apaga e
     regrava os órfãos deste import_id, preservando pendencia_status já
-    setado manualmente. Janela de datas = min/max data_emissao das notas
-    deste import, +-JANELA_DATA_ORFAOS_DIAS (emissão e lançamento no
-    Sienge raramente caem no mesmo dia). Sem nenhuma data_emissao no
-    manifesto, não dá pra montar a janela -- não arrisca, devolve 0.
+    setado manualmente. Janela de datas = mes-calendario do periodo do import
+    (janela_orfaos, v0.45.2: cada titulo so' e' orfao do mes da sua data, e so'
+    se esse mes tem manifesto). Periodo fora do padrao e sem nenhuma
+    data_emissao no manifesto: nao da' pra montar a janela -- nao arrisca,
+    devolve 0.
     """
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT MIN(data_emissao), MAX(data_emissao) FROM egc.nf_manifesto_import WHERE import_id = %s",
+            "SELECT MIN(data_emissao), MAX(data_emissao), MAX(periodo_referencia) "
+            "FROM egc.nf_manifesto_import WHERE import_id = %s",
             (import_id,),
         )
-        data_min, data_max = cur.fetchone() or (None, None)
-    if not data_min or not data_max:
+        data_min, data_max, periodo = cur.fetchone() or (None, None, None)
+    janela = janela_orfaos(periodo, data_min, data_max)
+    if janela is None:
         return 0
-
-    janela = pd.Timedelta(days=JANELA_DATA_ORFAOS_DIAS)
-    data_min_janela = pd.Timestamp(data_min) - janela
-    data_max_janela = pd.Timestamp(data_max) + janela
+    data_min_janela, data_max_janela = janela
 
     try:
         mapa_debtor = _mapear_debtor_para_empresa(conn)
@@ -1497,6 +1517,10 @@ def listar_orfaos_abertos(conn, empresa_codigo: Optional[str] = None, limite: in
                    o.pendencia_status, o.atualizado_em, o.id AS registro_id,
                    mx.cfop AS mx_cfop, mx.valor AS mx_valor, mx.emp AS mx_empresa, mx.per AS mx_periodo
             FROM egc.nf_bills_orfaos o
+            JOIN (SELECT DISTINCT ON (empresa_codigo, periodo_referencia) import_id
+                  FROM (SELECT import_id, empresa_codigo, periodo_referencia, MAX(criado_em) AS ult
+                        FROM egc.nf_manifesto_import GROUP BY import_id, empresa_codigo, periodo_referencia) z
+                  ORDER BY empresa_codigo, periodo_referencia, ult DESC) vig ON vig.import_id = o.import_id
             LEFT JOIN egc.nf_import_historico h ON h.import_id = o.import_id
             LEFT JOIN LATERAL (
                 SELECT mm.cfop, mm.valor, mm.empresa_codigo AS emp, mm.periodo_referencia AS per
