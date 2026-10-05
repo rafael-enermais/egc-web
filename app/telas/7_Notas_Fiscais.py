@@ -19,6 +19,9 @@ Fluxo (v0.45.0 -- "conferência viva"; ver EGC 00-handoff.md):
      a compra lança a nota no Sienge -> grava em egc.nf_conciliacao.
   4. Tabela empresa × período + KPIs + tabela de conferência + export .xlsx
      de pendências (pra mandar pro Suprimentos verificar no Sienge).
+  5. (v0.46.0) O detalhe e os downloads juntam QUALQUER conjunto de meses da empresa (1 arquivo
+     com 8 meses = 1 planilha). "Arquivar envio" desfaz um upload sem apagar nada (restaurável),
+     e o log de eventos da tela (egc.eventos_sistema, origem notas_fiscais) fica no fim da página.
 
 Pendências têm lastro: mudar o status (Enviado ao Suprimentos / Resolvido
 / Descartado) NUNCA apaga a linha, só atualiza egc.nf_conciliacao.pendencia_status
@@ -26,6 +29,7 @@ com quem/quando mudou -- histórico completo fica em nf_import_historico.
 """
 import io
 import sys
+import uuid
 import datetime as _dt
 from pathlib import Path
 
@@ -54,6 +58,12 @@ conn = get_conn()
 
 
 def _log_erro(mensagem: str, detalhe: str = "", empresa_codigo: str | None = None) -> None:
+    """Grava o erro em eventos_sistema (tela "Revisão") -- e NUNCA derruba a tela. O mesmo erro nao e'
+    regravado a cada interacao da mesma sessao (a tela roda de novo a cada clique)."""
+    _visto = st.session_state.setdefault("_nf_erros_logados", set())
+    if (mensagem, detalhe) in _visto:
+        return
+    _visto.add((mensagem, detalhe))
     try:
         db.registrar_evento(conn, "notas_fiscais", "ERRO", mensagem, usuario=usuario,
                              detalhe=detalhe or None, empresa_codigo=empresa_codigo)
@@ -92,8 +102,9 @@ st.subheader("1. Dados do Sienge")
 
 try:
     _ultima_sync = nf_sienge.ultima_sincronizacao(conn)
-except Exception:
+except Exception as exc:
     _ultima_sync = None
+    _log_erro("Falha ao ler a última sincronização do Sienge", detalhe=str(exc))
 
 JANELA_ATUALIZAR_DIAS = 365   # "ano sempre atualizado": mesma janela do sync diário (ingest-sienge.yml)
 
@@ -114,7 +125,8 @@ def _total_pendencias_vigentes() -> dict:
     try:
         return {(r["empresa_codigo"], r["periodo_referencia"]): int(r["total_pendencias"])
                 for r in nf_sienge.resumo_vigentes(conn)}
-    except Exception:
+    except Exception as exc:
+        _log_erro("Falha ao ler as conferências vigentes (antes/depois)", detalhe=str(exc))
         return {}
 
 
@@ -202,16 +214,26 @@ with st.expander("🏢 Empresa de cada devedor do Sienge — confere se a nota f
             if nova != atual:
                 try:
                     nf_sienge.salvar_mapa_debtor(conn, int(d["debtor_id"]), None if nova == _opcoes[0] else nova, usuario)
-                    st.success(f"Devedor {int(d['debtor_id'])} → {nova}. Rode a conferência de novo para reaplicar.")
                 except Exception as exc:
                     st.error(f"Não consegui salvar (o bloco 20 do schema já foi rodado?): {exc}")
+                    _log_erro("Falha ao salvar empresa do devedor", detalhe=f"devedor={int(d['debtor_id'])} -> {nova}: {exc}")
+                else:
+                    _log_info(f"Devedor {int(d['debtor_id'])}: {atual} -> {nova}")
+                    try:
+                        nf_sienge.reconferir_todas(conn)
+                        st.success(f"Devedor {int(d['debtor_id'])} → {nova}. Conferências refeitas com a nova regra.")
+                    except Exception as exc:
+                        st.warning(f"Devedor {int(d['debtor_id'])} → {nova} salvo, mas não consegui refazer as "
+                                   f"conferências agora (use \"Atualizar agora\"): {exc}")
+                        _log_erro("Falha ao refazer conferências após mudar devedor", detalhe=str(exc))
 
 st.divider()
 
 # ─────────────────────────── 2. Upload do manifesto ───────────────────────────
 st.subheader("2. Subir o manifesto de NF-e (.xlsx da Receita Federal)")
 st.caption("Pode subir quando quiser, em qualquer ordem. O mês que já existe é substituído pelo arquivo novo, e todos os "
-           "meses da empresa são conferidos juntos de novo.")
+           "meses da empresa são conferidos juntos de novo. Subiu o arquivo errado? Use \"Arquivar ou restaurar um envio\" "
+           "no fim da página -- nada é apagado.")
 
 
 _sync_liberado = _ultima_sync is not None
@@ -316,10 +338,11 @@ if arquivo is not None and st.button("▶️ Enviar e conferir", key="nf_btn_rod
     _ja_existia = {}
     try:
         _ja_existia = {v["periodo_referencia"]: v for v in nf_sienge.listar_vigentes(conn, cod_empresa)}
-    except Exception:
-        pass
+    except Exception as exc:
+        _log_erro("Falha ao listar vigentes antes do envio", detalhe=str(exc), empresa_codigo=cod_empresa)
     _periodos_enviados = []
     _resumos = {}
+    _lote_id = str(uuid.uuid4())   # v0.46.0: todos os meses deste arquivo = 1 envio (arquivar/restaurar juntos)
     with st.spinner(f"Gravando {len(df)} nota(s) e conferindo todos os meses de {nome_empresa} contra o Sienge..."):
         try:
             for _comp, _df_mes, _ign_mes in _grupos:
@@ -328,7 +351,8 @@ if arquivo is not None and st.button("▶️ Enviar e conferir", key="nf_btn_rod
                 if not _periodo:
                     st.error("Há notas sem mês de competência no arquivo e o período de referência está vazio.")
                     st.stop()
-                import_id = nf_sienge.gravar_manifesto(conn, cod_empresa, _periodo, _df_mes, arquivo.name, usuario)
+                import_id = nf_sienge.gravar_manifesto(conn, cod_empresa, _periodo, _df_mes, arquivo.name, usuario,
+                                                       lote_id=_lote_id)
                 nf_sienge.gravar_ignoradas(conn, import_id, cod_empresa, _periodo, _ign_mes, usuario)
                 _periodos_enviados.append((_periodo, len(_df_mes), len(_ign_mes) if _ign_mes is not None else 0))
                 st.session_state["nf_ultimo_periodo"] = (cod_empresa, _periodo)
@@ -371,7 +395,8 @@ st.divider()
 # ─────────────────────────── 3. Situação por empresa e período ────────────────
 st.subheader("3. Situação por empresa e período")
 st.caption("Uma linha por empresa e mês, sempre com o último arquivo subido. O resultado acompanha o Sienge: "
-           "quando a compra lança uma nota pendente, ela passa para lançada sozinha.")
+           "quando a compra lança uma nota pendente, ela passa para lançada sozinha. "
+           "**Pendências** = notas do manifesto com problema + títulos do Sienge sem nota.")
 
 try:
     vigentes = nf_sienge.resumo_vigentes(conn)
@@ -380,8 +405,8 @@ except Exception as exc:
     _log_erro("Falha ao listar conferências vigentes", detalhe=str(exc))
     vigentes = []
 
-import_id_atual = None
-rodada_sel = None
+emp_det = None
+vig_sel = []
 if not vigentes:
     st.caption("Nenhuma conferência ainda. Suba um manifesto acima e o resultado aparece aqui.")
 else:
@@ -390,6 +415,8 @@ else:
         "Período": v["periodo_referencia"],
         "Notas": v["total_notas"],
         "Lançadas": v["total_lancadas"],
+        "Notas pendentes": v.get("pendencias_notas", 0),
+        "Sienge sem nota": v.get("orfaos_sienge", 0),
         "Pendências": v["total_pendencias"],
         "Taxa": formatacao.pct_br(v["taxa"]) if v.get("taxa") is not None else "—",
         "Arquivo": v.get("arquivo_nome") or "",
@@ -397,58 +424,76 @@ else:
     } for v in vigentes])
     st.dataframe(_tab, hide_index=True, use_container_width=True)
 
-    _ids = [str(v["import_id"]) for v in vigentes]
-    _por_id = {str(v["import_id"]): v for v in vigentes}
-    _ult = st.session_state.get("nf_ultimo_periodo")      # (empresa, periodo) acabou de subir -> abre esse
+    _empresas_vig = []
+    for v in vigentes:
+        if v["empresa_codigo"] not in _empresas_vig:
+            _empresas_vig.append(v["empresa_codigo"])
+    _ult = st.session_state.get("nf_ultimo_periodo")      # (empresa, periodo) acabou de subir -> abre essa empresa, todos os meses
     if _ult and st.session_state.get("_nf_ultimo_aplicado") != _ult:
-        for _i, _v in _por_id.items():
-            if (_v["empresa_codigo"], _v["periodo_referencia"]) == tuple(_ult):
-                st.session_state["nf_vigente_sel"] = _i
+        if _ult[0] in _empresas_vig:
+            st.session_state["nf_det_empresa"] = _ult[0]
+            st.session_state.pop(f"nf_det_periodos_{_ult[0]}", None)
         st.session_state["_nf_ultimo_aplicado"] = _ult
-    if st.session_state.get("nf_vigente_sel") not in _ids:
-        st.session_state["nf_vigente_sel"] = _ids[0]
+    if st.session_state.get("nf_det_empresa") not in _empresas_vig:
+        st.session_state["nf_det_empresa"] = _empresas_vig[0]
 
-    def _rotulo_vigente(i):
-        v = _por_id[i]
-        return f"{NOME_POR_COD.get(v['empresa_codigo'], v['empresa_codigo'])} · {v['periodo_referencia']} · {v['total_pendencias']} pendência(s)"
-
-    import_id_atual = st.selectbox("Ver detalhe de", _ids, format_func=_rotulo_vigente, key="nf_vigente_sel")
-    rodada_sel = _por_id[import_id_atual]
+    emp_det = st.selectbox("Ver detalhe de", _empresas_vig, key="nf_det_empresa",
+                           format_func=lambda c: NOME_POR_COD.get(c, c))
+    _vig_emp = sorted((v for v in vigentes if v["empresa_codigo"] == emp_det),
+                      key=lambda v: nf_export._chave_periodo(v["periodo_referencia"]))   # cronologico
+    _pers = [v["periodo_referencia"] for v in _vig_emp]
+    _por_periodo = {v["periodo_referencia"]: v for v in _vig_emp}
+    _chave_pers = f"nf_det_periodos_{emp_det}"
+    _atual = [p for p in (st.session_state.get(_chave_pers) or []) if p in _por_periodo]
+    if _chave_pers not in st.session_state:
+        st.session_state[_chave_pers] = list(_pers)            # padrao: todos os meses da empresa
+    elif len(_atual) != len(st.session_state[_chave_pers] or []):
+        st.session_state[_chave_pers] = _atual                 # mes que deixou de existir sai da selecao
+    _sel_pers = st.multiselect(
+        "Períodos no detalhe e no download", _pers, key=_chave_pers,
+        format_func=lambda p: f"{p} · {_por_periodo[p]['total_notas']} nota(s) · {_por_periodo[p]['total_pendencias']} pendência(s)",
+        help="Escolha um ou vários meses: o detalhe, os totais e a planilha para baixar juntam tudo que estiver marcado.")
+    vig_sel = [_por_periodo[p] for p in _sel_pers]
 
 st.divider()
 st.subheader("4. Detalhe da conferência")
 
-emp_det = (rodada_sel or {}).get("empresa_codigo") or cod_empresa
-nome_det = NOME_POR_COD.get(emp_det, emp_det)
+nome_det = NOME_POR_COD.get(emp_det, emp_det) if emp_det else ""
 
-if not import_id_atual:
-    st.caption("Escolha um período na tabela acima para ver o detalhe.")
+if not vig_sel:
+    st.caption("Escolha a empresa e ao menos um período acima para ver o detalhe.")
 else:
-    tabela = nf_sienge.listar_conciliacao(conn, import_id_atual)
-    # FIX_20260928f (direção reversa, pedido do Rafael): órfãos do Sienge
-    # entram na MESMA tabela (origem='SIENGE_ORFAO' os distingue) pra
-    # herdar de graça o filtro/dataframe/export/status já existentes
-    # abaixo, em vez de duplicar toda essa lógica pra uma 2ª tabela.
+    _pers_sel = nf_export.periodos_ordenados([v["periodo_referencia"] for v in vig_sel])
+    _rotulo_pers = nf_export.rotulo_periodos(_pers_sel)
     try:
-        orfaos = nf_sienge.listar_orfaos_sienge(conn, import_id_atual)
-    except Exception:
-        orfaos = pd.DataFrame()
-    if not orfaos.empty:
-        tabela = pd.concat([tabela, orfaos], ignore_index=True)
+        # notas do manifesto + titulos do Sienge sem nota (origem='SIENGE_ORFAO'), de todos os periodos marcados,
+        # na MESMA tabela pra herdar filtro/export/status; a coluna "Período" diz de qual mes cada linha e'.
+        tabela = nf_sienge.tabela_conferencia(conn, vig_sel)
+    except Exception as exc:
+        tabela = pd.DataFrame()
+        st.error(f"Não consegui carregar o detalhe: {exc}")
+        _log_erro("Falha ao carregar o detalhe da conferência", detalhe=str(exc), empresa_codigo=emp_det)
 
     if tabela.empty:
         st.caption("Sem notas neste período.")
     else:
         r = nf_export.resumo_conferencia(tabela)
         por_status = r["por_status"]
+        st.caption(f"Mostrando {len(_pers_sel)} período(s) de {nome_det}: **{_rotulo_pers}** "
+                   f"({sum(int(v['total_notas']) for v in vig_sel)} nota(s) no manifesto).")
 
         # Avisos de cobertura (Sienge sem devedor da empresa / espelho que nao
         # cobre o periodo) -- "0 Sienge sem manifesto" nunca fica sem explicacao.
-        try:
-            for _aviso in nf_sienge.avisos_conciliacao(conn, import_id_atual, emp_det):
-                st.warning(_aviso)
-        except Exception:
-            pass
+        _avisos: dict = {}
+        for _v in vig_sel:
+            try:
+                for _aviso in nf_sienge.avisos_conciliacao(conn, _v["import_id"], emp_det):
+                    _avisos.setdefault(_aviso, []).append(_v["periodo_referencia"])
+            except Exception as exc:
+                _log_erro("Falha ao montar avisos de cobertura", detalhe=f"{_v['periodo_referencia']}: {exc}",
+                          empresa_codigo=emp_det)
+        for _aviso, _ps in _avisos.items():
+            st.warning(_aviso + (f" (períodos: {', '.join(_ps)})" if len(vig_sel) > 1 and len(_ps) < len(vig_sel) else ""))
 
         k1, k2, k3 = st.columns(3)
         k1.metric("Notas no manifesto", r["total"])
@@ -473,6 +518,13 @@ else:
         ]
         for col, (cod_st, rotulo, ajuda) in zip(st.columns(len(_kpis)), _kpis):
             col.metric(rotulo, por_status.get(cod_st, 0), help=ajuda)
+
+        if len(_pers_sel) > 1:
+            _rpp = nf_export.resumo_por_periodo(tabela)
+            _rpp["Taxa de conciliação"] = _rpp["Taxa de conciliação"].apply(
+                lambda t: formatacao.pct_br(t) if pd.notna(t) else "—")
+            with st.expander("Resumo por período (os números acima, mês a mês)"):
+                st.dataframe(_rpp, hide_index=True, use_container_width=True)
 
         _status_presentes = [x for x in nf_export.ORDEM_STATUS if x in set(tabela["status"])] + \
             sorted(set(tabela["status"]) - set(nf_export.ORDEM_STATUS))
@@ -499,22 +551,26 @@ else:
         st.dataframe(tabela_fmt, hide_index=True, use_container_width=True)
 
         pendencias_df = tabela[tabela["status"] != "LANCADA"]
-        _periodo_arq = (rodada_sel or {}).get("periodo_referencia") or "periodo"
-        _periodo_arq = str(_periodo_arq).replace("/", "_")
+        _sufixo_arq = nf_export.sufixo_arquivo(_pers_sel)
         # FIX_20260928 (Rafael, "Rodar conferência" quebrando com ValueError ao
         # baixar a planilha): atualizado_em é timestamptz -> openpyxl não aceita
         # tz. nf_export._escrever_aba usa formatacao.remover_timezone_para_excel.
         # 01/10/2026: DOIS downloads. A planilha COMPLETA (todas as notas,
         # lançadas e pendentes, + título/documento do Sienge + títulos do
         # Sienge sem nota) e a de pendências (pra mandar ao Suprimentos).
+        # v0.46.0: ambos juntam os periodos marcados em "Períodos no detalhe e no download".
         try:
-            _ign_rodada = nf_sienge.listar_ignoradas(conn, import_id_atual)
-        except Exception:
+            _ign_rodada = nf_sienge.ignoradas_conferencia(conn, vig_sel)
+        except Exception as exc:
             _ign_rodada = pd.DataFrame()
+            _log_erro("Falha ao listar notas ignoradas", detalhe=str(exc), empresa_codigo=emp_det)
         try:
+            _arquivos = []
+            for _v in vig_sel:
+                if _v.get("arquivo_nome") and _v["arquivo_nome"] not in _arquivos:
+                    _arquivos.append(_v["arquivo_nome"])
             xlsx_completo = nf_export.gerar_xlsx_conferencia(
-                tabela, nome_det, (rodada_sel or {}).get("periodo_referencia") or "",
-                (rodada_sel or {}).get("arquivo_nome"), formatacao.hora_br(_dt.datetime.now()),
+                tabela, nome_det, _rotulo_pers, ", ".join(_arquivos) or None, formatacao.hora_br(_dt.datetime.now()),
                 ignoradas=_ign_rodada,
             )
         except Exception as exc:
@@ -526,7 +582,7 @@ else:
             d1.download_button(
                 "⬇️ Baixar conferência COMPLETA (todas as notas + Sienge)",
                 data=xlsx_completo,
-                file_name=f"conferencia_nf_{emp_det}_{_periodo_arq}.xlsx",
+                file_name=f"conferencia_nf_{emp_det}_{_sufixo_arq}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="nf_download_completo", type="primary",
             )
@@ -537,7 +593,7 @@ else:
             d2.download_button(
                 "⬇️ Baixar só as pendências (pra mandar ao Suprimentos)",
                 data=buffer.getvalue(),
-                file_name=f"pendencias_nf_{emp_det}_{_periodo_arq}.xlsx",
+                file_name=f"pendencias_nf_{emp_det}_{_sufixo_arq}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="nf_download_pendencias",
             )
@@ -546,7 +602,7 @@ else:
             with st.expander(f"Notas do arquivo que ficaram FORA da conferência ({len(_ign_rodada)}) -- confira"):
                 st.caption("Canceladas e notas de Entrada (devolução/retorno do próprio fornecedor) não geram título a pagar, "
                            "por isso não entram nas pendências. Se alguma não deveria ter saído, avise para ajustarmos a regra.")
-                _ign_fmt = _ign_rodada.rename(columns=nf_export.ROTULOS_IGNORADAS).copy()
+                _ign_fmt = nf_export.preparar_ignoradas(_ign_rodada)
                 if "Valor (manifesto)" in _ign_fmt.columns:
                     _ign_fmt["Valor (manifesto)"] = _ign_fmt["Valor (manifesto)"].apply(formatacao.moeda_br)
                 st.dataframe(_ign_fmt, hide_index=True, use_container_width=True)
@@ -559,35 +615,147 @@ else:
             if pendencias_df.empty:
                 st.caption("Sem pendência neste período.")
             else:
-                nota_sel = st.selectbox(
-                    "Nota", pendencias_df["numero_nota"].tolist(), key="nf_pendencia_nota_sel",
-                )
+                # chave = (origem, registro_id): unica mesmo com o mesmo numero de nota em meses diferentes
+                _chaves = [f"{o}:{int(i)}" for o, i in zip(pendencias_df["origem"], pendencias_df["registro_id"])]
+                _rot = {}
+                for _k, (_, _l) in zip(_chaves, pendencias_df.iterrows()):
+                    _rot[_k] = (f"{_l['periodo']} · " if "periodo" in _l.index else "") + \
+                        f"{_l['numero_nota']} · {str(_l.get('fornecedor_nome') or '')[:30]} · " \
+                        f"{nf_export.ROTULO_STATUS.get(_l['status'], _l['status'])}"
+                chave_sel = st.selectbox("Nota", _chaves, format_func=lambda k: _rot.get(k, k), key="nf_pendencia_nota_sel")
                 novo_status = st.selectbox(
                     "Novo status", ["PENDENTE", "ENVIADO_SUPRIMENTOS", "RESOLVIDO", "DESCARTADO"],
                     key="nf_pendencia_status_sel",
                 )
                 if st.button("Salvar status", key="nf_btn_salvar_status"):
-                    # FIX_20260928f: antes buscava manifesto_id via SQL
-                    # casando por numero_nota (texto) -- frágil (2 notas
-                    # podem ter o mesmo número) e não cobria os órfãos do
-                    # Sienge (não têm manifesto_id nenhum). listar_conciliacao/
-                    # listar_orfaos_sienge já trazem registro_id + origem
-                    # prontos, direto da linha selecionada.
-                    linha = pendencias_df[pendencias_df["numero_nota"] == nota_sel].iloc[0]
-                    if linha["origem"] == "SIENGE_ORFAO":
-                        nf_sienge.atualizar_status_orfao_sienge(conn, int(linha["registro_id"]), novo_status, usuario)
+                    # FIX_20260928f: origem + registro_id (= manifesto_id ou orfao_id) vem pronto da linha
+                    # selecionada -- nunca casa por numero_nota (2 notas podem ter o mesmo numero).
+                    _origem, _rid = chave_sel.split(":")
+                    linha = pendencias_df[(pendencias_df["origem"] == _origem)
+                                          & (pendencias_df["registro_id"].astype(int) == int(_rid))].iloc[0]
+                    try:
+                        if _origem == "SIENGE_ORFAO":
+                            nf_sienge.atualizar_status_orfao_sienge(conn, int(_rid), novo_status, usuario)
+                        else:
+                            nf_sienge.atualizar_status_pendencia(conn, int(_rid), novo_status, usuario)
+                    except Exception as exc:
+                        st.error(f"Não consegui salvar o status: {exc}")
+                        _log_erro("Falha ao salvar status de pendência", detalhe=f"{chave_sel}: {exc}", empresa_codigo=emp_det)
                     else:
-                        nf_sienge.atualizar_status_pendencia(conn, int(linha["registro_id"]), novo_status, usuario)
-                    flash("ok", f"Nota {nota_sel} marcada como {novo_status}.")
-                    _log_info(f"Pendência nota {nota_sel} -> {novo_status}", emp_det)
-                    st.rerun()
+                        flash("ok", f"Nota {linha['numero_nota']} marcada como {novo_status}.")
+                        _log_info(f"Pendência nota {linha['numero_nota']} -> {novo_status}", emp_det)
+                        st.rerun()
 
 st.divider()
+
+# ─────────────────────────── Arquivar / restaurar envio ───────────────────────
+def _rotulo_envio(e: dict) -> str:
+    return (f"{NOME_POR_COD.get(e['empresa_codigo'], e['empresa_codigo'])} · {e.get('arquivo_nome') or 'sem nome'} · "
+            f"{nf_export.rotulo_periodos(e['periodos'])} · enviado {formatacao.hora_br(e['enviado_em'])}")
+
+
+with st.expander("🗃️ Arquivar ou restaurar um envio (subiu o arquivo errado?)"):
+    st.caption(
+        "**Nada é apagado.** Arquivar tira o envio (todos os meses daquele arquivo) das conferências, dos totais, dos "
+        "downloads e do assistente; se existia um envio anterior do mesmo mês, ele volta a valer. O envio arquivado fica "
+        "guardado com quem arquivou, quando e o motivo, e pode ser restaurado a qualquer momento. O acompanhamento das "
+        "pendências (Enviado ao Suprimentos / Resolvido / Descartado) também é preservado."
+    )
+    try:
+        _envios = nf_sienge.listar_envios(conn)
+        _disponivel = nf_sienge.tem_arquivamento(conn)
+    except Exception as exc:
+        _envios, _disponivel = [], False
+        st.warning(f"Não foi possível listar os envios: {exc}")
+        _log_erro("Falha ao listar envios", detalhe=str(exc))
+    if not _envios:
+        st.caption("Nenhum envio ainda.")
+    elif not _disponivel:
+        st.info("Arquivar ainda não está habilitado neste banco (falta rodar o bloco 23 do schema.sql no Supabase).")
+    else:
+        _ativos = [e for e in _envios if not e["arquivado"]]
+        _arquivados = [e for e in _envios if e["arquivado"]]
+        _por_envio = {e["envio_id"]: e for e in _envios}
+
+        st.markdown("**Arquivar um envio**")
+        if not _ativos:
+            st.caption("Nenhum envio ativo.")
+        else:
+            _id_arq = st.selectbox("Envio", [e["envio_id"] for e in _ativos], key="nf_arq_sel",
+                                   format_func=lambda i: _rotulo_envio(_por_envio[i]))
+            _e = _por_envio[_id_arq]
+            try:
+                _previa = nf_sienge.previa_arquivamento(conn, _e["import_ids"])
+            except Exception as exc:
+                _previa = []
+                _log_erro("Falha ao simular o arquivamento", detalhe=str(exc), empresa_codigo=_e["empresa_codigo"])
+            for _p in _previa:
+                st.caption(f"• {_p['periodo_referencia']}: " + (
+                    f"volta a valer o envio anterior ({_p['passa_a_valer']})" if _p["passa_a_valer"]
+                    else "fica sem conferência (não há outro envio desse mês)"))
+            _motivo = st.text_input("Motivo (opcional)", key=f"nf_arq_motivo_{_id_arq}",
+                                    placeholder="ex.: arquivo da empresa errada")
+            _ok = st.checkbox("Confirmo: arquivar este envio (nada é apagado; dá para restaurar depois)",
+                              key=f"nf_arq_ok_{_id_arq}")
+            if st.button("🗃️ Arquivar envio", key="nf_btn_arquivar", disabled=not _ok):
+                try:
+                    _res = nf_sienge.arquivar_envio(conn, _e["import_ids"], usuario, _motivo)
+                except nf_sienge.ArquivamentoIndisponivel as exc:
+                    st.error(f"Ainda não dá para arquivar: {exc}.")
+                    _log_erro("Arquivar envio indisponível", detalhe=str(exc), empresa_codigo=_e["empresa_codigo"])
+                except Exception as exc:
+                    st.error(f"Não consegui arquivar: {exc}")
+                    _log_erro("Falha ao arquivar envio", detalhe=f"{_e.get('arquivo_nome')}: {exc}",
+                              empresa_codigo=_e["empresa_codigo"])
+                else:
+                    _msg = (f"Envio arquivado: {_e.get('arquivo_nome') or 'sem nome'} "
+                            f"({nf_export.rotulo_periodos(_e['periodos'])}). Nada foi apagado.")
+                    for _m in _res.get("mudancas", []):
+                        _msg += f" {_m['periodo_referencia']}: " + (
+                            f"voltou a valer {_m['depois']}." if _m["depois"] else "ficou sem conferência.")
+                    flash("ok", _msg)
+                    _log_info(f"Envio arquivado: {_e.get('arquivo_nome')} ({', '.join(_e['periodos'])})"
+                              + (f" · motivo: {_motivo.strip()}" if _motivo and _motivo.strip() else ""),
+                              _e["empresa_codigo"])
+                    st.session_state.pop("nf_arq_sel", None)
+                    st.rerun()
+
+        st.markdown("**Envios arquivados**")
+        if not _arquivados:
+            st.caption("Nenhum envio arquivado.")
+        else:
+            st.dataframe(pd.DataFrame([{
+                "Empresa": NOME_POR_COD.get(e["empresa_codigo"], e["empresa_codigo"]),
+                "Arquivo": e.get("arquivo_nome") or "",
+                "Períodos": nf_export.rotulo_periodos(e["periodos"]),
+                "Enviado em": formatacao.hora_br(e["enviado_em"]),
+                "Arquivado em": formatacao.hora_br(e["arquivado_em"]),
+                "Arquivado por": e.get("arquivado_por") or "",
+                "Motivo": e.get("arquivado_motivo") or "",
+            } for e in _arquivados]), hide_index=True, use_container_width=True)
+            _id_rest = st.selectbox("Restaurar o envio", [e["envio_id"] for e in _arquivados], key="nf_rest_sel",
+                                    format_func=lambda i: _rotulo_envio(_por_envio[i]))
+            st.caption("Restaurar põe o envio de volta na disputa: em cada mês vale o envio mais recente.")
+            if st.button("♻️ Restaurar envio", key="nf_btn_restaurar"):
+                _e = _por_envio[_id_rest]
+                try:
+                    nf_sienge.restaurar_envio(conn, _e["import_ids"], usuario)
+                except Exception as exc:
+                    st.error(f"Não consegui restaurar: {exc}")
+                    _log_erro("Falha ao restaurar envio", detalhe=f"{_e.get('arquivo_nome')}: {exc}",
+                              empresa_codigo=_e["empresa_codigo"])
+                else:
+                    flash("ok", f"Envio restaurado: {_e.get('arquivo_nome') or 'sem nome'} "
+                                f"({nf_export.rotulo_periodos(_e['periodos'])}).")
+                    _log_info(f"Envio restaurado: {_e.get('arquivo_nome')} ({', '.join(_e['periodos'])})",
+                              _e["empresa_codigo"])
+                    st.session_state.pop("nf_rest_sel", None)
+                    st.rerun()
 
 # ─────────────────────────── Histórico (auditoria) ───────────────────────────
 with st.expander("🗂️ Histórico de arquivos enviados (auditoria)"):
     st.caption("Cada arquivo subido fica guardado. Só o mais recente de cada empresa e mês vale (\"Vigente\"); "
-               "os anteriores ficam aqui só para consulta.")
+               "os anteriores ficam aqui só para consulta. \"Arquivada\" = envio desfeito por você (veja o quadro acima).")
     try:
         historico = nf_sienge.listar_historico_importacoes(conn)
     except Exception as exc:
@@ -599,9 +767,32 @@ with st.expander("🗂️ Histórico de arquivos enviados (auditoria)"):
     else:
         df_hist = pd.DataFrame(historico)
         df_hist["Empresa"] = df_hist["empresa_codigo"].map(lambda c: NOME_POR_COD.get(c, c))
-        df_hist["Situação"] = df_hist["vigente"].map(lambda v: "Vigente" if v else "Substituída")
+        _arq_flags = df_hist["arquivado"] if "arquivado" in df_hist.columns else [False] * len(df_hist)
+        df_hist["Situação"] = [("Arquivada" if a else ("Vigente" if v else "Substituída"))
+                               for v, a in zip(df_hist["vigente"], _arq_flags)]
         df_hist["Enviado em"] = df_hist["criado_em"].apply(formatacao.hora_br)
         df_hist = df_hist.rename(columns={"periodo_referencia": "Período", "total_notas": "Notas",
                                            "arquivo_nome": "Arquivo", "usuario": "Enviado por"})
         st.dataframe(df_hist[["Enviado em", "Empresa", "Período", "Situação", "Notas", "Arquivo", "Enviado por"]],
+                     hide_index=True, use_container_width=True)
+
+# ─────────────────────────── Log de eventos desta tela ───────────────────────
+# v0.46.0: tudo que esta tela (e o sync diario das 04h) faz ou falha vai pra egc.eventos_sistema
+# (origem "notas_fiscais"). Aqui da' pra ler sem abrir o Supabase -- e' por onde se acha o que quebrou.
+st.divider()
+with st.expander("📋 Log de eventos de Notas Fiscais (envios, arquivamentos, sincronizações e erros)"):
+    _so_erros = st.checkbox("Mostrar só os erros", key="nf_log_so_erros")
+    try:
+        _eventos = db.listar_eventos_recentes(conn, limite=60, origem="notas_fiscais", nivel="ERRO" if _so_erros else None)
+    except Exception as exc:
+        _eventos = []
+        st.warning(f"Não foi possível consultar o log de eventos: {exc}")
+    if not _eventos:
+        st.caption("Nenhum evento registrado." if not _so_erros else "Nenhum erro registrado.")
+    else:
+        _df_ev = pd.DataFrame(_eventos)
+        _df_ev["Empresa"] = _df_ev["empresa_codigo"].apply(lambda c: NOME_POR_COD.get(c, c) if c else "—")
+        _df_ev["Quando"] = _df_ev["criado_em"].apply(formatacao.hora_br)
+        _df_ev = _df_ev.rename(columns={"nivel": "Nível", "usuario": "Usuário", "mensagem": "Mensagem", "detalhe": "Detalhe"})
+        st.dataframe(_df_ev[["Quando", "Nível", "Empresa", "Usuário", "Mensagem", "Detalhe"]],
                      hide_index=True, use_container_width=True)

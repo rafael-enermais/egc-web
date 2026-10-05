@@ -1,0 +1,16 @@
+-- EGC-WEB v0.46.0 | BLOCO 23 -- rodar UMA vez no Supabase (SQL Editor), ANTES de publicar a v0.46.0.
+-- Aditivo e idempotente (pode rodar de novo sem estragar nada). Nao apaga nem altera nenhum dado existente.
+
+-- =====================================================================
+ALTER TABLE egc.nf_manifesto_import ADD COLUMN IF NOT EXISTS lote_id uuid;
+ALTER TABLE egc.nf_manifesto_import ADD COLUMN IF NOT EXISTS arquivado_em timestamptz;
+ALTER TABLE egc.nf_manifesto_import ADD COLUMN IF NOT EXISTS arquivado_por text;
+ALTER TABLE egc.nf_manifesto_import ADD COLUMN IF NOT EXISTS arquivado_motivo text;
+CREATE INDEX IF NOT EXISTS idx_nf_manifesto_lote ON egc.nf_manifesto_import (lote_id) WHERE lote_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_nf_manifesto_ativo ON egc.nf_manifesto_import (empresa_codigo, periodo_referencia) WHERE arquivado_em IS NULL;
+-- Fim do bloco 23. Rodar so' este bloco no SQL Editor do Supabase.
+
+-- Conferencia (deve listar as 4 colunas novas):
+SELECT column_name FROM information_schema.columns
+WHERE table_schema = 'egc' AND table_name = 'nf_manifesto_import'
+  AND column_name IN ('lote_id', 'arquivado_em', 'arquivado_por', 'arquivado_motivo') ORDER BY 1;

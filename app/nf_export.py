@@ -21,6 +21,7 @@ import formatacao
 # Ordem e rotulos das colunas na tela e nas planilhas. Colunas internas
 # (registro_id, origem) nunca aparecem pra contadora.
 ROTULOS = {
+    "periodo": "Período",   # v0.46.0: so' existe quando a tabela junta varios periodos
     "numero_nota": "Nº da nota",
     "cfop": "CFOP",
     "sienge_bill_id": "Título Sienge",
@@ -37,6 +38,7 @@ ROTULOS = {
     "atualizado_em": "Atualizado em",
 }
 ROTULOS_IGNORADAS = {
+    "periodo": "Período",
     "numero_nota": "Nº da nota", "data_emissao": "Emissão", "valor": "Valor (manifesto)", "cfop": "CFOP",
     "fornecedor_nome": "Fornecedor", "fornecedor_cnpj": "CNPJ do fornecedor", "tipo_doc": "Tipo (Receita)",
     "natureza": "Natureza da operação", "motivo": "Motivo de ter ficado fora",
@@ -84,11 +86,66 @@ def resumo_conferencia(tabela: pd.DataFrame) -> dict:
     }
 
 
+def _chave_periodo(p) -> tuple:
+    import re
+    m = re.match(r"^\s*(\d{1,2})\s*/\s*(\d{4})\s*$", str(p or ""))
+    return (int(m.group(2)), int(m.group(1))) if m else (9999, 99, str(p))
+
+
+def periodos_ordenados(periodos) -> list:
+    """Periodos unicos em ordem cronologica ('01/2026' < '02/2026' < ...)."""
+    return sorted({str(p) for p in periodos if p}, key=_chave_periodo)
+
+
+def rotulo_periodos(periodos) -> str:
+    """'01/2026 a 08/2026' quando seguidos; senao '01/2026, 03/2026'; um so' -> '07/2026'."""
+    ps = periodos_ordenados(periodos)
+    if not ps:
+        return ""
+    if len(ps) == 1:
+        return ps[0]
+    ks = [_chave_periodo(p) for p in ps]
+    if all(len(k) == 2 for k in ks):
+        seguidos = all((b[0] * 12 + b[1]) - (a[0] * 12 + a[1]) == 1 for a, b in zip(ks, ks[1:]))
+        if seguidos:
+            return f"{ps[0]} a {ps[-1]}"
+    return ", ".join(ps)
+
+
+def sufixo_arquivo(periodos) -> str:
+    """Parte do nome do arquivo: '07_2026' (um) | '01_2026_a_08_2026' (seguidos) | '01_2026_03_2026' (soltos)."""
+    r = rotulo_periodos(periodos)
+    if not r:
+        return "periodo"
+    return r.replace(" a ", "_a_").replace(", ", "_").replace("/", "_")
+
+
+def resumo_por_periodo(tabela: pd.DataFrame) -> pd.DataFrame:
+    """Uma linha por periodo (cronologico): notas, lancadas, pendentes, Sienge sem nota, total de pendencias, taxa.
+    Vazio se a tabela nao tem a coluna `periodo`."""
+    cols = ["Período", "Notas no manifesto", "Lançadas", "Notas com pendência", "Sienge sem nota",
+            "Total de pendências", "Taxa de conciliação"]
+    if tabela is None or tabela.empty or "periodo" not in tabela.columns:
+        return pd.DataFrame(columns=cols)
+    linhas = []
+    for per in periodos_ordenados(tabela["periodo"]):
+        r = resumo_conferencia(tabela[tabela["periodo"] == per])
+        linhas.append([per, r["total"], r["lancadas"], r["notas_pendentes"], r["sienge_sem_manifesto"],
+                       r["pendencias"], r["taxa"]])
+    return pd.DataFrame(linhas, columns=cols)
+
+
 def preparar_tabela(tabela: pd.DataFrame) -> pd.DataFrame:
     """Tira colunas internas, mantem a ordem de ROTULOS e renomeia pros
     rotulos de exibicao. Colunas desconhecidas sao descartadas."""
     cols = [c for c in ROTULOS if c in tabela.columns]
     return tabela[cols].rename(columns=ROTULOS).copy()
+
+
+def preparar_ignoradas(ignoradas: pd.DataFrame) -> pd.DataFrame:
+    """Notas fora da conferencia com rotulos de exibicao (colunas internas descartadas)."""
+    cols = [c for c in ROTULOS_IGNORADAS if c in ignoradas.columns]
+    return ignoradas[cols].rename(columns=ROTULOS_IGNORADAS).copy()
 
 
 def _escrever_aba(writer, nome: str, df: pd.DataFrame) -> None:
@@ -134,6 +191,9 @@ def gerar_xlsx_conferencia(
     registro_id/origem). Abas: Resumo, Conferência completa (todas as
     notas do manifesto + titulos do Sienge sem nota), Pendências (tudo que
     nao e' LANCADA) e Sienge sem nota.
+    v0.46.0: `tabela` pode juntar VARIOS periodos (coluna `periodo`): ganha a aba
+    "Resumo por período" e a coluna Período em todas as abas; `periodo_referencia`
+    e' o rotulo do conjunto (ex.: "01/2026 a 08/2026", ver rotulo_periodos).
     """
     orfaos = tabela[tabela["origem"] == "SIENGE_ORFAO"] if "origem" in tabela.columns else tabela.iloc[0:0]
     r = resumo_conferencia(tabela)
@@ -156,6 +216,7 @@ def gerar_xlsx_conferencia(
         resumo_linhas += [("Notas do arquivo que ficaram FORA da conferência (aba Ignoradas)", len(ignoradas))] + [
             (f"  · {m}", int(n)) for m, n in sorted(por_motivo.items())]
     resumo = pd.DataFrame(resumo_linhas, columns=["Item", "Valor"])
+    por_periodo = resumo_por_periodo(tabela)
 
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
@@ -166,10 +227,17 @@ def gerar_xlsx_conferencia(
         for row in ws.iter_rows(min_row=2):
             if row[0].value == "Taxa de conciliação" and row[1].value is not None:
                 row[1].number_format = "0.0%"
+        if len(por_periodo) > 1:
+            por_periodo.to_excel(writer, index=False, sheet_name="Resumo por período")
+            wsp = writer.sheets["Resumo por período"]
+            for letra, larg in zip("ABCDEFG", (12, 20, 12, 22, 18, 20, 20)):
+                wsp.column_dimensions[letra].width = larg
+            for row in wsp.iter_rows(min_row=2):
+                if row[6].value is not None:
+                    row[6].number_format = "0.0%"
         _escrever_aba(writer, "Conferência completa", preparar_tabela(tabela))
         _escrever_aba(writer, "Pendências", preparar_tabela(tabela[tabela["status"] != "LANCADA"]))
         _escrever_aba(writer, "Sienge sem nota", preparar_tabela(orfaos))
         if ignoradas is not None and len(ignoradas):
-            cols = [c for c in ROTULOS_IGNORADAS if c in ignoradas.columns]
-            _escrever_aba(writer, "Ignoradas", ignoradas[cols].rename(columns=ROTULOS_IGNORADAS).copy())
+            _escrever_aba(writer, "Ignoradas", preparar_ignoradas(ignoradas))
     return buf.getvalue()

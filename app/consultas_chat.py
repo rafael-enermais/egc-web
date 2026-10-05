@@ -344,31 +344,38 @@ def consultar_completude(conn, empresas_codigos: list[str]) -> dict:
 
 def consultar_notas_fiscais_kpi(conn, empresa_codigo: Optional[str] = None) -> dict:
     """
-    KPI da conferência de Notas Fiscais x Sienge (feature nova, 25/09/2026):
-    quantas notas na última rodada de cada empresa (ou só de uma, se
-    empresa_codigo vier), quantas foram encontradas no Sienge, quantas
-    ficaram pendentes, e a evolução (histórico de rodadas). Fonte:
-    egc.nf_import_historico via nf_sienge.listar_historico_importacoes --
-    zero query nova, so' reaproveita o que a tela "Notas Fiscais" ja usa.
+    KPI da conferência de Notas Fiscais x Sienge: uma linha por (empresa, período) VIGENTE -- as mesmas
+    linhas e os mesmos números da tabela "Situação por empresa e período" da tela (v0.46.0: via
+    nf_sienge.resumo_vigentes, então `total_pendencias` = notas do manifesto com problema + títulos do
+    Sienge sem nota, e envios ARQUIVADOS/substituídos não entram).
     """
-    historico = nf_sienge.listar_historico_importacoes(conn, empresa_codigo, somente_vigentes=True)
-    if not historico:
+    try:
+        vigentes = nf_sienge.resumo_vigentes(conn, empresa_codigo)
+    except Exception as exc:
+        return {"erro": f"Não consegui ler as conferências de notas fiscais agora: {exc}"}
+    if not vigentes:
         return {
             "erro": "Nenhuma conferência de notas fiscais rodada ainda"
             + (f" pra {empresa_codigo}" if empresa_codigo else " pra nenhuma empresa"),
         }
     linhas = []
-    for h in historico:
+    for v in vigentes:
+        ref = v.get("atualizado_em") or v.get("enviado_em")
         linhas.append({
-            "empresa_codigo": h["empresa_codigo"],
-            "periodo_referencia": h["periodo_referencia"],
-            "total_notas": h["total_notas"],
-            "total_lancadas": h["total_lancadas"],
-            "total_pendencias": h["total_pendencias"],
-            "taxa_conciliacao": round(h["total_lancadas"] / h["total_notas"], 4) if h["total_notas"] else None,
-            "criado_em": h["criado_em"].strftime("%Y-%m-%d %H:%M") if hasattr(h["criado_em"], "strftime") else str(h["criado_em"]),
+            "empresa_codigo": v["empresa_codigo"],
+            "periodo_referencia": v["periodo_referencia"],
+            "total_notas": v["total_notas"],
+            "total_lancadas": v["total_lancadas"],
+            "notas_pendentes": v["pendencias_notas"],
+            "sienge_sem_manifesto": v["orfaos_sienge"],
+            "total_pendencias": v["total_pendencias"],
+            "taxa_conciliacao": round(v["total_lancadas"] / v["total_notas"], 4) if v["total_notas"] else None,
+            "arquivo": v.get("arquivo_nome"),
+            "criado_em": ref.strftime("%Y-%m-%d %H:%M") if hasattr(ref, "strftime") else str(ref),
         })
-    return {"rodadas": linhas, "total_rodadas": len(linhas)}
+    return {"rodadas": linhas, "total_rodadas": len(linhas),
+            "observacao": "total_pendencias = notas_pendentes + sienge_sem_manifesto. Só a conferência vigente de cada "
+                          "empresa/mês conta; envios arquivados ou substituídos ficam de fora."}
 
 
 def consultar_notas_pendentes(conn, empresa_codigo: Optional[str] = None, limite: int = 20) -> dict:

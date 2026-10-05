@@ -263,18 +263,53 @@ def sincronizar_creditores(conn, base_url: str, usuario: str, senha: str, max_pa
 
 
 # ─────────────────────────────────────────────
+#  ARQUIVAMENTO DE ENVIOS (v0.46.0, bloco 23)
+# ─────────────────────────────────────────────
+# "Desfazer upload" = ARQUIVAR o envio (nada e' apagado): as consultas abaixo ignoram imports com
+# arquivado_em preenchido. Se o banco ainda nao tem a coluna (bloco 23 nao rodado), tudo funciona
+# como antes e arquivar/restaurar avisa que ainda nao esta disponivel.
+
+class ArquivamentoIndisponivel(Exception):
+    """Bloco 23 do schema.sql ainda nao foi rodado neste banco."""
+
+
+_COL_ARQUIVADO = {"ok": False}
+
+
+def tem_arquivamento(conn) -> bool:
+    if _COL_ARQUIVADO["ok"]:
+        return True
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM information_schema.columns WHERE table_schema = 'egc' "
+                    "AND table_name = 'nf_manifesto_import' AND column_name = 'arquivado_em'")
+        achou = cur.fetchone() is not None
+    if achou:
+        _COL_ARQUIVADO["ok"] = True
+    return achou
+
+
+def _ativo(conn, alias: str = "") -> str:
+    """Condicao SQL "import nao arquivado" (TRUE se o banco ainda nao tem a coluna)."""
+    if not tem_arquivamento(conn):
+        return "TRUE"
+    return f"{alias + '.' if alias else ''}arquivado_em IS NULL"
+
+
+# ─────────────────────────────────────────────
 #  IMPORTAÇÃO DO MANIFESTO (planilha da Receita já parseada por nf_parser)
 # ─────────────────────────────────────────────
 
 def gravar_manifesto(conn, empresa_codigo: str, periodo_referencia: str,
-                      df, nome_arquivo: str, usuario: str) -> str:
+                      df, nome_arquivo: str, usuario: str, lote_id: Optional[str] = None) -> str:
     """
     Grava cada linha do DataFrame (já normalizado por
     nf_parser.ler_manifesto_xlsx) em egc.nf_manifesto_import, sob um
     import_id novo (1 import_id = 1 upload = 1 rodada de conferência).
     Retorna o import_id (string uuid) pra encadear com conciliar_import.
+    v0.46.0: `lote_id` agrupa os meses do MESMO arquivo (arquivar/restaurar o envio inteiro).
     """
     import_id = str(uuid.uuid4())
+    usa_lote = bool(lote_id) and tem_arquivamento(conn)
     with conn.cursor() as cur:
         for _, row in df.iterrows():
             # v0.44.3: data ja' parseada (date) -- nunca a string crua da Receita
@@ -289,8 +324,9 @@ def gravar_manifesto(conn, empresa_codigo: str, periodo_referencia: str,
                      numero_normalizado, tipo_documento, data_emissao, valor, cfop,
                      fornecedor_nome, fornecedor_cnpj, cnpj_normalizado, uf,
                      chave_acesso, chave_modelo, chave_serie, chave_numero,
-                     arquivo_nome, criado_por, criado_em)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                     arquivo_nome, criado_por, criado_em""" + (", lote_id" if usa_lote else "") + """)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now()"""
+                + (", %s::uuid" if usa_lote else "") + """)
                 """,
                 (
                     import_id, empresa_codigo, periodo_referencia,
@@ -299,7 +335,7 @@ def gravar_manifesto(conn, empresa_codigo: str, periodo_referencia: str,
                     row.get("Emissor Nome"), row.get("Emissor CNPJ/CPF"), row.get("_cnpj_normalizado"),
                     row.get("UF"), row.get("Chave"), row.get("_chave_modelo"),
                     row.get("_chave_serie"), row.get("_chave_numero"), nome_arquivo, usuario,
-                ),
+                ) + ((str(lote_id),) if usa_lote else ()),
             )
     return import_id
 
@@ -687,9 +723,9 @@ def _historico_debtor_empresas(conn, excluir_import_id: Optional[str] = None) ->
             JOIN egc.nf_manifesto_import m ON m.id = c.manifesto_id
             JOIN egc.nf_bills_sync b ON b.bill_id = c.sienge_bill_id
             WHERE c.status = 'LANCADA' AND b.debtor_id IS NOT NULL
-              AND (%s::uuid IS NULL OR c.import_id <> %s::uuid)
+              AND (%s::uuid IS NULL OR c.import_id <> %s::uuid) AND __ATIVO_M__
             GROUP BY b.debtor_id, m.empresa_codigo
-            """,
+            """.replace("__ATIVO_M__", _ativo(conn, "m")),
             (excluir_import_id, excluir_import_id),
         )
         linhas = cur.fetchall()
@@ -835,12 +871,12 @@ def _bills_associados_no_escopo(conn, import_id: str, empresa_codigo: str) -> se
                    OR c.import_id IN (
                         SELECT DISTINCT ON (periodo_referencia) import_id
                         FROM egc.nf_manifesto_import
-                        WHERE empresa_codigo = %s
+                        WHERE empresa_codigo = %s AND __ATIVO__
                           AND periodo_referencia IS DISTINCT FROM (
                                 SELECT periodo_referencia FROM egc.nf_manifesto_import
                                 WHERE import_id = %s LIMIT 1)
                         ORDER BY periodo_referencia, criado_em DESC))
-            """,
+            """.replace("__ATIVO__", _ativo(conn)),
             (import_id, empresa_codigo, import_id),
         )
         return {int(r[0]) for r in cur.fetchall()}
@@ -1043,10 +1079,10 @@ def listar_vigentes(conn, empresa_codigo: Optional[str] = None) -> list[dict]:
             FROM (SELECT import_id, empresa_codigo, periodo_referencia,
                          MAX(arquivo_nome) AS arquivo_nome, MAX(criado_em) AS ult
                   FROM egc.nf_manifesto_import
-                  WHERE (%s::text IS NULL OR empresa_codigo = %s)
+                  WHERE (%s::text IS NULL OR empresa_codigo = %s) AND __ATIVO__
                   GROUP BY import_id, empresa_codigo, periodo_referencia) x
             ORDER BY empresa_codigo, periodo_referencia, ult DESC
-            """,
+            """.replace("__ATIVO__", _ativo(conn)),
             (empresa_codigo, empresa_codigo),
         )
         itens = [dict(import_id=r[0], empresa_codigo=r[1], periodo_referencia=r[2], arquivo_nome=r[3], enviado_em=r[4])
@@ -1268,7 +1304,8 @@ def gravar_historico_import(conn, import_id: str, empresa_codigo: str, periodo_r
 def listar_historico_importacoes(conn, empresa_codigo: Optional[str] = None, somente_vigentes: bool = False) -> list[dict]:
     """Uploads ja' feitos (auditoria), mais recente primeiro. v0.45.0: cada item
     traz `vigente` (True = e' a conferencia atual daquele empresa+periodo);
-    `somente_vigentes=True` devolve so' essas."""
+    `somente_vigentes=True` devolve so' essas. v0.46.0: traz tambem `arquivado`
+    (True = envio desfeito pela contadora; nunca e' vigente)."""
     with conn.cursor() as cur:
         if empresa_codigo:
             cur.execute(
@@ -1280,9 +1317,161 @@ def listar_historico_importacoes(conn, empresa_codigo: Optional[str] = None, som
         cols = [d[0] for d in cur.description]
         linhas = [dict(zip(cols, row)) for row in cur.fetchall()]
     ids_vigentes = {v["import_id"] for v in listar_vigentes(conn, empresa_codigo)}
+    arquivados: set = set()
+    if tem_arquivamento(conn):
+        with conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT import_id::text FROM egc.nf_manifesto_import WHERE arquivado_em IS NOT NULL"
+                        + (" AND empresa_codigo = %s" if empresa_codigo else ""),
+                        (empresa_codigo,) if empresa_codigo else None)
+            arquivados = {r[0] for r in cur.fetchall()}
     for h in linhas:
         h["vigente"] = str(h["import_id"]) in ids_vigentes
+        h["arquivado"] = str(h["import_id"]) in arquivados
     return [h for h in linhas if h["vigente"]] if somente_vigentes else linhas
+
+
+# ─────────────────────────────────────────────
+#  ENVIOS (v0.46.0): 1 arquivo subido = 1 envio = varios meses. Arquivar = desfazer sem apagar.
+# ─────────────────────────────────────────────
+
+JANELA_LOTE_LEGADO_SEG = 180   # envios antigos (sem lote_id): meses do mesmo arquivo gravados em ate' 3 min um do outro
+
+
+def _agrupar_envios(imports: list) -> list:
+    """Agrupa os imports (1 por mes) em envios. Com lote_id, o lote manda; sem lote_id (envios anteriores
+    a v0.46.0) agrupa por empresa+arquivo+usuario com gravacoes quase juntas. Funcao pura."""
+    envios: dict = {}
+    legado = sorted((i for i in imports if not i.get("lote_id")), key=lambda i: (i["empresa_codigo"], i["criado_em"]))
+    for i in imports:
+        if i.get("lote_id"):
+            envios.setdefault(("L", str(i["lote_id"])), []).append(i)
+    ultimo = None
+    n = 0
+    for i in legado:
+        chave_arq = (i["empresa_codigo"], i.get("arquivo_nome"), i.get("criado_por"))
+        if ultimo and ultimo[0] == chave_arq and (i["criado_em"] - ultimo[1]).total_seconds() <= JANELA_LOTE_LEGADO_SEG:
+            pass
+        else:
+            n += 1
+        envios.setdefault(("A", n), []).append(i)
+        ultimo = (chave_arq, i["criado_em"])
+    saida = []
+    for chave, itens in envios.items():
+        itens = sorted(itens, key=lambda x: _chave_periodo(x["periodo_referencia"]))
+        arq = [i for i in itens if i.get("arquivado_em")]
+        saida.append({
+            "envio_id": f"{chave[0]}:{chave[1]}",
+            "empresa_codigo": itens[0]["empresa_codigo"], "arquivo_nome": itens[0].get("arquivo_nome"),
+            "usuario": itens[0].get("criado_por"), "enviado_em": min(i["criado_em"] for i in itens),
+            "import_ids": [i["import_id"] for i in itens], "periodos": [i["periodo_referencia"] for i in itens],
+            "total_notas": sum(int(i.get("notas") or 0) for i in itens),
+            "arquivado": len(arq) == len(itens), "arquivado_parcial": 0 < len(arq) < len(itens),
+            "arquivado_em": max((i["arquivado_em"] for i in arq), default=None),
+            "arquivado_por": next((i.get("arquivado_por") for i in arq), None),
+            "arquivado_motivo": next((i.get("arquivado_motivo") for i in arq if i.get("arquivado_motivo")), None),
+        })
+    return sorted(saida, key=lambda e: e["enviado_em"], reverse=True)
+
+
+def listar_envios(conn, empresa_codigo: Optional[str] = None) -> list[dict]:
+    """Todos os envios (arquivos subidos), mais recente primeiro, ativos e arquivados, cada um com seus meses,
+    quantas notas, e quais meses ainda VALEM (`periodos_vigentes`) ou foram substituidos por um envio mais novo."""
+    col = tem_arquivamento(conn)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT import_id::text, empresa_codigo, MAX(periodo_referencia), MAX(arquivo_nome), MAX(criado_por),
+                   MAX(criado_em), COUNT(*)
+                   {', MAX(lote_id::text), MAX(arquivado_em), MAX(arquivado_por), MAX(arquivado_motivo)' if col else ''}
+            FROM egc.nf_manifesto_import
+            WHERE (%s::text IS NULL OR empresa_codigo = %s)
+            GROUP BY import_id, empresa_codigo
+            """,
+            (empresa_codigo, empresa_codigo),
+        )
+        imports = []
+        for r in cur.fetchall():
+            imports.append({"import_id": r[0], "empresa_codigo": r[1], "periodo_referencia": r[2], "arquivo_nome": r[3],
+                            "criado_por": r[4], "criado_em": r[5], "notas": r[6],
+                            "lote_id": r[7] if col else None, "arquivado_em": r[8] if col else None,
+                            "arquivado_por": r[9] if col else None, "arquivado_motivo": r[10] if col else None})
+    vigentes = {v["import_id"] for v in listar_vigentes(conn, empresa_codigo)}
+    envios = _agrupar_envios(imports)
+    for e in envios:
+        e["periodos_vigentes"] = [p for p, i in zip(e["periodos"], e["import_ids"]) if i in vigentes]
+        e["periodos_substituidos"] = [p for p, i in zip(e["periodos"], e["import_ids"])
+                                      if i not in vigentes and not e["arquivado"]]
+    return envios
+
+
+def previa_arquivamento(conn, import_ids: list) -> list[dict]:
+    """O que acontece se estes imports forem arquivados: por (empresa, periodo) deles, qual envio anterior
+    passa a valer (`passa_a_valer` = nome do arquivo) ou None (periodo fica sem conferencia)."""
+    import_ids = [str(i) for i in import_ids]
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT import_id::text, empresa_codigo, periodo_referencia "
+                    "FROM egc.nf_manifesto_import WHERE import_id = ANY(%s::uuid[])", (import_ids,))
+        alvo = cur.fetchall()
+        saida = []
+        for imp, emp, per in alvo:
+            cur.execute(
+                f"""SELECT arquivo_nome FROM egc.nf_manifesto_import
+                    WHERE empresa_codigo = %s AND periodo_referencia = %s AND {_ativo(conn)}
+                      AND NOT (import_id = ANY(%s::uuid[]))
+                    GROUP BY import_id, arquivo_nome ORDER BY MAX(criado_em) DESC LIMIT 1""",
+                (emp, per, import_ids),
+            )
+            row = cur.fetchone()
+            saida.append({"empresa_codigo": emp, "periodo_referencia": per, "import_id": imp,
+                          "passa_a_valer": (row[0] or "sem nome") if row else None})
+    return sorted(saida, key=lambda x: (x["empresa_codigo"], _chave_periodo(x["periodo_referencia"])))
+
+
+def _mudar_arquivamento(conn, import_ids: list, arquivar: bool, usuario: str, motivo: Optional[str]) -> dict:
+    if not tem_arquivamento(conn):
+        raise ArquivamentoIndisponivel("rode o bloco 23 do schema.sql no Supabase antes de arquivar/restaurar envios")
+    import_ids = [str(i) for i in import_ids]
+    if not import_ids:
+        return {"empresas": [], "afetados": 0, "resumos": {}}
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT empresa_codigo FROM egc.nf_manifesto_import WHERE import_id = ANY(%s::uuid[])", (import_ids,))
+        empresas = [r[0] for r in cur.fetchall()]
+    antes = {(v["empresa_codigo"], v["periodo_referencia"]): v for e in empresas for v in listar_vigentes(conn, e)}
+    with _transacao(conn):
+        with conn.cursor() as cur:
+            if arquivar:
+                cur.execute(
+                    "UPDATE egc.nf_manifesto_import SET arquivado_em = now(), arquivado_por = %s, arquivado_motivo = %s "
+                    "WHERE import_id = ANY(%s::uuid[]) AND arquivado_em IS NULL",
+                    (usuario, (motivo or "").strip() or None, import_ids),
+                )
+            else:
+                cur.execute(
+                    "UPDATE egc.nf_manifesto_import SET arquivado_em = NULL, arquivado_por = NULL, arquivado_motivo = NULL "
+                    "WHERE import_id = ANY(%s::uuid[]) AND arquivado_em IS NOT NULL",
+                    (import_ids,),
+                )
+            afetados = cur.rowcount
+    resumos = {e: reconferir_empresa(conn, e) for e in empresas}
+    depois = {(v["empresa_codigo"], v["periodo_referencia"]): v for e in empresas for v in listar_vigentes(conn, e)}
+    mudou = []
+    for chave in sorted(set(antes) | set(depois), key=lambda k: (k[0], _chave_periodo(k[1]))):
+        a, d = antes.get(chave), depois.get(chave)
+        if (a or {}).get("import_id") != (d or {}).get("import_id"):
+            mudou.append({"empresa_codigo": chave[0], "periodo_referencia": chave[1],
+                          "antes": (a or {}).get("arquivo_nome"), "depois": (d or {}).get("arquivo_nome")})
+    return {"empresas": empresas, "afetados": int(afetados or 0), "resumos": resumos, "mudancas": mudou}
+
+
+def arquivar_envio(conn, import_ids: list, usuario: str, motivo: Optional[str] = None) -> dict:
+    """Desfaz um envio SEM apagar nada: marca os imports como arquivados e refaz a conferencia da empresa
+    (o envio anterior de cada mes, se houver, volta a valer). Devolve {mudancas: [{periodo, antes, depois}]}."""
+    return _mudar_arquivamento(conn, import_ids, True, usuario, motivo)
+
+
+def restaurar_envio(conn, import_ids: list, usuario: str) -> dict:
+    """Desfaz o arquivamento: o envio volta a competir como os demais (vale o mais recente de cada mes)."""
+    return _mudar_arquivamento(conn, import_ids, False, usuario, None)
 
 
 def resumo_vigentes(conn, empresa_codigo: Optional[str] = None) -> list[dict]:
@@ -1399,14 +1588,14 @@ def listar_orfaos_sienge(conn, import_id: str) -> pd.DataFrame:
             LEFT JOIN LATERAL (
                 SELECT mm.cfop, mm.valor, mm.empresa_codigo AS emp, mm.periodo_referencia AS per
                 FROM egc.nf_manifesto_import mm
-                WHERE mm.cnpj_normalizado = regexp_replace(COALESCE(o.creditor_cnpj, ''), '\\D', '', 'g')
+                WHERE __ATIVO_MM__ AND mm.cnpj_normalizado = regexp_replace(COALESCE(o.creditor_cnpj, ''), '\\D', '', 'g')
                   AND mm.numero_normalizado = COALESCE(
                         NULLIF(ltrim(regexp_replace(COALESCE(o.document_number, ''), '\\D', '', 'g'), '0'), ''), '0')
                 ORDER BY (mm.import_id = o.import_id) DESC, (mm.empresa_codigo = o.empresa_codigo) DESC, mm.criado_em DESC
                 LIMIT 1
             ) mx ON true
             WHERE o.import_id = %s
-            """,
+            """.replace("__ATIVO_MM__", _ativo(conn, "mm")),
             (import_id,),
         )
         cols = [d[0] for d in cur.description]
@@ -1457,6 +1646,7 @@ def listar_pendencias_abertas(conn, empresa_codigo: Optional[str] = None, limite
             WITH ultimo_import AS (
                 SELECT DISTINCT ON (empresa_codigo, periodo_referencia) import_id
                 FROM egc.nf_manifesto_import
+                WHERE __ATIVO__
                 ORDER BY empresa_codigo, periodo_referencia, criado_em DESC
             )
             SELECT m.empresa_codigo, m.periodo_referencia, m.numero_nota, m.cfop, m.data_emissao,
@@ -1471,7 +1661,7 @@ def listar_pendencias_abertas(conn, empresa_codigo: Optional[str] = None, limite
               AND (%s IS NULL OR m.empresa_codigo = %s)
             ORDER BY m.data_emissao DESC
             LIMIT %s
-            """,
+            """.replace("__ATIVO__", _ativo(conn)),
             (empresa_codigo, empresa_codigo, limite),
         )
         cols = [d[0] for d in cur.description]
@@ -1519,13 +1709,14 @@ def listar_orfaos_abertos(conn, empresa_codigo: Optional[str] = None, limite: in
             FROM egc.nf_bills_orfaos o
             JOIN (SELECT DISTINCT ON (empresa_codigo, periodo_referencia) import_id
                   FROM (SELECT import_id, empresa_codigo, periodo_referencia, MAX(criado_em) AS ult
-                        FROM egc.nf_manifesto_import GROUP BY import_id, empresa_codigo, periodo_referencia) z
+                        FROM egc.nf_manifesto_import WHERE __ATIVO__
+                        GROUP BY import_id, empresa_codigo, periodo_referencia) z
                   ORDER BY empresa_codigo, periodo_referencia, ult DESC) vig ON vig.import_id = o.import_id
             LEFT JOIN egc.nf_import_historico h ON h.import_id = o.import_id
             LEFT JOIN LATERAL (
                 SELECT mm.cfop, mm.valor, mm.empresa_codigo AS emp, mm.periodo_referencia AS per
                 FROM egc.nf_manifesto_import mm
-                WHERE mm.cnpj_normalizado = regexp_replace(COALESCE(o.creditor_cnpj, ''), '\\D', '', 'g')
+                WHERE __ATIVO_MM__ AND mm.cnpj_normalizado = regexp_replace(COALESCE(o.creditor_cnpj, ''), '\\D', '', 'g')
                   AND mm.numero_normalizado = COALESCE(
                         NULLIF(ltrim(regexp_replace(COALESCE(o.document_number, ''), '\\D', '', 'g'), '0'), ''), '0')
                 ORDER BY (mm.import_id = o.import_id) DESC, (mm.empresa_codigo = o.empresa_codigo) DESC, mm.criado_em DESC
@@ -1535,7 +1726,7 @@ def listar_orfaos_abertos(conn, empresa_codigo: Optional[str] = None, limite: in
               AND (%s IS NULL OR o.empresa_codigo = %s)
             ORDER BY o.issue_date DESC
             LIMIT %s
-            """,
+            """.replace("__ATIVO__", _ativo(conn)).replace("__ATIVO_MM__", _ativo(conn, "mm")),
             (empresa_codigo, empresa_codigo, limite),
         )
         cols = [d[0] for d in cur.description]
@@ -1590,7 +1781,8 @@ def buscar_notas(conn, numero: Optional[str] = None, fornecedor: Optional[str] =
             WHERE m.import_id IN (
                     SELECT DISTINCT ON (empresa_codigo, periodo_referencia) import_id
                     FROM (SELECT import_id, empresa_codigo, periodo_referencia, MAX(criado_em) AS ult
-                          FROM egc.nf_manifesto_import GROUP BY import_id, empresa_codigo, periodo_referencia) z
+                          FROM egc.nf_manifesto_import WHERE {_ativo(conn)}
+                          GROUP BY import_id, empresa_codigo, periodo_referencia) z
                     ORDER BY empresa_codigo, periodo_referencia, ult DESC)
               AND {where}
             ORDER BY m.criado_em DESC, m.data_emissao DESC
@@ -1600,6 +1792,40 @@ def buscar_notas(conn, numero: Optional[str] = None, fornecedor: Optional[str] =
         )
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def tabela_conferencia(conn, vigentes: list) -> pd.DataFrame:
+    """v0.46.0: conferencia de VARIOS periodos numa tabela so' (notas do manifesto + titulos do Sienge sem
+    nota), com a coluna `periodo`. `vigentes` = itens de resumo_vigentes/listar_vigentes (import_id +
+    periodo_referencia). Ordem: periodo, depois o que ja' vinha ordenado (pendentes primeiro)."""
+    partes = []
+    for v in sorted(vigentes, key=lambda x: _chave_periodo(x["periodo_referencia"])):
+        t = listar_conciliacao(conn, v["import_id"])
+        try:
+            o = listar_orfaos_sienge(conn, v["import_id"])
+        except Exception:
+            o = pd.DataFrame()
+        if o is not None and not o.empty:
+            t = pd.concat([t, o], ignore_index=True)
+        if not t.empty:
+            t = t.copy()
+            t.insert(0, "periodo", v["periodo_referencia"])
+            partes.append(t)
+    if not partes:
+        return pd.DataFrame()
+    return pd.concat(partes, ignore_index=True)
+
+
+def ignoradas_conferencia(conn, vigentes: list) -> pd.DataFrame:
+    """Notas retiradas da conferencia (canceladas/Entrada) dos periodos pedidos, com a coluna `periodo`."""
+    partes = []
+    for v in sorted(vigentes, key=lambda x: _chave_periodo(x["periodo_referencia"])):
+        d = listar_ignoradas(conn, v["import_id"])
+        if d is not None and not d.empty:
+            d = d.copy()
+            d.insert(0, "periodo", v["periodo_referencia"])
+            partes.append(d)
+    return pd.concat(partes, ignore_index=True) if partes else pd.DataFrame()
 
 
 STATUS_PENDENCIA_VALIDOS = ("PENDENTE", "ENVIADO_SUPRIMENTOS", "RESOLVIDO", "DESCARTADO")

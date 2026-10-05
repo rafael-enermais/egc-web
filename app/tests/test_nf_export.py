@@ -64,3 +64,67 @@ def test_aba_pendencias_traz_cfop_logo_depois_do_numero_01_10():
     cab = [c.value for c in wb["Pendências"][1]]
     assert cab[:2] == ["Nº da nota", "CFOP"], cab
     assert any(r[1] for r in wb["Pendências"].iter_rows(min_row=2, values_only=True)), "CFOP vazio nas pendencias"
+
+
+# ───────────── v0.46.0: varios periodos numa conferencia so' ─────────────
+def _tabela_2_periodos():
+    import datetime as dt
+    base = dict(cfop="5102", data_emissao=dt.date(2026, 7, 1), valor=10.0, fornecedor_nome="F", fornecedor_cnpj="1",
+                confianca=None, sienge_bill_id=None, sienge_documento=None, sienge_valor=None, observacao=None,
+                pendencia_status="PENDENTE", atualizado_em=dt.datetime(2026, 10, 1))
+    L = [
+        {**base, "periodo": "08/2026", "numero_nota": "3", "status": "NAO_ENCONTRADA", "registro_id": 3, "origem": "MANIFESTO"},
+        {**base, "periodo": "07/2026", "numero_nota": "1", "status": "LANCADA", "registro_id": 1, "origem": "MANIFESTO"},
+        {**base, "periodo": "07/2026", "numero_nota": "2", "status": "VALOR_DIVERGENTE", "registro_id": 2, "origem": "MANIFESTO"},
+        {**base, "periodo": "08/2026", "numero_nota": "[Sienge] 9", "status": "SIENGE_SEM_MANIFESTO", "registro_id": 9, "origem": "SIENGE_ORFAO"},
+    ]
+    import pandas as pd
+    return pd.DataFrame(L)
+
+
+def test_rotulo_e_sufixo_de_periodos():
+    import nf_export
+    assert nf_export.rotulo_periodos(["07/2026"]) == "07/2026"
+    assert nf_export.rotulo_periodos(["02/2026", "01/2026", "03/2026"]) == "01/2026 a 03/2026"
+    assert nf_export.rotulo_periodos(["12/2025", "01/2026"]) == "12/2025 a 01/2026"       # vira o ano
+    assert nf_export.rotulo_periodos(["01/2026", "03/2026"]) == "01/2026, 03/2026"        # com buraco: lista
+    assert nf_export.rotulo_periodos([]) == ""
+    assert nf_export.sufixo_arquivo(["07/2026"]) == "07_2026"
+    assert nf_export.sufixo_arquivo(["01/2026", "02/2026"]) == "01_2026_a_02_2026"
+    assert nf_export.sufixo_arquivo(["01/2026", "03/2026"]) == "01_2026_03_2026"
+
+
+def test_resumo_por_periodo_soma_igual_ao_resumo_geral():
+    import nf_export
+    t = _tabela_2_periodos()
+    rpp = nf_export.resumo_por_periodo(t)
+    assert list(rpp["Período"]) == ["07/2026", "08/2026"]
+    assert list(rpp["Notas no manifesto"]) == [2, 1] and list(rpp["Lançadas"]) == [1, 0]
+    assert list(rpp["Sienge sem nota"]) == [0, 1] and list(rpp["Total de pendências"]) == [1, 2]
+    geral = nf_export.resumo_conferencia(t)
+    assert rpp["Total de pendências"].sum() == geral["pendencias"] and rpp["Notas no manifesto"].sum() == geral["total"]
+
+
+def test_xlsx_de_varios_periodos_tem_resumo_por_periodo_e_coluna_periodo():
+    import io
+    import openpyxl
+    import nf_export
+    t = _tabela_2_periodos()
+    wb = openpyxl.load_workbook(io.BytesIO(nf_export.gerar_xlsx_conferencia(t, "Energia", "07/2026 a 08/2026", "a.xlsx, b.xlsx", "x")))
+    assert wb.sheetnames[:2] == ["Resumo", "Resumo por período"]
+    ws = wb["Conferência completa"]
+    cab = [c.value for c in ws[1]]
+    assert cab[0] == "Período" and ws.max_row == 1 + len(t)
+    assert wb["Pendências"].max_row == 1 + 3
+    resumo = {r[0].value: r[1].value for r in wb["Resumo"].iter_rows(min_row=2)}
+    assert resumo["Período de referência"] == "07/2026 a 08/2026" and resumo["Notas no manifesto"] == 3
+
+
+def test_xlsx_de_um_periodo_continua_sem_a_aba_nova():
+    import io
+    import openpyxl
+    import nf_export
+    t = _tabela_2_periodos()
+    t = t[t["periodo"] == "07/2026"]
+    wb = openpyxl.load_workbook(io.BytesIO(nf_export.gerar_xlsx_conferencia(t, "Energia", "07/2026", None, "x")))
+    assert "Resumo por período" not in wb.sheetnames

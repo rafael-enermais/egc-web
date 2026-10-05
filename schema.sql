@@ -891,3 +891,21 @@ INSERT INTO egc.nf_debtor_empresa (debtor_id, empresa_codigo, atualizado_por)
 VALUES (21, 'SETTE', 'seed_sienge')
 ON CONFLICT (debtor_id) DO NOTHING;
 -- Fim do bloco 22. Rodar so' este bloco no SQL Editor do Supabase.
+
+-- =====================================================================
+-- BLOCO 23 — v0.46.0: arquivar / restaurar um ENVIO de manifesto (Notas Fiscais).
+-- "Desfazer upload" sem apagar nada: o envio arquivado sai da conferencia vigente
+-- (e do chat), o envio anterior do mesmo mes volta a valer e o proprio envio fica
+-- guardado no historico, com quem arquivou, quando e por que. Restaurar desfaz.
+-- lote_id agrupa os meses do MESMO arquivo (1 arquivo com 8 meses = 8 import_id, 1 lote).
+-- Aditivo e idempotente; linhas antigas ficam com lote_id NULL (o app agrupa pelo
+-- arquivo/horario). Rodar ANTES de publicar a v0.46.0. Sem este bloco o app avisa
+-- que o arquivamento ainda nao esta disponivel e continua funcionando como antes.
+-- =====================================================================
+ALTER TABLE egc.nf_manifesto_import ADD COLUMN IF NOT EXISTS lote_id uuid;
+ALTER TABLE egc.nf_manifesto_import ADD COLUMN IF NOT EXISTS arquivado_em timestamptz;
+ALTER TABLE egc.nf_manifesto_import ADD COLUMN IF NOT EXISTS arquivado_por text;
+ALTER TABLE egc.nf_manifesto_import ADD COLUMN IF NOT EXISTS arquivado_motivo text;
+CREATE INDEX IF NOT EXISTS idx_nf_manifesto_lote ON egc.nf_manifesto_import (lote_id) WHERE lote_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_nf_manifesto_ativo ON egc.nf_manifesto_import (empresa_codigo, periodo_referencia) WHERE arquivado_em IS NULL;
+-- Fim do bloco 23. Rodar so' este bloco no SQL Editor do Supabase.

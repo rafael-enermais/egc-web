@@ -131,9 +131,10 @@ def preparar(nome: str, r: dict, nomes_empresa: Optional[dict] = None) -> Option
         df = pd.DataFrame(r["rodadas"])
         formatos = {"taxa_conciliacao": "pct"}
         g = df.assign(rodada=df["empresa_codigo"] + " " + df["periodo_referencia"].astype(str))
+        ys = ["total_lancadas", "notas_pendentes"] if "notas_pendentes" in g.columns else ["total_lancadas", "total_pendencias"]
         return {"titulo": titulo, "subtitulo": "", "df": df, "formatos": formatos, "graficos": {
-            "Notas lançadas x pendentes por rodada": {"df": g[["rodada", "total_lancadas", "total_pendencias"]], "x": "rodada",
-                                                       "ys": ["total_lancadas", "total_pendencias"], "formato": "int", "empilhado": True}}}
+            "Notas lançadas x pendentes por rodada": {"df": g[["rodada"] + ys], "x": "rodada",
+                                                       "ys": ys, "formato": "int", "empilhado": True}}}
 
     for chave, rotulo_x, col_valor in (("pendencias", "fornecedor_nome", "valor"), ("notas", "fornecedor_nome", "valor")):
         if chave in r and r[chave]:
@@ -165,6 +166,7 @@ _ROTULOS_COLUNA = {
     "criado_em": "Criado em", "usuario": "Usuário", "arquivos": "Arquivos", "tipo": "Tipo", "mensagem": "Mensagem",
     "nivel": "Nível", "conta": "Conta", "grupo": "Grupo", "granularidade": "Base", "taxa_conciliacao": "Taxa de conciliação",
     "total_notas": "Total de notas", "total_lancadas": "Lançadas", "total_pendencias": "Pendências", "arquivo_nome": "Arquivo",
+    "notas_pendentes": "Notas pendentes", "sienge_sem_manifesto": "Sienge sem nota", "arquivo": "Arquivo",
     "valor_atual": "Valor atual", "valor_original_pdf": "Valor original (PDF)", "origem": "Origem", "gerado_em": "Gerado em",
 }
 
