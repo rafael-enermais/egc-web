@@ -121,7 +121,8 @@ JANELA_ATUALIZAR_DIAS = 365   # "ano sempre atualizado": mesma janela do sync di
 
 if _ultima_sync:
     st.caption(f"🔄 Última sincronização: {formatacao.hora_br(_ultima_sync)}. O Sienge é copiado sozinho todo dia às 04h "
-               "(ano inteiro) e as conferências são refeitas na sequência -- use o botão só se precisar do dado de agora.")
+               "(ano inteiro) e as conferências são refeitas na sequência -- use o botão só se precisar do dado de agora. "
+               "O botão copia o ano inteiro e pode levar vários minutos: não feche a página enquanto roda.")
 else:
     st.error(
         "Ainda não há nenhuma sincronização registrada com o Sienge. "
@@ -142,7 +143,7 @@ def _total_pendencias_vigentes() -> dict:
 
 
 if st.button("🔄 Atualizar agora", key="nf_btn_sync",
-             help=f"Copia do Sienge os últimos {JANELA_ATUALIZAR_DIAS} dias e refaz todas as conferências."):
+             help=f"Copia do Sienge os últimos {JANELA_ATUALIZAR_DIAS} dias e refaz todas as conferências (leva vários minutos)."):
     try:
         base_url = st.secrets["SIENGE_BASE_URL"]
         sienge_user = st.secrets["SIENGE_USER"]
@@ -562,6 +563,15 @@ else:
         if "Título Sienge" in tabela_fmt.columns:
             tabela_fmt["Título Sienge"] = tabela_fmt["Título Sienge"].apply(
                 lambda v: "" if pd.isna(v) else str(int(v)))
+        # v0.46.4: na tela, vazio e' vazio (antes aparecia "None"), data em dd/mm/aaaa e "Atualizado em" na hora de
+        # Brasilia (antes mostrava o UTC cru, 3h a frente).
+        if "Emissão" in tabela_fmt.columns:
+            tabela_fmt["Emissão"] = tabela_fmt["Emissão"].apply(
+                lambda v: "" if pd.isna(v) else pd.Timestamp(v).strftime("%d/%m/%Y"))
+        if "Atualizado em" in tabela_fmt.columns:
+            tabela_fmt["Atualizado em"] = tabela_fmt["Atualizado em"].apply(
+                lambda v: "" if pd.isna(v) else formatacao.hora_br(v))
+        tabela_fmt = tabela_fmt.astype(object).where(tabela_fmt.notna(), "")
         st.dataframe(tabela_fmt, hide_index=True, use_container_width=True)
 
         pendencias_df = tabela[tabela["status"] != "LANCADA"]
@@ -664,7 +674,8 @@ else:
                         _log_info(f"Pendência nota {linha['numero_nota']} -> {novo_status}", emp_det)
                         st.rerun()
 
-        with st.expander("📝 Anotar uma pendência (fica na tela e na planilha)"):
+        with st.expander("📝 Anotar uma pendência (fica na tela e na planilha)",
+                         expanded=bool(st.session_state.get("nf_anot_aberto"))):
             st.caption(
                 "Escreva o que for importante sobre a linha (ex.: \"fornecedor vai reemitir\", \"combustível, fora do AP\"). "
                 "A anotação **acompanha a nota**: continua lá depois de novo upload, de \"Atualizar agora\" e de arquivar/"
@@ -698,7 +709,8 @@ else:
                         st.caption(f"Anotação atual: {_atual_a}")
                     _modelos = ["(escrever livremente)"] + MODELOS_ANOTACAO
                     modelo = st.selectbox("Modelo rápido (opcional)", _modelos, key="nf_anot_modelo")
-                    texto_livre = st.text_input("Complemento / texto livre", key="nf_anot_texto", max_chars=500)
+                    _n_anot = st.session_state.get("nf_anot_n", 0)     # muda a chave depois de salvar -> o campo volta vazio
+                    texto_livre = st.text_input("Complemento / texto livre", key=f"nf_anot_texto_{_n_anot}", max_chars=500)
                     b1, b2 = st.columns(2)
                     if b1.button("Salvar anotação", key="nf_btn_salvar_anot", type="primary"):
                         _partes = [x for x in ((modelo if modelo != _modelos[0] else ""), texto_livre.strip()) if x]
@@ -714,7 +726,8 @@ else:
                             else:
                                 flash("ok", f"Anotação salva na nota {_linha_a['numero_nota']}.")
                                 _log_info(f"Anotação na nota {_linha_a['numero_nota']} ({_linha_a['periodo']})", emp_det)
-                                st.session_state.pop("nf_anot_texto", None)
+                                st.session_state["nf_anot_n"] = _n_anot + 1
+                                st.session_state["nf_anot_aberto"] = True
                                 st.rerun()
                     if _atual_a and b2.button("Remover anotação", key="nf_btn_remover_anot"):
                         try:
@@ -722,6 +735,7 @@ else:
                         except Exception as exc:
                             st.error(f"Não consegui remover a anotação: {exc}")
                         else:
+                            st.session_state["nf_anot_aberto"] = True
                             flash("ok", f"Anotação removida da nota {_linha_a['numero_nota']}.")
                             _log_info(f"Anotação removida da nota {_linha_a['numero_nota']} ({_linha_a['periodo']})", emp_det)
                             st.rerun()
