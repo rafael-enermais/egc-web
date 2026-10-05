@@ -310,14 +310,26 @@ def gravar_manifesto(conn, empresa_codigo: str, periodo_referencia: str,
     """
     import_id = str(uuid.uuid4())
     usa_lote = bool(lote_id) and tem_arquivamento(conn)
-    with conn.cursor() as cur:
-        for _, row in df.iterrows():
-            # v0.44.3: data ja' parseada (date) -- nunca a string crua da Receita
-            # ("2026.07.06"), que o Postgres/pandas podiam ler com dia/mes trocados.
-            data_emissao = row.get("_data_emissao") if "_data_emissao" in row.index else None
-            if data_emissao is None or (not isinstance(data_emissao, date) and pd.isna(data_emissao)):
-                data_emissao = nf_parser.parse_data_emissao(row.get("DtEmi"))
-            cur.execute(
+    linhas = []
+    for _, row in df.iterrows():
+        # v0.44.3: data ja' parseada (date) -- nunca a string crua da Receita
+        # ("2026.07.06"), que o Postgres/pandas podiam ler com dia/mes trocados.
+        data_emissao = row.get("_data_emissao") if "_data_emissao" in row.index else None
+        if data_emissao is None or (not isinstance(data_emissao, date) and pd.isna(data_emissao)):
+            data_emissao = nf_parser.parse_data_emissao(row.get("DtEmi"))
+        linhas.append((
+            import_id, empresa_codigo, periodo_referencia,
+            str(row.get("Num") or ""), row.get("_numero_normalizado"),
+            row.get("Tipo"), data_emissao, row.get("_valor_float"), row.get("CFOP"),
+            row.get("Emissor Nome"), row.get("Emissor CNPJ/CPF"), row.get("_cnpj_normalizado"),
+            row.get("UF"), row.get("Chave"), row.get("_chave_modelo"),
+            row.get("_chave_serie"), row.get("_chave_numero"), nome_arquivo, usuario,
+        ) + ((str(lote_id),) if usa_lote else ()))
+    if linhas:
+        with conn.cursor() as cur:
+            # v0.47.0: uma ida ao banco por 500 notas (antes: uma por nota).
+            execute_values(
+                cur,
                 """
                 INSERT INTO egc.nf_manifesto_import
                     (import_id, empresa_codigo, periodo_referencia, numero_nota,
@@ -325,17 +337,12 @@ def gravar_manifesto(conn, empresa_codigo: str, periodo_referencia: str,
                      fornecedor_nome, fornecedor_cnpj, cnpj_normalizado, uf,
                      chave_acesso, chave_modelo, chave_serie, chave_numero,
                      arquivo_nome, criado_por, criado_em""" + (", lote_id" if usa_lote else "") + """)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now()"""
-                + (", %s::uuid" if usa_lote else "") + """)
+                VALUES %s
                 """,
-                (
-                    import_id, empresa_codigo, periodo_referencia,
-                    str(row.get("Num") or ""), row.get("_numero_normalizado"),
-                    row.get("Tipo"), data_emissao, row.get("_valor_float"), row.get("CFOP"),
-                    row.get("Emissor Nome"), row.get("Emissor CNPJ/CPF"), row.get("_cnpj_normalizado"),
-                    row.get("UF"), row.get("Chave"), row.get("_chave_modelo"),
-                    row.get("_chave_serie"), row.get("_chave_numero"), nome_arquivo, usuario,
-                ) + ((str(lote_id),) if usa_lote else ()),
+                linhas,
+                template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now()"
+                         + (", %s::uuid" if usa_lote else "") + ")",
+                page_size=500,
             )
     return import_id
 
@@ -961,7 +968,8 @@ def janela_orfaos(periodo_referencia, data_min, data_max):
     return None
 
 
-def identificar_e_gravar_bills_orfaos(conn, import_id: str, empresa_codigo: str) -> int:
+def identificar_e_gravar_bills_orfaos(conn, import_id: str, empresa_codigo: str,
+                                      bills: Optional[pd.DataFrame] = None, mapa_debtor: Optional[dict] = None) -> int:
     """
     Roda o filtro reverso pra um import_id (chamado por conciliar_import,
     logo depois do matching normal) e grava o resultado em
@@ -986,8 +994,12 @@ def identificar_e_gravar_bills_orfaos(conn, import_id: str, empresa_codigo: str)
     data_min_janela, data_max_janela = janela
 
     try:
-        mapa_debtor = _mapear_debtor_para_empresa(conn)
-        bills = _carregar_bills_creditores(conn)
+        # v0.47.0: quem confere varios meses de uma vez ja' tem os titulos e o mapa na mao
+        # (reconferir) -- evita reler o espelho inteiro do Sienge a cada mes.
+        if mapa_debtor is None:
+            mapa_debtor = _mapear_debtor_para_empresa(conn)
+        if bills is None:
+            bills = _carregar_bills_creditores(conn)
 
         ja_associados = _bills_associados_no_escopo(conn, import_id, empresa_codigo)
 
@@ -1015,19 +1027,26 @@ def identificar_e_gravar_bills_orfaos(conn, import_id: str, empresa_codigo: str)
 
             cur.execute("DELETE FROM egc.nf_bills_orfaos WHERE import_id = %s", (import_id,))
 
+            linhas_orf = []
             for _, b in orfaos.iterrows():
                 bill_id = int(b["bill_id"])
-                cur.execute(
+                linhas_orf.append(
+                    (import_id, empresa_codigo, bill_id, b["document_number"], b["issue_date"],
+                     float(b["total_invoice_amount"]) if pd.notna(b["total_invoice_amount"]) else None,
+                     b.get("creditor_nome"), b.get("creditor_cnpj"),
+                     status_preservados.get(bill_id, "PENDENTE")))
+            if linhas_orf:
+                execute_values(
+                    cur,
                     """
                     INSERT INTO egc.nf_bills_orfaos
                         (import_id, empresa_codigo, bill_id, document_number, issue_date,
                          total_invoice_amount, creditor_nome, creditor_cnpj, pendencia_status, atualizado_em)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                    VALUES %s
                     """,
-                    (import_id, empresa_codigo, bill_id, b["document_number"], b["issue_date"],
-                     float(b["total_invoice_amount"]) if pd.notna(b["total_invoice_amount"]) else None,
-                     b.get("creditor_nome"), b.get("creditor_cnpj"),
-                     status_preservados.get(bill_id, "PENDENTE")),
+                    linhas_orf,
+                    template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, now())",
+                    page_size=500,
                 )
     except psycopg2.errors.UndefinedTable:
         # egc.nf_bills_orfaos ainda nao existe (bloco 14 do schema.sql nao
@@ -1200,6 +1219,7 @@ def _reconferir(conn, empresa_codigo: str, import_ids: list) -> dict:
                 resumo["total"] = len(sub)
                 obs_ign = observacoes_de_ignoradas(sub, ignoradas_por_import[imp])
                 cur.execute("DELETE FROM egc.nf_conciliacao WHERE import_id = %s::uuid", (imp,))
+                linhas_ins = []      # (params, status_final, chave_resumo) -- gravadas de uma vez (v0.47.0)
                 for idx, row in sub.iterrows():
                     resultado = classificacao[idx]
                     if resultado.get("sienge_bill_id") is not None:
@@ -1222,27 +1242,48 @@ def _reconferir(conn, empresa_codigo: str, import_ids: list) -> dict:
                                 _chave_nota(row["Chave"], row["_cnpj_normalizado"], row["_numero_normalizado"]), "PENDENTE")
                     params = (imp, row["id"], resultado["status"], resultado["sienge_bill_id"], resultado["sienge_valor"],
                               resultado["confianca"], resultado["observacao"], pendencia_status)
-                    sql_ins = """
-                        INSERT INTO egc.nf_conciliacao
-                            (import_id, manifesto_id, status, sienge_bill_id, sienge_valor,
-                             confianca, observacao, pendencia_status, atualizado_em)
-                        VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s, now())
-                        """
-                    cur.execute("SAVEPOINT s_nota")
-                    try:
-                        cur.execute(sql_ins, params)
-                        cur.execute("RELEASE SAVEPOINT s_nota")
-                    except psycopg2.errors.CheckViolation:
-                        # CHECK de status ainda sem LANCADA_OUTRA_EMPRESA (bloco 19 nao rodado):
-                        # grava como LANCADA mantendo o alerta na observacao.
-                        cur.execute("ROLLBACK TO SAVEPOINT s_nota")
-                        resumo["lancadas"] += 1
-                        resumo["pendencias"] -= 1
-                        status_final = "LANCADA"
-                        cur.execute(sql_ins, params[:2] + ("LANCADA",) + params[3:7] + (None,))
                     chave_resumo = _STATUS_RESUMO.get(status_final)
                     if chave_resumo:
                         resumo[chave_resumo] += 1
+                    linhas_ins.append((params, chave_resumo))
+                if linhas_ins:
+                    cur.execute("SAVEPOINT s_conc")
+                    try:
+                        execute_values(
+                            cur,
+                            """
+                            INSERT INTO egc.nf_conciliacao
+                                (import_id, manifesto_id, status, sienge_bill_id, sienge_valor,
+                                 confianca, observacao, pendencia_status, atualizado_em)
+                            VALUES %s
+                            """,
+                            [p for p, _c in linhas_ins],
+                            template="(%s::uuid, %s, %s, %s, %s, %s, %s, %s, now())",
+                            page_size=500,
+                        )
+                        cur.execute("RELEASE SAVEPOINT s_conc")
+                    except psycopg2.errors.CheckViolation:
+                        # CHECK de status ainda sem LANCADA_OUTRA_EMPRESA (bloco 19 nao rodado): regrava nota a nota,
+                        # gravando como LANCADA a que o CHECK recusa e mantendo o alerta na observacao.
+                        cur.execute("ROLLBACK TO SAVEPOINT s_conc")
+                        sql_ins = """
+                            INSERT INTO egc.nf_conciliacao
+                                (import_id, manifesto_id, status, sienge_bill_id, sienge_valor,
+                                 confianca, observacao, pendencia_status, atualizado_em)
+                            VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s, now())
+                            """
+                        for params, chave_resumo in linhas_ins:
+                            cur.execute("SAVEPOINT s_nota")
+                            try:
+                                cur.execute(sql_ins, params)
+                                cur.execute("RELEASE SAVEPOINT s_nota")
+                            except psycopg2.errors.CheckViolation:
+                                cur.execute("ROLLBACK TO SAVEPOINT s_nota")
+                                resumo["lancadas"] += 1
+                                resumo["pendencias"] -= 1
+                                if chave_resumo:
+                                    resumo[chave_resumo] -= 1
+                                cur.execute(sql_ins, params[:2] + ("LANCADA",) + params[3:7] + (None,))
                 cur.execute(
                     """
                     INSERT INTO egc.nf_import_historico
@@ -1264,7 +1305,8 @@ def _reconferir(conn, empresa_codigo: str, import_ids: list) -> dict:
         for imp in import_ids:
             if resumos[imp]["total"]:
                 with _transacao(conn):
-                    resumos[imp]["orfaos_sienge"] = identificar_e_gravar_bills_orfaos(conn, imp, empresa_codigo)
+                    resumos[imp]["orfaos_sienge"] = identificar_e_gravar_bills_orfaos(
+                        conn, imp, empresa_codigo, bills=bills, mapa_debtor=mapas[imp])
     return resumos
 
 

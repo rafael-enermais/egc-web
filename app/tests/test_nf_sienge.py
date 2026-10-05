@@ -332,7 +332,10 @@ class FakeConn:
         return self._cursor
 
 
-def test_gravar_manifesto_insere_1_linha_por_nota():
+def test_gravar_manifesto_insere_1_linha_por_nota(monkeypatch):
+    """v0.47.0: as linhas vao em LOTE (execute_values), 1 tupla por nota."""
+    lotes = []
+    monkeypatch.setattr(nf_sienge, "execute_values", lambda cur, sql, linhas, **k: lotes.append((sql, list(linhas))))
     cur = FakeCursor()
     conn = FakeConn(cur)
     df = pd.DataFrame([
@@ -342,8 +345,9 @@ def test_gravar_manifesto_insere_1_linha_por_nota():
          "_chave_modelo": "55", "_chave_serie": "001", "_chave_numero": "10448"},
     ])
     import_id = nf_sienge.gravar_manifesto(conn, "ENERGIA", "08/2026", df, "manifesto.xlsx", "rafael")
-    assert len(cur.executed) == 1
-    assert "INSERT INTO egc.nf_manifesto_import" in cur.executed[0][0]
+    assert len(lotes) == 1 and len(lotes[0][1]) == 1
+    assert "INSERT INTO egc.nf_manifesto_import" in lotes[0][0]
+    assert lotes[0][1][0][0] == import_id and lotes[0][1][0][3] == "10448"
     assert import_id  # uuid gerado
 
 
