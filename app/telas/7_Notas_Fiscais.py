@@ -47,6 +47,17 @@ import formatacao  # noqa: E402
 
 NOME_POR_COD = {cod: nome for cod, nome, _cnpj in EMPRESAS_NF}
 
+# v0.46.3: frases prontas pro "Anotar uma pendência" (a contadora pode complementar com texto livre).
+MODELOS_ANOTACAO = [
+    "Combustível — fora do contas a pagar",
+    "Aguardando o fornecedor reemitir/corrigir a nota",
+    "Enviado ao Suprimentos para lançar",
+    "Lançar no Sienge",
+    "Lançada na empresa errada — corrigir no Sienge",
+    "Nota cancelada/devolvida — sem lançamento",
+    "Conferir com o financeiro",
+]
+
 usuario = usuario_atual()
 sidebar_contexto(usuario)
 
@@ -202,6 +213,9 @@ with st.expander("🏢 Empresa de cada devedor do Sienge — confere se a nota f
             c1.markdown(f"**Devedor {int(d['debtor_id'])}**")
             c2.caption(f"{int(d['titulos'])} título(s)")
             atual = d["empresa_confirmada"] if isinstance(d["empresa_confirmada"], str) else "(sem confirmação)"
+            _ex = d.get("exemplos")
+            if isinstance(_ex, list) and _ex:
+                c2.caption("Exemplos p/ conferir no Sienge:\n\n" + "\n\n".join(f"- {x}" for x in _ex))
             sug = d["empresa_aprendida"] if isinstance(d["empresa_aprendida"], str) else None
             if sug:
                 c3.caption(f"Sugestão do histórico: {sug}")
@@ -649,6 +663,68 @@ else:
                         flash("ok", f"Nota {linha['numero_nota']} marcada como {novo_status}.")
                         _log_info(f"Pendência nota {linha['numero_nota']} -> {novo_status}", emp_det)
                         st.rerun()
+
+        with st.expander("📝 Anotar uma pendência (fica na tela e na planilha)"):
+            st.caption(
+                "Escreva o que for importante sobre a linha (ex.: \"fornecedor vai reemitir\", \"combustível, fora do AP\"). "
+                "A anotação **acompanha a nota**: continua lá depois de novo upload, de \"Atualizar agora\" e de arquivar/"
+                "restaurar, e sai na coluna **Anotação** das planilhas. Fica registrado quem anotou e quando."
+            )
+            if pendencias_df.empty:
+                st.caption("Sem pendência neste período.")
+            elif "chave_ref" not in pendencias_df.columns:
+                st.caption("Anotações indisponíveis nesta consulta.")
+            else:
+                _tem_anot = True
+                try:
+                    _tem_anot = nf_sienge.tem_anotacao(conn)
+                except Exception:
+                    _tem_anot = False
+                if not _tem_anot:
+                    st.info("As anotações precisam do BLOCO 24 no Supabase (arquivo scripts/bloco24_anotacoes.txt). "
+                            "Rodando uma vez, esta caixa passa a funcionar.")
+                else:
+                    _refs = list(pendencias_df["chave_ref"])
+                    _rot_a = {}
+                    for _k, (_, _l) in zip(_refs, pendencias_df.iterrows()):
+                        _marca = "📝 " if isinstance(_l.get("anotacao"), str) and _l.get("anotacao") else ""
+                        _rot_a[_k] = (f"{_marca}{_l['periodo']} · {_l['numero_nota']} · "
+                                      f"{str(_l.get('fornecedor_nome') or '')[:30]} · "
+                                      f"{nf_export.ROTULO_STATUS.get(_l['status'], _l['status'])}")
+                    ref_sel = st.selectbox("Linha", _refs, format_func=lambda k: _rot_a.get(k, k), key="nf_anot_linha")
+                    _linha_a = pendencias_df[pendencias_df["chave_ref"] == ref_sel].iloc[0]
+                    _atual_a = _linha_a.get("anotacao") if isinstance(_linha_a.get("anotacao"), str) else ""
+                    if _atual_a:
+                        st.caption(f"Anotação atual: {_atual_a}")
+                    _modelos = ["(escrever livremente)"] + MODELOS_ANOTACAO
+                    modelo = st.selectbox("Modelo rápido (opcional)", _modelos, key="nf_anot_modelo")
+                    texto_livre = st.text_input("Complemento / texto livre", key="nf_anot_texto", max_chars=500)
+                    b1, b2 = st.columns(2)
+                    if b1.button("Salvar anotação", key="nf_btn_salvar_anot", type="primary"):
+                        _partes = [x for x in ((modelo if modelo != _modelos[0] else ""), texto_livre.strip()) if x]
+                        _texto = " — ".join(_partes)
+                        if not _texto:
+                            st.warning("Escolha um modelo ou escreva o texto da anotação.")
+                        else:
+                            try:
+                                nf_sienge.salvar_anotacao(conn, emp_det, ref_sel, _texto, usuario)
+                            except Exception as exc:
+                                st.error(f"Não consegui salvar a anotação: {exc}")
+                                _log_erro("Falha ao salvar anotação de NF", detalhe=f"{ref_sel}: {exc}", empresa_codigo=emp_det)
+                            else:
+                                flash("ok", f"Anotação salva na nota {_linha_a['numero_nota']}.")
+                                _log_info(f"Anotação na nota {_linha_a['numero_nota']} ({_linha_a['periodo']})", emp_det)
+                                st.session_state.pop("nf_anot_texto", None)
+                                st.rerun()
+                    if _atual_a and b2.button("Remover anotação", key="nf_btn_remover_anot"):
+                        try:
+                            nf_sienge.salvar_anotacao(conn, emp_det, ref_sel, "", usuario)
+                        except Exception as exc:
+                            st.error(f"Não consegui remover a anotação: {exc}")
+                        else:
+                            flash("ok", f"Anotação removida da nota {_linha_a['numero_nota']}.")
+                            _log_info(f"Anotação removida da nota {_linha_a['numero_nota']} ({_linha_a['periodo']})", emp_det)
+                            st.rerun()
 
 st.divider()
 

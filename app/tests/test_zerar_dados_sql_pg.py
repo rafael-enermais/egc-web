@@ -18,7 +18,7 @@ RAIZ = Path(__file__).resolve().parent.parent.parent
 SQL = (RAIZ / "scripts" / "zerar_dados_teste.sql").read_text(encoding="utf-8")
 APAGADAS = {"lancamentos", "importacoes", "despesas_admin_itens", "relatorios_gerados", "projecoes",
             "projecoes_ajustes", "eventos_sistema", "nf_manifesto_import", "nf_conciliacao",
-            "nf_import_historico", "nf_bills_orfaos", "nf_manifesto_ignoradas", "chat_mensagem", "chat_acao"}
+            "nf_import_historico", "nf_bills_orfaos", "nf_manifesto_ignoradas", "nf_anotacao", "chat_mensagem", "chat_acao"}
 MANTIDAS = {"empresas", "textos_relatorio", "config_relatorio", "contexto_fiscal", "contatos_relatorio",
             "nf_debtor_empresa", "nf_bills_sync", "nf_creditors_sync"}
 

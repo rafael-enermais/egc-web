@@ -36,6 +36,7 @@ ROTULOS = {
     "confianca": "Critério do match",
     "sienge_valor": "Valor (Sienge)",
     "observacao": "Observação",
+    "anotacao": "Anotação",   # v0.46.3: texto livre da contadora (tabela egc.nf_anotacao)
     "pendencia_status": "Acompanhamento",
     "atualizado_em": "Atualizado em",
 }
@@ -173,7 +174,7 @@ ROTULO_CRITERIO = {"CHAVE": "Chave de acesso", "NUMERO_CNPJ_VALOR": "Nº + CNPJ 
                    "NUMERO_CNPJ": "Nº + CNPJ (valor diferente)", "CNPJ_VALOR": "CNPJ + valor (nº diferente)"}
 LARGURA_COLUNA = {"Período": 10, "Nº da nota": 14, "CFOP": 8, "Título Sienge": 12, "Documento no Sienge": 20,
                   "Status": 26, "Emissão": 12, "Valor (manifesto)": 17, "Fornecedor": 52, "CNPJ do fornecedor": 20,
-                  "Critério do match": 26, "Valor (Sienge)": 17, "Observação": 60, "Acompanhamento": 22,
+                  "Critério do match": 26, "Valor (Sienge)": 17, "Observação": 60, "Anotação": 40, "Acompanhamento": 22,
                   "Atualizado em": 17}
 LINHA_CABECALHO = 5     # linhas 1-3: logo + titulo, 4: respiro, 5: cabecalho da tabela
 _LOGOS_DIR = Path(__file__).resolve().parent / "assets_relatorio" / "logos"
@@ -340,7 +341,7 @@ def _escrever_aba(wb_writer, nome: str, df: pd.DataFrame, titulo: str, subtitulo
             elif nome_col == "Atualizado em":
                 cell.number_format = "DD/MM/YYYY HH:MM"
                 cell.alignment = Alignment(horizontal="center", vertical="top")
-            elif nome_col == "Observação":
+            elif nome_col in ("Observação", "Anotação"):
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
             else:
                 cell.alignment = Alignment(horizontal="center" if nome_col in centrais else "left", vertical="top")

@@ -909,3 +909,24 @@ ALTER TABLE egc.nf_manifesto_import ADD COLUMN IF NOT EXISTS arquivado_motivo te
 CREATE INDEX IF NOT EXISTS idx_nf_manifesto_lote ON egc.nf_manifesto_import (lote_id) WHERE lote_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_nf_manifesto_ativo ON egc.nf_manifesto_import (empresa_codigo, periodo_referencia) WHERE arquivado_em IS NULL;
 -- Fim do bloco 23. Rodar so' este bloco no SQL Editor do Supabase.
+
+-- =====================================================================
+-- BLOCO 24 — v0.46.3: ANOTACOES da contadora nas linhas da conferencia (Notas Fiscais).
+-- Texto livre por nota (ou por titulo do Sienge sem nota). A chave e' a propria nota
+-- (empresa + CNPJ do fornecedor + numero) -- por isso a anotacao sobrevive a novo upload,
+-- "Atualizar agora" e arquivar/restaurar. Aditivo e idempotente. Sem este bloco o app
+-- funciona normalmente, so' sem a caixa "Anotar uma pendencia".
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS egc.nf_anotacao (
+  chave_ref       text PRIMARY KEY,
+  empresa_codigo  text NOT NULL,
+  texto           text NOT NULL,
+  atualizado_por  text,
+  atualizado_em   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_nf_anotacao_empresa ON egc.nf_anotacao (empresa_codigo);
+GRANT SELECT, INSERT, UPDATE, DELETE ON egc.nf_anotacao TO egc_app;
+ALTER TABLE egc.nf_anotacao ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS egc_app_full_access ON egc.nf_anotacao;
+CREATE POLICY egc_app_full_access ON egc.nf_anotacao FOR ALL TO egc_app USING (true) WITH CHECK (true);
+-- Fim do bloco 24. Rodar so' este bloco no SQL Editor do Supabase.
