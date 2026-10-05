@@ -243,7 +243,7 @@ def figura(grafico: dict, tipo: str, dark: bool = True, ys: Optional[list[str]] 
 
 def _meta(prep: dict, usuario: str, consulta: str) -> list[tuple[str, str]]:
     return [("Relatório", prep["titulo"]), ("Detalhes", prep.get("subtitulo") or "—"), ("Origem", consulta),
-            ("Gerado por", usuario), ("Gerado em", datetime.datetime.now().strftime("%d/%m/%Y %H:%M")),
+            ("Gerado por", usuario), ("Gerado em", formatacao.agora_br()),
             ("Observação", "Dados consultados no sistema EGC pela Erik.AI; nenhum valor foi recalculado ou estimado.")]
 
 
@@ -391,7 +391,7 @@ def pdf_bytes(prep: dict, usuario: str = "", consulta: str = "", grafico: Option
     A._registrar_fontes()
     W, H = landscape(A4)
     M = 36.0
-    gerado_em = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+    gerado_em = formatacao.agora_br()
     logo = A.LOGO.get("GRUPO")
 
     class _Numerado(_canvas.Canvas):

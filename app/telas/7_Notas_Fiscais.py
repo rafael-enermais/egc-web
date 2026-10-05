@@ -570,7 +570,7 @@ else:
                 if _v.get("arquivo_nome") and _v["arquivo_nome"] not in _arquivos:
                     _arquivos.append(_v["arquivo_nome"])
             xlsx_completo = nf_export.gerar_xlsx_conferencia(
-                tabela, nome_det, _rotulo_pers, ", ".join(_arquivos) or None, formatacao.hora_br(_dt.datetime.now()),
+                tabela, nome_det, _rotulo_pers, ", ".join(_arquivos) or None, formatacao.agora_br(),
                 ignoradas=_ign_rodada, empresa_codigo=emp_det,
             )
         except Exception as exc:
