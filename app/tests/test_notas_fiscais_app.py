@@ -54,31 +54,37 @@ def _tabela(import_id):
     ])
 
 
-def test_nf_tela_abre_ultima_rodada_e_oferece_download_completo():
+def test_nf_tela_junta_todos_os_periodos_da_empresa_e_oferece_download_completo():
     with patch.object(auth, "usuario_atual", return_value="t@enermais.com.br"), \
          patch.object(conexao, "get_conn", return_value=None), \
          patch.object(nf_sienge, "ultima_sincronizacao", return_value=datetime.datetime(2026, 10, 1, 4, 0)), \
          patch.object(nf_sienge, "resumo_vigentes", return_value=VIG), \
          patch.object(nf_sienge, "listar_historico_importacoes", return_value=HIST), \
+         patch.object(nf_sienge, "listar_envios", return_value=[]), \
          patch.object(nf_sienge, "listar_conciliacao", side_effect=lambda c, i: _tabela(i)), \
          patch.object(nf_sienge, "listar_orfaos_sienge", return_value=pd.DataFrame()), \
          patch.object(db, "registrar_evento", return_value=None):
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
         assert not at.exception, at.exception
-        assert at.selectbox(key="nf_vigente_sel").value == "id-novo"
-        # tabela empresa x periodo: 1 linha por periodo vigente (e o historico fica no expander)
+        assert at.selectbox(key="nf_det_empresa").value == "ENERGIA"
+        # padrao: TODOS os meses da empresa (cronologico) -- 2 notas por periodo mockado
+        assert at.multiselect(key="nf_det_periodos_ENERGIA").value == ["06/2026", "07/2026"]
+        m = {x.label: x.value for x in at.metric}
+        assert m["Notas no manifesto"] == "4" and m["Pendências a tratar"] == "2"
+        # tabela empresa x periodo: 1 linha por periodo vigente, com notas pendentes e Sienge sem nota separados
         _tab = at.dataframe[0].value
         assert list(_tab["Período"]) == ["07/2026", "06/2026"] and list(_tab["Pendências"]) == [1, 0]
-        labels = [b.label for b in at.get("download_button")] if hasattr(at, "get") else []
+        assert {"Notas pendentes", "Sienge sem nota"} <= set(_tab.columns)
+        labels = [b.label for b in at.get("download_button")]
         assert any("COMPLETA" in l for l in labels), labels
-        # tela mostra o titulo do Sienge
-        at.multiselect(key="nf_filtro_status").set_value(["LANCADA", "NAO_ENCONTRADA"]).run(timeout=30)
-        df = at.dataframe[1].value
-        assert "Título Sienge" in df.columns and "32034" in set(df["Título Sienge"])
-        # reabrir rodada antiga
-        at.selectbox(key="nf_vigente_sel").set_value("id-velho").run(timeout=30)
+        # detalhe tem a coluna Período e o titulo do Sienge
+        df = at.dataframe[2].value if len(at.dataframe) > 2 else at.dataframe[1].value
+        assert "Período" in df.columns and "Título Sienge" in df.columns and "32034" in set(df["Título Sienge"])
+        # so' um mes marcado
+        at.multiselect(key="nf_det_periodos_ENERGIA").set_value(["07/2026"]).run(timeout=30)
         assert not at.exception, at.exception
+        assert {x.label: x.value for x in at.metric}["Notas no manifesto"] == "2"
 
 
 def _tabela_completa(import_id):
@@ -102,12 +108,15 @@ def test_nf_tela_kpis_por_situacao_filtro_e_avisos():
          patch.object(nf_sienge, "ultima_sincronizacao", return_value=datetime.datetime(2026, 10, 1, 4, 0)), \
          patch.object(nf_sienge, "resumo_vigentes", return_value=VIG), \
          patch.object(nf_sienge, "listar_historico_importacoes", return_value=HIST), \
+         patch.object(nf_sienge, "listar_envios", return_value=[]), \
          patch.object(nf_sienge, "listar_conciliacao", side_effect=lambda c, i: _tabela_completa(i)), \
          patch.object(nf_sienge, "listar_orfaos_sienge", return_value=pd.DataFrame()), \
          patch.object(nf_sienge, "avisos_conciliacao", return_value=["AVISO DE COBERTURA TESTE"]), \
          patch.object(db, "registrar_evento", return_value=None):
         at = AppTest.from_file(PAGE)
         at.run(timeout=30)
+        assert not at.exception, at.exception
+        at.multiselect(key="nf_det_periodos_ENERGIA").set_value(["07/2026"]).run(timeout=30)
         assert not at.exception, at.exception
         m = {x.label: x.value for x in at.metric}
         assert m["Notas no manifesto"] == "7"
@@ -153,7 +162,7 @@ def _rodar(conteudo, empresa_idx=0, periodo="07/2026", vigentes_antes=None, reco
     gravados = []
     ignorados = {}
 
-    def _gravar(conn, empresa, periodo_, df, nome, usuario):
+    def _gravar(conn, empresa, periodo_, df, nome, usuario, lote_id=None):
         gravados.append(dict(empresa=empresa, periodo=periodo_, notas=list(df["Num"])))
         return f"imp-{len(gravados)}"
 
@@ -269,7 +278,7 @@ def test_nf_empresa_e_periodo_vem_do_arquivo_sem_campos_pra_contadora():
     conteudo = _xlsx_bytes("47040664000148", canceladas=0, meses=("2026.07",))
     gravados = []
 
-    def _gravar(conn, empresa, periodo_, df, nome, usuario):
+    def _gravar(conn, empresa, periodo_, df, nome, usuario, lote_id=None):
         gravados.append((empresa, periodo_))
         return "imp-1"
 
@@ -297,3 +306,129 @@ def test_nf_empresa_e_periodo_vem_do_arquivo_sem_campos_pra_contadora():
         at.button(key="nf_btn_rodar").click().run(timeout=30)
     assert not at.exception, at.exception
     assert gravados == [("ENERGIA", "07/2026")]
+
+
+ENVIO_ATIVO = {"envio_id": "L:abc", "empresa_codigo": "ENERGIA", "arquivo_nome": "errado.xlsx", "usuario": "t",
+               "enviado_em": datetime.datetime(2026, 10, 2, 9, 0), "import_ids": ["id-novo"], "periodos": ["07/2026"],
+               "total_notas": 2, "arquivado": False, "arquivado_parcial": False, "arquivado_em": None,
+               "arquivado_por": None, "arquivado_motivo": None, "periodos_vigentes": ["07/2026"], "periodos_substituidos": []}
+ENVIO_ARQ = {**ENVIO_ATIVO, "envio_id": "L:def", "arquivo_nome": "velho.xlsx", "import_ids": ["id-v"], "arquivado": True,
+             "arquivado_em": datetime.datetime(2026, 10, 3, 10, 0), "arquivado_por": "ana", "arquivado_motivo": "empresa errada"}
+
+
+def _tela_arquivar(envios, **extra):
+    chamadas = {"arquivar": [], "restaurar": []}
+
+    def _arq(conn, ids, usuario, motivo=None):
+        chamadas["arquivar"].append((list(ids), usuario, motivo))
+        return {"empresas": ["ENERGIA"], "afetados": 1, "mudancas": [
+            {"empresa_codigo": "ENERGIA", "periodo_referencia": "07/2026", "antes": "errado.xlsx", "depois": "certo.xlsx"}]}
+
+    def _rest(conn, ids, usuario):
+        chamadas["restaurar"].append((list(ids), usuario))
+        return {}
+
+    patches = [
+        patch.object(auth, "usuario_atual", return_value="t@enermais.com.br"),
+        patch.object(conexao, "get_conn", return_value=None),
+        patch.object(nf_sienge, "ultima_sincronizacao", return_value=datetime.datetime(2026, 10, 1, 4, 0)),
+        patch.object(nf_sienge, "resumo_vigentes", return_value=VIG),
+        patch.object(nf_sienge, "listar_historico_importacoes", return_value=HIST),
+        patch.object(nf_sienge, "listar_envios", return_value=envios),
+        patch.object(nf_sienge, "tem_arquivamento", return_value=extra.get("disponivel", True)),
+        patch.object(nf_sienge, "previa_arquivamento", return_value=[
+            {"empresa_codigo": "ENERGIA", "periodo_referencia": "07/2026", "import_id": "id-novo", "passa_a_valer": "certo.xlsx"}]),
+        patch.object(nf_sienge, "arquivar_envio", side_effect=extra.get("arquivar", _arq)),
+        patch.object(nf_sienge, "restaurar_envio", side_effect=_rest),
+        patch.object(nf_sienge, "listar_conciliacao", side_effect=lambda c, i: _tabela(i)),
+        patch.object(nf_sienge, "listar_orfaos_sienge", return_value=pd.DataFrame()),
+        patch.object(db, "registrar_evento", return_value=None),
+    ]
+    return patches, chamadas
+
+
+def _entrar(patches):
+    from contextlib import ExitStack
+    st_ = ExitStack()
+    for p_ in patches:
+        st_.enter_context(p_)
+    return st_
+
+
+def test_nf_arquivar_exige_confirmacao_mostra_previa_e_chama_arquivar_envio():
+    patches, chamadas = _tela_arquivar([ENVIO_ATIVO, ENVIO_ARQ])
+    with _entrar(patches):
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        assert not at.exception, at.exception
+        assert at.button(key="nf_btn_arquivar").disabled is True                      # sem confirmar, nao arquiva
+        assert any("volta a valer o envio anterior (certo.xlsx)" in c.value for c in at.caption)
+        at.checkbox(key="nf_arq_ok_L:abc").check()
+        at.text_input(key="nf_arq_motivo_L:abc").set_value("arquivo errado")
+        at.run(timeout=30)
+        at.button(key="nf_btn_arquivar").click().run(timeout=30)
+        assert not at.exception, at.exception
+        assert chamadas["arquivar"] == [(["id-novo"], "t@enermais.com.br", "arquivo errado")]
+        msg = " ".join(x.value for x in at.success)
+        assert "Envio arquivado: errado.xlsx" in msg and "Nada foi apagado" in msg and "voltou a valer certo.xlsx" in msg
+
+
+def test_nf_restaurar_chama_restaurar_envio():
+    patches, chamadas = _tela_arquivar([ENVIO_ATIVO, ENVIO_ARQ])
+    with _entrar(patches):
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        assert not at.exception, at.exception
+        at.button(key="nf_btn_restaurar").click().run(timeout=30)
+        assert not at.exception, at.exception
+        assert chamadas["restaurar"] == [(["id-v"], "t@enermais.com.br")]
+        assert any("Envio restaurado: velho.xlsx" in x.value for x in at.success)
+
+
+def test_nf_arquivar_sem_bloco_23_avisa_em_vez_de_quebrar():
+    patches, _ = _tela_arquivar([ENVIO_ATIVO], disponivel=False)
+    with _entrar(patches):
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        assert not at.exception, at.exception
+        assert any("bloco 23" in i.value for i in at.info)
+        assert not any(b.key == "nf_btn_arquivar" for b in at.button)
+
+
+def test_nf_erro_ao_arquivar_aparece_e_vai_para_o_log():
+    registrados = []
+
+    def _falha(conn, ids, usuario, motivo=None):
+        raise RuntimeError("banco caiu")
+
+    patches, _ = _tela_arquivar([ENVIO_ATIVO], arquivar=_falha)
+    patches[-1] = patch.object(db, "registrar_evento", side_effect=lambda *a, **k: registrados.append((a, k)))
+    with _entrar(patches):
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        at.checkbox(key="nf_arq_ok_L:abc").check().run(timeout=30)
+        at.button(key="nf_btn_arquivar").click().run(timeout=30)
+        assert not at.exception, at.exception
+        assert any("Não consegui arquivar: banco caiu" in e.value for e in at.error)
+    assert any(a[3] == "Falha ao arquivar envio" and a[2] == "ERRO" for a, _k in registrados), registrados
+
+
+def test_nf_log_de_eventos_aparece_na_tela_e_filtra_so_erros():
+    chamadas = []
+    EV = [{"id": 1, "origem": "notas_fiscais", "nivel": "ERRO", "mensagem": "Falha ao arquivar envio", "detalhe": "banco caiu",
+           "empresa_codigo": "ENERGIA", "periodo": None, "usuario": "ana",
+           "criado_em": datetime.datetime(2026, 10, 5, 12, 0, tzinfo=datetime.timezone.utc)}]
+
+    def _ev(conn, limite=100, nivel=None, origem=None):
+        chamadas.append((nivel, origem))
+        return EV
+
+    patches, _ = _tela_arquivar([])
+    with _entrar(patches), patch.object(db, "listar_eventos_recentes", side_effect=_ev):
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        assert not at.exception, at.exception
+        assert chamadas[-1] == (None, "notas_fiscais")
+        at.checkbox(key="nf_log_so_erros").check().run(timeout=30)
+        assert chamadas[-1] == ("ERRO", "notas_fiscais")
+        assert any("Falha ao arquivar envio" in str(d.value.to_dict("records")) for d in at.dataframe)
