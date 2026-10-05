@@ -1,11 +1,17 @@
-streamlit>=1.38
-supabase
-psycopg2-binary>=2.9
-reportlab>=4.0
-matplotlib>=3.9
-pdfplumber>=0.11
-anthropic>=0.40
-plotly>=5.24
-pandas>=2.2
-openpyxl>=3.1
-requests>=2.32
+# Versoes FIXAS (as que estao rodando em producao no Streamlit Cloud, log de deploy de 05/10/2026, Python 3.14).
+# Motivo: com ">=" cada redeploy puxa a versao mais nova e uma atualizacao de biblioteca pode quebrar o app sem
+# ninguem ter mexido no codigo. Para atualizar de proposito: trocar a versao aqui, rodar os testes e publicar.
+streamlit==1.65.0
+supabase==2.32.0
+psycopg2-binary==2.9.13
+reportlab==5.0.1
+matplotlib==3.11.2
+pdfplumber==0.11.10
+anthropic==1.11.0
+plotly==7.1.0
+pandas==3.0.6
+openpyxl==3.1.5
+requests==2.34.2
+# pyarrow 25 tem falha conhecida (segfault) -- o Streamlit Cloud ja' trocava sozinho pela 24; fixado pra nao depender disso.
+pyarrow==24.0.0
+numpy==2.5.3

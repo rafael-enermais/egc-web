@@ -492,3 +492,50 @@ def test_nf_anotar_sem_bloco_24_explica_em_vez_de_quebrar():
         assert not at.exception, at.exception
         assert any("BLOCO 24" in i.value for i in at.info)
         assert not any(b.key == "nf_btn_salvar_anot" for b in at.button)
+
+
+def _expander_aberto(at, trecho):
+    ex = [e for e in at.expander if trecho in e.label]
+    assert ex, [e.label for e in at.expander]
+    return bool(ex[0].proto.expanded)
+
+
+def test_nf_caixas_ficam_abertas_apos_interagir_com_elas():
+    """Achado no teste ao vivo: marcar o checkbox de confirmacao recolhia a caixa 'Arquivar ou restaurar' e a
+    contadora tinha que reabrir no meio da tarefa."""
+    patches, _ = _tela_arquivar([ENVIO_ATIVO, ENVIO_ARQ])
+    with _entrar(patches):
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        assert not at.exception, at.exception
+        assert _expander_aberto(at, "Arquivar ou restaurar") is False          # comeca fechada
+        at.checkbox(key="nf_arq_ok_L:abc").check()
+        at.run(timeout=30)
+        assert not at.exception, at.exception
+        assert _expander_aberto(at, "Arquivar ou restaurar") is True            # continua aberta depois de marcar
+
+
+def test_nf_periodo_que_reaparece_volta_a_selecao_do_detalhe():
+    """Bug do teste ao vivo (v0.46.4): arquivar/restaurar um envio mudava os meses da empresa, mas o seletor
+    'Periodos no detalhe' ficava preso na selecao antiga (so' 07/2026). Mudou o conjunto de meses -> volta a todos."""
+    vig_atual = {"v": VIG}
+    with patch.object(auth, "usuario_atual", return_value="t@enermais.com.br"), \
+         patch.object(conexao, "get_conn", return_value=None), \
+         patch.object(nf_sienge, "ultima_sincronizacao", return_value=datetime.datetime(2026, 10, 1, 4, 0)), \
+         patch.object(nf_sienge, "resumo_vigentes", side_effect=lambda c, *a, **k: vig_atual["v"]), \
+         patch.object(nf_sienge, "listar_historico_importacoes", return_value=HIST), \
+         patch.object(nf_sienge, "listar_envios", return_value=[]), \
+         patch.object(nf_sienge, "listar_conciliacao", side_effect=lambda c, i: _tabela(i)), \
+         patch.object(nf_sienge, "listar_orfaos_sienge", return_value=pd.DataFrame()), \
+         patch.object(db, "registrar_evento", return_value=None):
+        at = AppTest.from_file(PAGE)
+        at.run(timeout=30)
+        at.multiselect(key="nf_det_periodos_ENERGIA").set_value(["07/2026"]).run(timeout=30)
+        assert at.multiselect(key="nf_det_periodos_ENERGIA").value == ["07/2026"]
+        at.run(timeout=30)                                    # nada mudou: a escolha da contadora fica
+        assert at.multiselect(key="nf_det_periodos_ENERGIA").value == ["07/2026"]
+        extra = {**VIG[1], "import_id": "id-mai", "periodo_referencia": "05/2026"}
+        vig_atual["v"] = VIG + [extra]                        # um mes volta (ex.: restaurar envio)
+        at.run(timeout=30)
+        assert not at.exception, at.exception
+        assert at.multiselect(key="nf_det_periodos_ENERGIA").value == ["05/2026", "06/2026", "07/2026"]
