@@ -100,8 +100,12 @@ def hora_br(v, vazio: str = "—", formato: str = "%d/%m/%Y %H:%M") -> str:
 
 def remover_timezone_para_excel(df: pd.DataFrame) -> pd.DataFrame:
     """Devolve uma copia de df com toda coluna datetime tz-aware
-    convertida pra tz-naive (so' tira o timezone, nao desloca a hora --
-    valores ja vem do banco convertidos pro horario certo).
+    convertida pra HORARIO DE BRASILIA e depois tz-naive (openpyxl nao
+    aceita timezone).
+
+    v0.46.1: antes so' tirava o timezone, partindo do principio de que o banco
+    ja' devolvia a hora local -- falso: o Postgres devolve timestamptz em UTC
+    (ver hora_br), entao "Atualizado em" saia 3h a frente do relogio na planilha.
 
     FIX_20260928 (Rafael, "Rodar conferência" em Notas Fiscais quebrando
     com ValueError ao clicar em "Baixar planilha de pendências"): coluna
@@ -117,10 +121,10 @@ def remover_timezone_para_excel(df: pd.DataFrame) -> pd.DataFrame:
     saida = df.copy()
     for col in saida.columns:
         if pd.api.types.is_datetime64_any_dtype(saida[col]) and saida[col].dt.tz is not None:
-            saida[col] = saida[col].dt.tz_localize(None)
+            saida[col] = saida[col].dt.tz_convert(_TZ_BR).dt.tz_localize(None)
         elif saida[col].dtype == "object":
             saida[col] = saida[col].apply(
-                lambda v: v.replace(tzinfo=None) if isinstance(v, _dt.datetime) and v.tzinfo is not None else v
+                lambda v: v.astimezone(_TZ_BR).replace(tzinfo=None) if isinstance(v, _dt.datetime) and v.tzinfo is not None else v
             )
     return saida
 

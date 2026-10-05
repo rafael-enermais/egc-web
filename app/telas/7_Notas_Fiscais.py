@@ -571,7 +571,7 @@ else:
                     _arquivos.append(_v["arquivo_nome"])
             xlsx_completo = nf_export.gerar_xlsx_conferencia(
                 tabela, nome_det, _rotulo_pers, ", ".join(_arquivos) or None, formatacao.hora_br(_dt.datetime.now()),
-                ignoradas=_ign_rodada,
+                ignoradas=_ign_rodada, empresa_codigo=emp_det,
             )
         except Exception as exc:
             xlsx_completo = None
@@ -587,16 +587,20 @@ else:
                 key="nf_download_completo", type="primary",
             )
         if not pendencias_df.empty:
-            buffer = io.BytesIO()
-            export_df = formatacao.remover_timezone_para_excel(nf_export.preparar_tabela(pendencias_df))
-            export_df.to_excel(buffer, index=False, sheet_name="Pendencias")
-            d2.download_button(
-                "⬇️ Baixar só as pendências (pra mandar ao Suprimentos)",
-                data=buffer.getvalue(),
-                file_name=f"pendencias_nf_{emp_det}_{_sufixo_arq}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="nf_download_pendencias",
-            )
+            try:
+                xlsx_pend = nf_export.gerar_xlsx_pendencias(tabela, nome_det, _rotulo_pers, emp_det)
+            except Exception as exc:
+                xlsx_pend = None
+                st.warning(f"Não consegui montar a planilha de pendências: {exc}")
+                _log_erro("Falha ao montar xlsx de pendências de NF", detalhe=str(exc), empresa_codigo=emp_det)
+            if xlsx_pend:
+                d2.download_button(
+                    "⬇️ Baixar só as pendências (pra mandar ao Suprimentos)",
+                    data=xlsx_pend,
+                    file_name=f"pendencias_nf_{emp_det}_{_sufixo_arq}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="nf_download_pendencias",
+                )
 
         if _ign_rodada is not None and not _ign_rodada.empty:
             with st.expander(f"Notas do arquivo que ficaram FORA da conferência ({len(_ign_rodada)}) -- confira"):

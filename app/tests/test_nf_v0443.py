@@ -230,8 +230,8 @@ def test_resumo_e_contagem_por_status():
 def test_excel_resumo_bate_com_aba_pendencias():
     t = _tabela()
     xlsx = nf_export.gerar_xlsx_conferencia(t, "Energia", "07/2026", "a.xlsx", "agora")
-    res = pd.read_excel(io.BytesIO(xlsx), sheet_name="Resumo").set_index("Item")["Valor"]
-    pend = pd.read_excel(io.BytesIO(xlsx), sheet_name="Pendências")
+    res = pd.read_excel(io.BytesIO(xlsx), sheet_name="Resumo", header=4).set_index("Item")["Valor"]
+    pend = pd.read_excel(io.BytesIO(xlsx), sheet_name="Pendências", header=4)
     assert int(res["Total de pendências (aba Pendências)"]) == len(pend) == 8
     assert int(res["Notas do manifesto com pendência"]) + int(res["Títulos no Sienge sem nota no manifesto"]) == len(pend)
     assert int(res["  · Lançadas em outra empresa"]) == 1 and int(res["  · Sienge sem manifesto"]) == 3
