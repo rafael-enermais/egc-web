@@ -1,5 +1,5 @@
 -- =====================================================================
--- EGC -- ZERAR DADOS (v0.44.0)   *** DESTRUTIVO E IRREVERSIVEL ***
+-- EGC -- ZERAR DADOS (v0.45.2)   *** DESTRUTIVO E IRREVERSIVEL ***
 -- Rodar no SQL Editor do Supabase (projeto radar-comercial) SO' quando
 -- quiser voltar o sistema ao estado "limpo" (ex.: apos os testes, antes
 -- de entregar para a contadora).
@@ -58,25 +58,22 @@ END $$;
 
 COMMIT;
 
--- Conferencia: todas as linhas abaixo tem que mostrar 0 (as "mantidas" mostram quanto ficou).
-SELECT 'APAGADA' AS situacao, 'lancamentos' AS tabela, count(*) AS linhas FROM egc.lancamentos
-UNION ALL SELECT 'APAGADA', 'importacoes', count(*) FROM egc.importacoes
-UNION ALL SELECT 'APAGADA', 'relatorios_gerados', count(*) FROM egc.relatorios_gerados
-UNION ALL SELECT 'APAGADA', 'eventos_sistema', count(*) FROM egc.eventos_sistema
-UNION ALL SELECT 'APAGADA', 'projecoes', count(*) FROM egc.projecoes
-UNION ALL SELECT 'APAGADA', 'projecoes_ajustes', count(*) FROM egc.projecoes_ajustes
-UNION ALL SELECT 'APAGADA', 'despesas_admin_itens', count(*) FROM egc.despesas_admin_itens
-UNION ALL SELECT 'APAGADA', 'nf_manifesto_import', count(*) FROM egc.nf_manifesto_import
-UNION ALL SELECT 'APAGADA', 'nf_conciliacao', count(*) FROM egc.nf_conciliacao
-UNION ALL SELECT 'APAGADA', 'nf_import_historico', count(*) FROM egc.nf_import_historico
-UNION ALL SELECT 'APAGADA', 'nf_bills_orfaos', count(*) FROM egc.nf_bills_orfaos
-UNION ALL SELECT 'APAGADA', 'nf_manifesto_ignoradas', count(*) FROM egc.nf_manifesto_ignoradas
-UNION ALL SELECT 'APAGADA', 'chat_mensagem', count(*) FROM egc.chat_mensagem
-UNION ALL SELECT 'APAGADA', 'chat_acao', count(*) FROM egc.chat_acao
-UNION ALL SELECT 'MANTIDA', 'empresas', count(*) FROM egc.empresas
-UNION ALL SELECT 'MANTIDA', 'textos_relatorio', count(*) FROM egc.textos_relatorio
-UNION ALL SELECT 'MANTIDA', 'config_relatorio', count(*) FROM egc.config_relatorio
-UNION ALL SELECT 'MANTIDA', 'contexto_fiscal', count(*) FROM egc.contexto_fiscal
-UNION ALL SELECT 'MANTIDA', 'contatos_relatorio', count(*) FROM egc.contatos_relatorio
-UNION ALL SELECT 'MANTIDA', 'nf_debtor_empresa', count(*) FROM egc.nf_debtor_empresa
-UNION ALL SELECT 'MANTIDA', 'nf_bills_sync', count(*) FROM egc.nf_bills_sync;
+-- Conferencia (v0.45.2): lista TODA tabela que existe no schema egc, com a situacao e o numero de linhas.
+-- Tem que mostrar 0 em todas as APAGADAS. As MANTIDAS mostram quanto ficou. "NAO CLASSIFICADA" = tabela
+-- que existe no banco mas nao esta em nenhuma das duas listas deste script (avise antes de entregar).
+-- Funciona mesmo que alguma tabela ainda nao exista no seu banco.
+SELECT CASE
+         WHEN table_name IN ('lancamentos','importacoes','despesas_admin_itens','relatorios_gerados','projecoes',
+                             'projecoes_ajustes','eventos_sistema','nf_manifesto_import','nf_conciliacao',
+                             'nf_import_historico','nf_bills_orfaos','nf_manifesto_ignoradas','chat_mensagem','chat_acao')
+           THEN 'APAGADA'
+         WHEN table_name IN ('empresas','textos_relatorio','config_relatorio','contexto_fiscal','contatos_relatorio',
+                             'nf_debtor_empresa','nf_bills_sync','nf_creditors_sync')
+           THEN 'MANTIDA'
+         ELSE 'NAO CLASSIFICADA'
+       END AS situacao,
+       table_name AS tabela,
+       (xpath('/row/c/text()', query_to_xml(format('select count(*) as c from egc.%I', table_name), false, true, '')))[1]::text::int AS linhas
+FROM information_schema.tables
+WHERE table_schema = 'egc' AND table_type = 'BASE TABLE'
+ORDER BY 1, 2;
