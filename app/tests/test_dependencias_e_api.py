@@ -25,3 +25,11 @@ def test_nenhum_use_container_width_no_app():
             if "use_container_width" in l:
                 achados.append(f"{p.name}:{n}")
     assert not achados, achados
+
+
+def test_tema_fixo_escuro():
+    """v0.47.2: o app abre ESCURO em qualquer computador (antes seguia o sistema e a contadora via branco)."""
+    import tomllib
+    cfg = tomllib.loads((RAIZ / ".streamlit" / "config.toml").read_text(encoding="utf-8"))
+    assert cfg["theme"]["base"] == "dark"
+    assert "light" not in cfg["theme"] and "dark" not in cfg["theme"]    # sem secoes que reativem o modo automatico
