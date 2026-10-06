@@ -132,8 +132,10 @@ def test_fornecedor_sem_quadro_de_divida_sem_descritivos_e_sem_textos_removidos(
     assert "driver" not in todo
     # destaques: nome + CNPJ (sem o "—" solto)
     assert "Enermais Energia Ltda · CNPJ 47.040.664/0001-48" in paginas[1]
-    # fornecedor nao tem pagina de despesas -> nao pode apontar pra ela
-    assert "detalhamento das despesas operacionais" not in todo
+    # v0.47.5: pag. 3 e pag. 4 mantem as frases de referencia em todas as variantes (so' sem o "driver")
+    plano = todo.replace("\n", " ")
+    assert "detalhamento das despesas operacionais está na página seguinte" in plano
+    assert "lido em conjunto com as despesas detalhadas na página anterior" in plano
     assert "detalhamento completo de contas está na página seguinte" in todo.replace("\n", " ")
 
 
@@ -145,7 +147,7 @@ def test_gerencial_mantem_divida_e_referencia_as_despesas():
     assert "COMP_RECEITA" not in todo and "COMP_DESPESAS" not in todo  # descritivos saem em todas as variantes
     assert "submetido" not in todo and "Relatório gerado pelo" not in todo
     assert "detalhamento das despesas operacionais está na página seguinte" in todo.replace("\n", " ")
-    assert "despesas detalhadas neste relatório" in todo.replace("\n", " ")
+    assert "lido em conjunto com as despesas detalhadas na página anterior" in todo.replace("\n", " ")
 
 
 def test_destaques_de_grupo_mostra_so_o_nome_do_grupo():

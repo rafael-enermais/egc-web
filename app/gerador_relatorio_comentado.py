@@ -1202,10 +1202,6 @@ def pagina_capa(c, dados, pagina: int, total_paginas: int):
 
 
 # ------------------------------------------------------------------ pagina 3
-def _tem_pagina_despesas(dados) -> bool:
-    return dados.get("variante", "padrao") not in VARIANTES_SEM_PAGINA_DESPESAS
-
-
 def _leitura_receita_custos(dados) -> list[str]:
     d = dados
     p1 = (
@@ -1219,10 +1215,8 @@ def _leitura_receita_custos(dados) -> list[str]:
         f"({pct_br(d['custo_pct_liquida'])} da receita líquida), resultando em lucro "
         f"bruto de {moeda_br(d['lucro_bruto'])} e margem bruta de {pct_br(d['margem_bruta'])}."
     )
-    # v0.47.4: so' cita a pagina de despesas quando ela existe (Gerencial); no Fornecedor/Padrao a
-    # pagina seguinte e' o EBITDA e a frase apontava pra uma pagina inexistente.
-    if _tem_pagina_despesas(d):
-        p2 += " O detalhamento das despesas operacionais está na página seguinte."
+    # v0.47.5 (Rafael: "na pag 3 nao era pra apagar"): a frase fica em TODAS as variantes.
+    p2 += " O detalhamento das despesas operacionais está na página seguinte."
     return [p1, p2]
 
 
@@ -1438,12 +1432,12 @@ def _leitura_ebitda(dados) -> list[str]:
         f"{moeda_br(d['resultado_liquido'], forcar_sinal=True)}, o EBITDA do período é de "
         f"{moeda_br(d['ebitda'], forcar_sinal=True)} (margem de {pct_br(d['margem_ebitda'], forcar_sinal=True)})."
     )
-    p2 = "O indicador isola o resultado operacional de efeitos financeiros e da provisão de tributos sobre o lucro"
-    # v0.47.4: sem o "driver" solto; e so' remete as despesas detalhadas quando a pagina existe (Gerencial)
-    if _tem_pagina_despesas(d):
-        p2 += ", e deve ser lido em conjunto com as despesas detalhadas neste relatório."
-    else:
-        p2 += "."
+    # v0.47.5 (Rafael: "era p tirar o driver so'"): mesma frase de sempre, sem a palavra "driver",
+    # em TODAS as variantes.
+    p2 = (
+        "O indicador isola o resultado operacional de efeitos financeiros e da provisão de tributos sobre o "
+        "lucro, e deve ser lido em conjunto com as despesas detalhadas na página anterior."
+    )
     return [p1, p2]
 
 
