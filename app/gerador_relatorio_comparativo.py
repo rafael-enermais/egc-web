@@ -474,8 +474,7 @@ def pagina_fechamento_comparativa(c, dados, pagina: int, total_paginas: int):
         c, MARGEM, 130,
         f"Os valores apresentados comparam o Balanço Patrimonial e a Demonstração do Resultado do Exercício "
         f"de cada período do intervalo {d['periodo_range_label']}, gerados a partir do SPED contábil de cada "
-        f"período. Este documento é de uso interno da administração e da contabilidade do Grupo Enermais e "
-        f"não foi submetido a exame por auditoria externa independente.",
+        f"período. Este documento é de uso interno da administração e da contabilidade do Grupo Enermais.",
         CONTEUDO_W, size=10.5, leading=15,
     ) + 12
     y = paragrafo(
@@ -509,9 +508,6 @@ def pagina_fechamento_comparativa(c, dados, pagina: int, total_paginas: int):
     txt(c, MARGEM + 18, y + 84, _linha_identificacao_empresa(d), font="regular", size=9, color=GREY_TEXT)
     txt(c, MARGEM + CONTEUDO_W - 18, y + 72, d.get("email_empresa", ""), font="regular", size=9, color=GREY_TEXT, align="right")
     txt(c, MARGEM + CONTEUDO_W - 18, y + 84, d.get("site_empresa", ""), font="regular", size=9, color=GREY_TEXT, align="right")
-
-    txt(c, PAGE_W / 2, y + 130, f"Relatório gerado pelo Sistema EGC — Gestão Contábil Enermais · {d.get('data_geracao', '')}",
-        font="regular", size=8, color=GREY_TEXT, align="center")
 
     _footer(c, pagina, total_paginas)
 

@@ -285,6 +285,21 @@ def _linha_identificacao_empresa(dados):
     return f"CNPJ {dados.get('cnpj', '')}"
 
 
+def _eh_gerencial(dados) -> bool:
+    """v0.47.4: indicadores de divida (quadro de alavancagem/endividamento na pag. Destaques e KPI
+    "Endividamento Geral" no Balanco) so' aparecem na variante Gerencial (pedido do Rafael)."""
+    return dados.get("variante", "padrao") == "gerencial"
+
+
+def _linha_empresa_destaques(dados) -> str:
+    """Linha abaixo do titulo "Destaques": nome + CNPJ (1 empresa) ou so' o nome do grupo (2+ empresas)."""
+    codigos = dados.get("empresas_codigos")
+    if codigos and len(codigos) > 1:
+        return dados["empresa_nome"]
+    cnpj = dados.get("cnpj", "")
+    return f"{dados['empresa_nome']} · CNPJ {cnpj}" if cnpj else dados["empresa_nome"]
+
+
 def _nomes_empresas_grupo(dados):
     """FIX_20260930 (Rafael, capa do relatório multi-empresa: "quero a
     LISTA dos nomes, uma por linha" em vez de só "N empresas do grupo").
@@ -465,14 +480,13 @@ def pagina_destaques(c, dados, pagina: int, total_paginas: int):
     _header(c, dados, "Destaques do Período")
 
     txt(c, MARGEM, 100, f"Destaques {dados['periodo_label']}", font="heavy", size=20, color=NAVY)
-    txt(c, MARGEM, 122, f"{dados['empresa_nome']} — {dados['periodo_extenso']}",
-        font="regular", size=10.5, color=GREY_TEXT)
+    txt(c, MARGEM, 122, _linha_empresa_destaques(dados), font="regular", size=10.5, color=GREY_TEXT)
 
     # 2 KPIs grandes
     meio = MARGEM + CONTEUDO_W / 2 - 6
     _kpi_grande(c, MARGEM, meio, 145, 235,
                 "Receita Operacional Líquida", f"{moeda_br(dados['receita_liquida'] / 1_000_000)} MM",
-                dados["complemento_receita"])
+                "")  # v0.47.4: sem descritivo (pedido do Rafael)
     _kpi_grande(c, meio + 12, MARGEM + CONTEUDO_W, 145, 235,
                 "EBITDA do Período", f"{moeda_br(dados['ebitda'] / 1_000_000)} MM",
                 dados["complemento_ebitda"], invertido=True)
@@ -482,7 +496,7 @@ def pagina_destaques(c, dados, pagina: int, total_paginas: int):
     cores = [NAVY, NEG_FILL, NAVY, GREY_TEXT]
     kpis_pequenos = [
         ("Lucro Bruto", f"{moeda_br(dados['lucro_bruto'] / 1_000_000)} MM", f"margem {pct_br(dados['margem_bruta'])}"),
-        ("Despesas Operacionais", f"{moeda_br(dados['despesas_operacionais'] / 1_000_000)} MM", dados["complemento_despesas"]),
+        ("Despesas Operacionais", f"{moeda_br(dados['despesas_operacionais'] / 1_000_000)} MM", ""),  # v0.47.4: sem descritivo
         ("Total do Ativo", f"{moeda_br(dados['total_ativo'] / 1_000_000)} MM", f"posição em {dados['data_posicao']}"),
         (f"{'Lucro' if dados['resultado_liquido'] >= 0 else 'Prejuízo'} Líquido",
          f"{moeda_br(abs(dados['resultado_liquido']) / 1_000_000)} MM", f"margem {pct_br(dados['margem_liquida'], forcar_sinal=True)}"),
@@ -508,12 +522,13 @@ def pagina_destaques(c, dados, pagina: int, total_paginas: int):
     for par in _leitura_executiva(dados):
         y = paragrafo(c, MARGEM, y, par, CONTEUDO_W, size=10.5, leading=15) + 10
 
-    # callout
-    y += 6
-    altura_callout = 70
-    rect(c, MARGEM, y, MARGEM + CONTEUDO_W, y + altura_callout, fill=GREY_BG, stroke=BORDER_LIGHT, width=0.75, radius=6)
-    paragrafo(c, MARGEM + 18, y + 22, dados["callout_estrutura_capital"],
-               CONTEUDO_W - 36, size=9.5, leading=13.5)
+    # callout de alavancagem/endividamento: so' na variante Gerencial (v0.47.4)
+    if _eh_gerencial(dados):
+        y += 6
+        altura_callout = 70
+        rect(c, MARGEM, y, MARGEM + CONTEUDO_W, y + altura_callout, fill=GREY_BG, stroke=BORDER_LIGHT, width=0.75, radius=6)
+        paragrafo(c, MARGEM + 18, y + 22, dados["callout_estrutura_capital"],
+                   CONTEUDO_W - 36, size=9.5, leading=13.5)
 
     _footer(c, pagina, total_paginas)
 
@@ -1187,6 +1202,10 @@ def pagina_capa(c, dados, pagina: int, total_paginas: int):
 
 
 # ------------------------------------------------------------------ pagina 3
+def _tem_pagina_despesas(dados) -> bool:
+    return dados.get("variante", "padrao") not in VARIANTES_SEM_PAGINA_DESPESAS
+
+
 def _leitura_receita_custos(dados) -> list[str]:
     d = dados
     p1 = (
@@ -1198,9 +1217,12 @@ def _leitura_receita_custos(dados) -> list[str]:
     p2 = (
         f"O custo direto dos serviços/produtos foi de {moeda_br(d['custo_servicos'])} "
         f"({pct_br(d['custo_pct_liquida'])} da receita líquida), resultando em lucro "
-        f"bruto de {moeda_br(d['lucro_bruto'])} e margem bruta de {pct_br(d['margem_bruta'])}. "
-        f"O detalhamento das despesas operacionais está na página seguinte."
+        f"bruto de {moeda_br(d['lucro_bruto'])} e margem bruta de {pct_br(d['margem_bruta'])}."
     )
+    # v0.47.4: so' cita a pagina de despesas quando ela existe (Gerencial); no Fornecedor/Padrao a
+    # pagina seguinte e' o EBITDA e a frase apontava pra uma pagina inexistente.
+    if _tem_pagina_despesas(d):
+        p2 += " O detalhamento das despesas operacionais está na página seguinte."
     return [p1, p2]
 
 
@@ -1416,10 +1438,12 @@ def _leitura_ebitda(dados) -> list[str]:
         f"{moeda_br(d['resultado_liquido'], forcar_sinal=True)}, o EBITDA do período é de "
         f"{moeda_br(d['ebitda'], forcar_sinal=True)} (margem de {pct_br(d['margem_ebitda'], forcar_sinal=True)})."
     )
-    p2 = (
-        "O indicador isola o resultado operacional de efeitos financeiros e da provisão de tributos sobre o "
-        "lucro, e deve ser lido em conjunto com o driver de despesas detalhado na página anterior."
-    )
+    p2 = "O indicador isola o resultado operacional de efeitos financeiros e da provisão de tributos sobre o lucro"
+    # v0.47.4: sem o "driver" solto; e so' remete as despesas detalhadas quando a pagina existe (Gerencial)
+    if _tem_pagina_despesas(d):
+        p2 += ", e deve ser lido em conjunto com as despesas detalhadas neste relatório."
+    else:
+        p2 += "."
     return [p1, p2]
 
 
@@ -1549,7 +1573,7 @@ def _leitura_balanco(dados, pagina: int, total_paginas: int, tem_pagina_resultad
         f"ativo ({moeda_br(d['ativo_nao_circulante'])}), dos quais {moeda_br(d['imobilizado'])} em imobilizado. "
         f"O resultado do período ({moeda_br(d['resultado_liquido'], forcar_sinal=True)}{resultado_ref}) está refletido "
         f"na conta de Lucros ou Prejuízos Acumulados do Patrimônio Líquido. O detalhamento completo de contas "
-        f"está no Anexo (página {pagina_anexo_num})."
+        f"está na página seguinte."
     )
     return [p1, p2]
 
@@ -1583,13 +1607,15 @@ def pagina_balanco(c, dados, pagina: int, total_paginas: int, tem_pagina_resulta
     ])
 
     y += 26
-    col_w = (CONTEUDO_W - 2 * 10) / 3
     x = MARGEM
-    for label, valor, comp in [
+    kpis_balanco = [
         ("Liquidez Corrente", numero_br(d["liquidez_corrente"]), "ativo circ. / passivo circ."),
         ("Capital de Terceiros / PL", numero_br(d["alavancagem"], sufixo="x"), "alavancagem"),
-        ("Endividamento Geral", pct_br(d["endividamento_geral"]), "exigível / ativo total"),
-    ]:
+    ]
+    if _eh_gerencial(d):  # v0.47.4: "Endividamento Geral" so' no Gerencial
+        kpis_balanco.append(("Endividamento Geral", pct_br(d["endividamento_geral"]), "exigível / ativo total"))
+    col_w = (CONTEUDO_W - (len(kpis_balanco) - 1) * 10) / len(kpis_balanco)
+    for label, valor, comp in kpis_balanco:
         rect(c, x, y, x + col_w, y + 8, fill=RED_ACCENT)
         rect(c, x, y + 8, x + col_w, y + 62, fill=GREY_BG)
         txt(c, x + 14, y + 26, label.upper(), font="bold", size=8, color=NAVY)
@@ -1690,9 +1716,9 @@ def pagina_fechamento(c, dados, pagina: int, total_paginas: int):
     y = paragrafo(
         c, MARGEM, 130,
         f"Os valores apresentados foram extraídos do Balanço Patrimonial e da Demonstração do Resultado do "
-        f"Exercício do período de referência ({d.get('periodo_extenso', d['periodo_label'])}), gerados a "
+        f"Exercício do período de referência ({d.get('periodo_extenso_texto') or d.get('periodo_extenso') or d['periodo_label']}), gerados a "
         f"partir do SPED contábil. Este documento é de uso interno da administração e da contabilidade do "
-        f"Grupo Enermais e não foi submetido a exame por auditoria externa independente. As informações devem "
+        f"Grupo Enermais. As informações devem "
         f"ser lidas em conjunto com as demonstrações contábeis completas do período.",
         CONTEUDO_W, size=10.5, leading=15,
     ) + 12
@@ -1726,9 +1752,6 @@ def pagina_fechamento(c, dados, pagina: int, total_paginas: int):
     txt(c, MARGEM + 18, y + 84, _linha_identificacao_empresa(d), font="regular", size=9, color=GREY_TEXT)
     txt(c, MARGEM + CONTEUDO_W - 18, y + 72, d.get("email_empresa", ""), font="regular", size=9, color=GREY_TEXT, align="right")
     txt(c, MARGEM + CONTEUDO_W - 18, y + 84, d.get("site_empresa", ""), font="regular", size=9, color=GREY_TEXT, align="right")
-
-    txt(c, PAGE_W / 2, y + 130, f"Relatório gerado pelo Sistema EGC — Gestão Contábil Enermais · {d.get('data_geracao', '')}",
-        font="regular", size=8, color=GREY_TEXT, align="center")
 
     _footer(c, pagina, total_paginas)
 
