@@ -100,12 +100,14 @@ def test_leitura_balanco_referencia_pagina_certa_com_e_sem_resultado():
     # Layout de 9 paginas (com pagina_resultado): Balanco = pagina 7.
     p1, p2 = g._leitura_balanco(d, 7, 9)
     assert "página 5" in p2, "com Resultado presente, deveria citar a página 5 (onde ele está)"
-    assert "página 8" in p2, "Anexo vem logo depois do Balanço: página 8 no layout de 9 páginas"
+    # v0.47.4 (Rafael): o texto passou a dizer "está na página seguinte" (igual a pag. 3), sem numero fixo
+    assert "está na página seguinte" in p2, "Anexo vem logo depois do Balanço"
+    assert "página 8" not in p2
 
     # Layout de 8 paginas (sem pagina_resultado): Balanco = pagina 6.
     p1b, p2b = g._leitura_balanco(d, 6, 8)
     assert "página 5" not in p2b, "sem página de Resultado nenhuma, não pode citar uma página que não existe"
-    assert "página 7" in p2b, "Anexo vem logo depois do Balanço: página 7 no layout de 8 páginas (não 8)"
+    assert "está na página seguinte" in p2b, "Anexo vem logo depois do Balanço"
     assert "página 8" not in p2b
     print("OK: _leitura_balanco referencia Resultado/Anexo pelo número de página real de cada layout, não hardcoded")
 

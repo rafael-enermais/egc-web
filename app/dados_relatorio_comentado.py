@@ -293,6 +293,11 @@ def _montar_anexo(bp_periodo: list, lado: str, incluir_subconta: bool = True) ->
                     filhos_usados.add(f)
 
         linhas.append(("grupo", grupo_label))
+        if grupo_bd == "PASSIVO NAO CIRCULANTE":
+            bloco_pnc = _montar_bloco_pnc(rows, itens, filhos_usados, totalizador_nome, grupo_label)
+            if bloco_pnc:
+                linhas.extend(bloco_pnc)
+                continue
         for r in itens:
             nome = r["conta"]
             if nome in filhos_usados:
@@ -311,6 +316,30 @@ def _montar_anexo(bp_periodo: list, lado: str, incluir_subconta: bool = True) ->
     if total_geral is not None:
         linhas.append(("total", grand_label, float(total_geral["valor"])))
     return linhas
+
+
+def _montar_bloco_pnc(rows: list, itens: list, filhos_usados: set, totalizador_nome: str, grupo_label: str) -> list:
+    """v0.47.4 (Rafael, relatorio da Energia 12/2025): o Passivo Nao Circulante saia como uma linha
+    unica "Obrigacoes a Longo Prazo". No balanco ele e' a soma de Instituicoes Financeiras + Outras
+    Obrigacoes (+ o que mais houver no bloco), entao o anexo passa a mostrar: titulo em negrito
+    "Passivo Nao Circulante" com o total e, abaixo, as contas que o compoem (subconta, na ordem do
+    balanco). Nao ha subtotal separado -- o titulo ja e' o total. [] = sem total conhecido
+    (volta ao desenho padrao, nunca inventa um valor)."""
+    total_row = next((r for r in rows if r["conta"] == totalizador_nome), None)
+    olp_row = next((r for r in itens if r["conta"] == "OBRIGACOES A LONGO PRAZO"), None)
+    ref = total_row or olp_row  # OLP = mesmo valor do total no SPED (dado antigo sem o total gravado)
+    if ref is None:
+        return []
+    componentes = [
+        r for r in itens
+        if r["conta"] != "OBRIGACOES A LONGO PRAZO" and r["conta"] not in filhos_usados
+    ]
+    componentes.sort(key=lambda r: (_prioridade_conta_bp(r["conta"]), r["conta"]))
+    if not componentes and total_row is not None:
+        return []  # nada pra detalhar (ex.: sem Passivo Nao Circulante): desenho padrao de sempre
+    bloco = [("conta", grupo_label, float(ref["valor"]))]
+    bloco.extend(("subconta", _label_conta(r["conta"]), float(r["valor"])) for r in componentes)
+    return bloco
 
 
 def _orientar_itens(itens_admin: list):
@@ -664,6 +693,28 @@ def _periodo_anterior_imediato(candidatos: list, periodo: date, granularidade: s
     return None, ultimo
 
 
+_MESES_EXTENSO = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto",
+                  "setembro", "outubro", "novembro", "dezembro"]
+
+
+def periodo_extenso_padrao(periodo: date, granularidade: str = "") -> str:
+    """Periodo por extenso montado do proprio periodo/granularidade (v0.47.4, Rafael: o texto do
+    Fechamento saia "referência ()" quando a contadora nao digitava o extenso na tela).
+    mensal ou sem granularidade -> "dezembro de 2025"; trimestral -> "4º trimestre de 2025";
+    semestral -> "2º semestre de 2025"; anual -> "exercício de 2025". Qualquer outro caso
+    (bimestral, periodo que nao fecha o trimestre/semestre) -> "período encerrado em <mes> de <ano>"."""
+    mes, ano = periodo.month, periodo.year
+    if granularidade == "trimestral" and mes % 3 == 0:
+        return f"{mes // 3}º trimestre de {ano}"
+    if granularidade == "semestral" and mes % 6 == 0:
+        return f"{mes // 6}º semestre de {ano}"
+    if granularidade == "anual":
+        return f"exercício de {ano}" if mes == 12 else f"12 meses encerrados em {_MESES_EXTENSO[mes - 1]} de {ano}"
+    if granularidade in ("", "mensal"):
+        return f"{_MESES_EXTENSO[mes - 1]} de {ano}"
+    return f"período encerrado em {_MESES_EXTENSO[mes - 1]} de {ano}"
+
+
 def montar_dados_relatorio(
     conn,
     empresa_codigo,
@@ -901,6 +952,8 @@ def montar_dados_relatorio(
         variante=variante,
         periodo_label=periodo_label,
         periodo_extenso=periodo_extenso,
+        # texto efetivamente usado no Fechamento: o que a contadora digitou, ou o automatico
+        periodo_extenso_texto=(periodo_extenso or "").strip() or periodo_extenso_padrao(periodo, granularidade),
         data_posicao=periodo.strftime("%d/%m/%Y"),
         data_geracao=data_geracao,
         receita_bruta=receita_bruta, deducoes_receita=deducoes_receita, deducoes_pct_bruta=deducoes_pct_bruta,
@@ -1023,6 +1076,7 @@ def _montar_anexo_multi_periodo(bp_por_periodo: list, lado: str) -> list:
     contador = 0
     for i, arvore in enumerate(arvores):
         atual = None
+        conta_atual = None
         for linha in arvore:
             tipo, label = linha[0], linha[1]
             if tipo == "grupo":
@@ -1032,6 +1086,11 @@ def _montar_anexo_multi_periodo(bp_por_periodo: list, lado: str) -> list:
                     contador += 1
             elif tipo == "conta":
                 atual["contas"].setdefault(label, [0.0] * n)[i] = float(linha[2])
+                conta_atual = label
+            elif tipo == "subconta":
+                # so' o detalhe do Passivo Nao Circulante chega aqui (incluir_subconta=False corta o
+                # resto) -- fica aninhado sob a conta-titulo, igual ao anexo de 1 periodo.
+                atual.setdefault("filhos", {}).setdefault(conta_atual, {}).setdefault(label, [0.0] * n)[i] = float(linha[2])
             elif tipo == "subtotal":
                 if atual["subtotal"] is None:
                     atual["subtotal"] = (label, [0.0] * n)
@@ -1047,6 +1106,9 @@ def _montar_anexo_multi_periodo(bp_por_periodo: list, lado: str) -> list:
         linhas.append(("grupo", rotulo))
         for label in sorted(sec["contas"], key=lambda lb: (_prioridade_conta_bp(lb), *_chave_ordem_label(lb))):
             linhas.append(("conta", label, *sec["contas"][label]))
+            filhos = sec.get("filhos", {}).get(label, {})
+            for f_label in sorted(filhos, key=lambda lb: (_prioridade_conta_bp(lb), *_chave_ordem_label(lb))):
+                linhas.append(("subconta", f_label, *filhos[f_label]))
         if sec["subtotal"] is not None:
             linhas.append(("subtotal", sec["subtotal"][0], *sec["subtotal"][1]))
     if total_geral is not None:
@@ -1054,16 +1116,36 @@ def _montar_anexo_multi_periodo(bp_por_periodo: list, lado: str) -> list:
     return linhas
 
 
-# v0.47.3 (Rafael: "cliente esta trocado de lugar com o disponivel, o balanco mostra o
-# contrario"): o anexo ordena as contas em ordem alfabetica, o que punha Clientes antes de
-# Disponivel. No balanco SPED a ordem e' Disponivel -> Clientes -> demais. As duas contas
-# vem primeiro (nessa ordem); o resto segue alfabetico como sempre.
-_ORDEM_PRIORITARIA_BP = {"DISPONIVEL": 0, "CLIENTES": 1}
+# v0.47.3/v0.47.4 (Rafael: "cliente esta trocado de lugar com o disponivel, o balanco mostra o
+# contrario" / "Fornecedores e Instituicoes Financeiras (igual BP)... as ordens do BP, isso mantem
+# padrao em todos"): o anexo ordenava as contas em ordem alfabetica. Agora segue a ordem do
+# balanco SPED da propria empresa. Conta fora da lista (nao deveria existir -- todas vem de
+# parser_egc.BP_TARGETS) cai depois das conhecidas, em ordem alfabetica.
+_ORDEM_BP = [
+    # Ativo Circulante
+    "DISPONIVEL", "DEPOSITOS BANCARIOS A VISTA", "APLICACOES DE LIQUIDEZ IMEDIATA",
+    "CLIENTES", "DUPLICATAS A RECEBER",
+    "OUTROS CREDITOS", "MUTUO ENTRE EMPRESAS", "TITULOS A RECEBER", "ADIANTAMENTOS A TERCEIROS",
+    "TRIBUTOS A RECUPERAR", "DESPESAS PAGAS ANTECIPADAMENTE",
+    # Ativo Nao Circulante (Realizavel a Longo Prazo -> Investimentos -> Imobilizado)
+    "APLICACOES FINANCEIRAS", "INVESTIMENTOS", "IMOBILIZADO", "IMOVEIS", "BENS EM OPERACAO",
+    "DEPRECIACAO ACUMULADA",
+    # Passivo (Circulante e Nao Circulante)
+    "INSTITUICOES FINANCEIRAS", "EMPRESTIMOS", "FINANCIAMENTOS", "FORNECEDORES",
+    "OBRIGACOES TRIBUTARIAS", "IMPOSTOS E CONTRIBUICOES A RECOLHER", "TRIBUTOS RETIDOS A RECOLHER",
+    "OBRIGACOES TRABALHISTAS", "OBRIGACOES COM O PESSOAL", "OBRIGACOES PREVIDENCIARIAS",
+    "OUTRAS OBRIGACOES", "ADIANTAMENTOS DE CLIENTES", "CONTAS A PAGAR",
+    "OBRIGACOES A LONGO PRAZO", "RECEITAS DIFERIDAS",
+    # Patrimonio Liquido
+    "CAPITAL SOCIAL", "CAPITAL SUBSCRITO", "CAPITAL A INTEGRALIZAR", "LUCROS/PREJUIZOS ACUMULADOS",
+]
+_RANK_BP = {nome: i for i, nome in enumerate(_ORDEM_BP)}
 
 
 def _prioridade_conta_bp(nome: str) -> int:
+    """Posicao da conta na ordem do balanco SPED (aceita o nome do banco ou o rotulo com acento)."""
     sem = "".join(ch for ch in unicodedata.normalize("NFD", nome) if unicodedata.category(ch) != "Mn")
-    return _ORDEM_PRIORITARIA_BP.get(sem.strip().upper(), 2)
+    return _RANK_BP.get(sem.strip().upper(), len(_ORDEM_BP))
 
 
 def _chave_ordem_label(label: str):
