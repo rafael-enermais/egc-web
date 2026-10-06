@@ -132,10 +132,8 @@ def test_fornecedor_sem_quadro_de_divida_sem_descritivos_e_sem_textos_removidos(
     assert "driver" not in todo
     # destaques: nome + CNPJ (sem o "—" solto)
     assert "Enermais Energia Ltda · CNPJ 47.040.664/0001-48" in paginas[1]
-    # v0.47.5: pag. 3 e pag. 4 mantem as frases de referencia em todas as variantes (so' sem o "driver")
-    plano = todo.replace("\n", " ")
-    assert "detalhamento das despesas operacionais está na página seguinte" in plano
-    assert "lido em conjunto com as despesas detalhadas na página anterior" in plano
+    # fornecedor nao tem pagina de despesas -> nao pode apontar pra ela
+    assert "detalhamento das despesas operacionais" not in todo
     assert "detalhamento completo de contas está na página seguinte" in todo.replace("\n", " ")
 
 
