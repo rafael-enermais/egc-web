@@ -283,7 +283,8 @@ def _montar_anexo(bp_periodo: list, lado: str, incluir_subconta: bool = True) ->
         rows = [r for r in bp_periodo if r["grupo"] == grupo_bd]
         if not rows:
             continue
-        itens = sorted((r for r in rows if r["conta"] != totalizador_nome), key=lambda r: r["conta"])
+        itens = sorted((r for r in rows if r["conta"] != totalizador_nome),
+                       key=lambda r: (_prioridade_conta_bp(r["conta"]), r["conta"]))
         mapa_itens = {r["conta"]: r for r in itens}
         filhos_usados = set()
         for filhos in _HIERARQUIA_BP.values():
@@ -1044,13 +1045,25 @@ def _montar_anexo_multi_periodo(bp_por_periodo: list, lado: str) -> list:
     for rotulo in sorted(secoes, key=lambda r: _ordem_secao(r, primeira_vez[r])):
         sec = secoes[rotulo]
         linhas.append(("grupo", rotulo))
-        for label in sorted(sec["contas"], key=_chave_ordem_label):
+        for label in sorted(sec["contas"], key=lambda lb: (_prioridade_conta_bp(lb), *_chave_ordem_label(lb))):
             linhas.append(("conta", label, *sec["contas"][label]))
         if sec["subtotal"] is not None:
             linhas.append(("subtotal", sec["subtotal"][0], *sec["subtotal"][1]))
     if total_geral is not None:
         linhas.append(("total", total_geral[0], *total_geral[1]))
     return linhas
+
+
+# v0.47.3 (Rafael: "cliente esta trocado de lugar com o disponivel, o balanco mostra o
+# contrario"): o anexo ordena as contas em ordem alfabetica, o que punha Clientes antes de
+# Disponivel. No balanco SPED a ordem e' Disponivel -> Clientes -> demais. As duas contas
+# vem primeiro (nessa ordem); o resto segue alfabetico como sempre.
+_ORDEM_PRIORITARIA_BP = {"DISPONIVEL": 0, "CLIENTES": 1}
+
+
+def _prioridade_conta_bp(nome: str) -> int:
+    sem = "".join(ch for ch in unicodedata.normalize("NFD", nome) if unicodedata.category(ch) != "Mn")
+    return _ORDEM_PRIORITARIA_BP.get(sem.strip().upper(), 2)
 
 
 def _chave_ordem_label(label: str):

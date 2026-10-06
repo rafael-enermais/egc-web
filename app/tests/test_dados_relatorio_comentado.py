@@ -566,3 +566,22 @@ def test_itens_admin_com_creditos_batem_com_o_total_e_nao_viram_despesa():
     # itens de OUTRO documento continuam sendo recusados
     avisos2: list = []
     assert drc._itens_admin_coerentes(itens, total * 2, avisos2, "Energia") == [] and avisos2
+
+
+def test_anexo_disponivel_vem_antes_de_clientes_v0_47_3():
+    # Rafael: "cliente esta trocado de lugar com o disponivel, o balanco mostra o contrario".
+    bp = [
+        _lanc("ATIVO CIRCULANTE", "TOTAL CIRCULANTE ATIVO", 100.0),
+        _lanc("ATIVO CIRCULANTE", "CLIENTES", 30.0),
+        _lanc("ATIVO CIRCULANTE", "DUPLICATAS A RECEBER", 30.0),
+        _lanc("ATIVO CIRCULANTE", "DISPONIVEL", 50.0),
+        _lanc("ATIVO CIRCULANTE", "DEPOSITOS BANCARIOS A VISTA", 50.0),
+        _lanc("ATIVO CIRCULANTE", "OUTROS CREDITOS", 20.0),
+        _lanc("TOTAL", "TOTAL DO ATIVO", 100.0),
+    ]
+    ordem = [l[1] for l in drc._montar_anexo(bp, "ATIVO") if l[0] == "conta"]
+    assert ordem == ["Disponível", "Clientes", "Outros Créditos"]
+    # multi-periodo (Modelo B) usa a mesma ordem
+    ordem_m = [l[1] for l in drc._montar_anexo_multi_periodo([bp, bp], "ATIVO") if l[0] == "conta"]
+    assert ordem_m == ["Disponível", "Clientes", "Outros Créditos"]
+    print("OK: Disponivel antes de Clientes (1 e N periodos)")
