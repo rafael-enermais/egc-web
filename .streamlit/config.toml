@@ -1,10 +1,7 @@
-# Tema: troca o vermelho padrao do Streamlit (botoes primarios, selecoes) pelo
-# azul do dashboard da Visao do Grupo.
-# ATENCAO: NAO usar [theme] com so' primaryColor -- isso fixa o tema CLARO e
-# ignora a preferencia escuro/claro do navegador (bug da v0.42.0: app ficou
-# branco). Por isso as duas secoes abaixo: claro e escuro seguem automaticos.
-[theme.light]
-primaryColor = "#2a78d6"
-
-[theme.dark]
+# Tema FIXO ESCURO (v0.47.2, pedido do Rafael: a contadora via o app branco -- o tema seguia a preferencia
+# claro/escuro do sistema/navegador de cada computador; agora todo mundo ve igual).
+# Para voltar a seguir o sistema: trocar este bloco por [theme.light] / [theme.dark] (cada um com seu primaryColor);
+# NAO usar [theme] com so' primaryColor (fixa o CLARO -- bug da v0.42.0).
+[theme]
+base = "dark"
 primaryColor = "#3987e5"
