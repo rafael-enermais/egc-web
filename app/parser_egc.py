@@ -912,6 +912,13 @@ def parse_duplo(pdf_path: Path, tipo: str, origem: str) -> list:
                                     or nome_n in _PASSIVO_CIRC_ONLY_NAMES
                                     or nome_n in _PASSIVO_NCIRC_ONLY_NAMES
                                 )
+                                # v0.47.3: o marcador "Nao Circulante" sozinho na linha (passivo com mais linhas que o
+                                # ativo -- Energia 12/2025) nao e' nome de conta, entao caia no ATIVO e o total do
+                                # Passivo Nao Circulante nunca era gravado (relatorio mostrava R$ 0,00). Se o "Nao
+                                # Circulante" do ATIVO ja' apareceu, este segundo e' o do PASSIVO.
+                                if (not eh_passivo_conhecido and nome_n == "NAO CIRCULANTE"
+                                        and any(norm(a[0]) == "NAO CIRCULANTE" for a in ativo_candidates)):
+                                    eh_passivo_conhecido = True
                                 if eh_passivo_conhecido:
                                     passivo_subbloco = _atualizar_subbloco_passivo(nome_n, passivo_subbloco)
                                     passivo_candidates.append((d0, v0, passivo_subbloco))

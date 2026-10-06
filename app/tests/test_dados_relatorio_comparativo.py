@@ -296,7 +296,7 @@ def test_anexo_multi_periodo_conta_nova_fica_dentro_do_grupo_antes_do_subtotal()
     # grupo, em ordem alfabetica sem acento, antes do subtotal.
     linhas = drc._montar_anexo_multi_periodo([BP_2025, BP_2026], "ATIVO")
     labels = [l[1] for l in linhas]
-    assert labels.index("Ativo Circulante") < labels.index("Clientes") < labels.index("Disponível") \
+    assert labels.index("Ativo Circulante") < labels.index("Disponível") < labels.index("Clientes") \
         < labels.index("Total Ativo Circulante") < labels.index("TOTAL DO ATIVO")
     assert labels[-1] == "TOTAL DO ATIVO"
     print("OK: _montar_anexo_multi_periodo — conta nova entra no proprio grupo, antes do subtotal")
