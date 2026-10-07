@@ -168,4 +168,4 @@ def test_passivo_e_pl_abrem_pagina_propria_mesmo_com_anexo_pequeno():
         assert pg_ativo and pg_passivo
         assert pg_ativo[0] < pg_passivo[0]
         assert not any("PASSIVO SECAO" in t and "ATIVO SECAO" in t for t in paginas)
-        assert len(paginas) == len(B.PAGINAS) + A.paginas_extras_anexo(dados)
+        assert len(paginas) == len(B.paginas_do_comparativo(dados)) + A.paginas_extras_anexo(dados)

@@ -90,6 +90,7 @@ import formatacao  # noqa: E402
 import visao_grupo  # noqa: E402
 import indicadores  # noqa: E402
 import selecao_periodos  # noqa: E402
+import nao_recorrentes as nrec  # noqa: E402
 
 NOME_POR_COD = {cod: nome for cod, nome, _cnpj in EMPRESAS_FIXAS}
 
@@ -535,6 +536,71 @@ pode_gerar = (
     or (modo != "Período único" and 2 <= len(periodos_multi) <= 4 and bool(empresas_multi) and not bloqueio_comparativo)
 )
 
+# ─────────── EBITDA Ajustado (v0.48.0): confirmar os itens nao recorrentes ANTES de gerar ───────────
+# A pagina "EBITDA Ajustado" so' soma itens nao recorrentes de lista CONFIRMADA (ver nao_recorrentes.py).
+# Aqui a contadora ve o que vai valer em cada empresa/periodo e confirma na hora; sem confirmacao o
+# relatorio sai com a reconciliacao so' ate o EBITDA contabil (nunca com ajuste nao confirmado).
+incluir_ebitda_ajustado = st.checkbox(
+    "Incluir a página **EBITDA Ajustado** (reconciliação do resultado até o EBITDA)", value=True, key="relatorio_incluir_ebitda_aj",
+)
+if incluir_ebitda_ajustado and pode_gerar:
+    if modo == "Período único":
+        _chaves_nr = [(cod_, periodo_sel, granularidade_sel) for cod_ in empresas_unico_multi]
+    else:
+        _chaves_nr = [(cod_, p_, g_) for cod_ in empresas_multi for p_, g_ in zip(periodos_multi, granularidades_multi)]
+    try:
+        _tabelas_nr = nrec.tabelas_existem(conn)
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        _tabelas_nr = False
+    with st.expander("🧮 Itens não recorrentes — conferir e confirmar antes de gerar", expanded=True):
+        if not _tabelas_nr:
+            st.caption(
+                "As tabelas de não recorrentes ainda não existem no banco (bloco 25). O relatório sai com a reconciliação "
+                "só até o EBITDA contábil, sem ajuste."
+            )
+        else:
+            _pendentes_nr = 0
+            for _cod, _per, _gr in _chaves_nr:
+                _rot = f"{NOME_POR_COD.get(_cod, _cod)} · {_per.strftime('%m/%Y')}" + (
+                    f" · {indicadores.rotulo_granularidade(_gr)}" if _gr else "")
+                try:
+                    _st = nrec.status_confirmacao(conn, _cod, _per, _gr)
+                    _its = nrec.listar_itens(conn, _cod, _per, _gr)
+                except Exception as exc:
+                    st.warning(f"{_rot}: não foi possível ler a lista ({exc})")
+                    continue
+                if _st["status"] == "confirmado":
+                    _tot = sum(nrec.valor_assinado(i) for i in _its)
+                    st.success(f"✅ {_rot} — lista confirmada: {len(_its)} item(ns), efeito no EBITDA {formatacao.moeda_br(_tot, forcar_sinal=True)}.")
+                else:
+                    _pendentes_nr += 1
+                    st.warning(
+                        f"⚠️ {_rot} — lista " + ("alterada depois da confirmação" if _st["status"] == "alterado" else "ainda não confirmada")
+                        + ". Sem confirmar, a página mostra só até o EBITDA contábil."
+                    )
+                    if _its:
+                        st.dataframe(
+                            [{"Categoria": i["categoria"], "Descrição": i["descricao"] or "—",
+                              "Efeito": formatacao.moeda_br(nrec.valor_assinado(i), forcar_sinal=True)} for i in _its],
+                            hide_index=True, width="stretch",
+                        )
+                    else:
+                        st.caption("Nenhum item cadastrado. Cadastre na página **Não Recorrentes** ou confirme que não há itens.")
+                    _rot_btn = "✅ Confirmar esta lista" if _its else "✅ Confirmar: não há itens não recorrentes"
+                    if st.button(_rot_btn, key=f"relatorio_nr_conf_{_cod}_{_per}_{_gr}"):
+                        try:
+                            nrec.confirmar_lista(conn, _cod, _per, _gr, usuario=usuario)
+                            flash("ok", f"Lista de não recorrentes confirmada: {_rot}.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Não foi possível confirmar: {exc}")
+            if _pendentes_nr:
+                st.caption("Para cadastrar ou editar itens, use a página **Não Recorrentes** no menu.")
+
 clicou_gerar = st.button("Gerar relatório", type="primary", key="relatorio_gerar_btn", disabled=not pode_gerar)
 
 if clicou_gerar:
@@ -564,6 +630,7 @@ if clicou_gerar:
                     f"Demonstrativo_{sufixo_empresas_unico}_{periodo_sel.strftime('%Y%m%d')}{sufixo_granul}{sufixo_variante}.pdf"
                 )
                 caminho = f"/tmp/{nome_arquivo}"
+                dados["incluir_ebitda_ajustado"] = bool(incluir_ebitda_ajustado)
                 g.gerar_pdf_completo(dados, caminho, incluir_pagina_resultado=incluir_pagina_resultado)
             with open(caminho, "rb") as f:
                 pdf_bytes = f.read()
@@ -571,7 +638,7 @@ if clicou_gerar:
             # páginas opcionais -- Resultado (incluir_pagina_resultado) e
             # Composição das Despesas (só na variante gerencial; padrão e
             # fornecedor não têm).
-            n_paginas_layout = 9 - (0 if incluir_pagina_resultado else 1) - (0 if variante_selecionada == "gerencial" else 1)
+            n_paginas_layout = g.numero_de_paginas(dados, incluir_pagina_resultado)
             st.success(
                 f"Relatório gerado ({len(pdf_bytes) // 1024} KB, "
                 f"{n_paginas_layout} páginas"
@@ -599,6 +666,18 @@ if clicou_gerar:
             )
             for _aviso in dados.get("avisos", []):
                 st.warning(_aviso)
+            if dados.get("ponte_ebitda") and incluir_ebitda_ajustado:
+                _nr = dados.get("nao_recorrentes") or {}
+                if _nr.get("status") == "confirmado":
+                    st.caption(
+                        f"EBITDA Ajustado: {len(_nr.get('itens', []))} categoria(s) de não recorrentes confirmadas, "
+                        f"efeito de {formatacao.moeda_br(_nr.get('total', 0.0), forcar_sinal=True)} no EBITDA."
+                    )
+                else:
+                    st.info(
+                        "EBITDA Ajustado: a lista de não recorrentes deste período não está confirmada "
+                        "(ou o bloco 25 não foi rodado) — a página mostra só a reconciliação até o EBITDA contábil."
+                    )
             if not incluir_pagina_resultado:
                 st.caption(
                     "Página 'Formação do Resultado' não incluída — este período não tem CSLL/IRPJ "
@@ -629,6 +708,7 @@ if clicou_gerar:
                 )
                 nome_arquivo = selecao_periodos.nome_arquivo_evolucao(sufixo_empresas, list(_p_usados), list(_g_usadas))
                 caminho = f"/tmp/{nome_arquivo}"
+                dados["incluir_ebitda_ajustado"] = bool(incluir_ebitda_ajustado)
                 gc.gerar_pdf_comparativo(dados, caminho)
             with open(caminho, "rb") as f:
                 pdf_bytes = f.read()

@@ -72,6 +72,29 @@ GREY_BG = "#F6F8FB"
 NEG_FILL = ORANGE
 NEG_TEXT = "#9A5200"
 RED_ACCENT = NEG_FILL
+
+# v0.48.0 -- REGRA DE COR DOS GRAFICOS (pedido do Rafael, aprovada no esboco
+# de 06-07/10/2026): valor POSITIVO = azul em degrade (claro -> escuro,
+# sempre da mesma familia do navy da marca); LARANJA so' pra NEGATIVO /
+# reducao (deducoes, custos, resultado negativo), sempre com sinal "-" no
+# rotulo. O laranja decorativo da marca (faixa do topo, tracinhos de titulo,
+# selo da capa) NAO entra nesta regra e nao foi alterado.
+BLUE_DEGRADE = ["#B4B9D6", "#9A9CC4", "#7F84AE", "#5C6091", "#3A3F7A", "#171C60"]
+
+
+def cor_barra_por_sinal(v, positiva=NAVY):
+    """Cor da BARRA: laranja se o valor e' negativo; senao `positiva` (azul)."""
+    return NEG_FILL if (v or 0) < 0 else positiva
+
+
+def cor_texto_por_sinal(v, positiva=NAVY):
+    """Cor do ROTULO/numero: laranja escuro (#9A5200, legivel no branco) se negativo."""
+    return NEG_TEXT if (v or 0) < 0 else positiva
+
+
+def rotulo_delta_mm(v_mm):
+    """Rotulo de um delta em R$ milhoes com sinal explicito (+/-)."""
+    return f"{'-' if v_mm < 0 else '+'}{moeda_br(abs(v_mm))} MM"
 BORDER_LIGHT = "#DADFE8"
 
 LOGO = {
@@ -375,14 +398,14 @@ def _valor_com_unidade(c, x, y_top, valor_completo, font_num="heavy", size_num=2
     c.drawString(x + w + 4, y, unidade)
 
 
-def _kpi_grande(c, x0, x1, y0, y1, label, valor, complemento, invertido=False):
+def _kpi_grande(c, x0, x1, y0, y1, label, valor, complemento, invertido=False, valor_negativo=False):
     """Card de KPI grande (2 por linha) -- borda navy/fundo branco por
     padrao, ou fundo navy solido com texto branco/laranja quando
     `invertido=True` (destaque do 2o KPI, mesmo padrao do modelo: receita
     em card claro, EBITDA em card navy solido)."""
     if invertido:
         rect(c, x0, y0, x1, y1, fill=NAVY, radius=6)
-        cor_label, cor_valor, cor_comp = "#FFFFFF", ORANGE, "#C9CEE8"
+        cor_label, cor_valor, cor_comp = "#FFFFFF", (ORANGE if valor_negativo else "#FFFFFF"), "#C9CEE8"
     else:
         rect(c, x0, y0, x1, y1, fill="#FFFFFF", stroke=NAVY, width=1.1, radius=6)
         cor_label, cor_valor, cor_comp = ORANGE, NAVY, GREY_TEXT
@@ -489,7 +512,7 @@ def pagina_destaques(c, dados, pagina: int, total_paginas: int):
                 "")  # v0.47.4: sem descritivo (pedido do Rafael)
     _kpi_grande(c, meio + 12, MARGEM + CONTEUDO_W, 145, 235,
                 "EBITDA do Período", f"{moeda_br(dados['ebitda'] / 1_000_000)} MM",
-                dados["complemento_ebitda"], invertido=True)
+                dados["complemento_ebitda"], invertido=True, valor_negativo=dados["ebitda"] < 0)
 
     # 4 KPIs pequenos
     col_w = (CONTEUDO_W - 3 * 10) / 4
@@ -546,7 +569,7 @@ def pagina_destaques(c, dados, pagina: int, total_paginas: int):
 # ============================================================================
 
 # --------------------------------------------------------- grafico: waterfall
-def grafico_waterfall(c, x0, x1, y0_top, y1_top, itens):
+def grafico_waterfall(c, x0, x1, y0_top, y1_top, itens, rotulo_zero=True):
     """Grafico de cascata generico (paginas 3, 5, 6 do modelo).
 
     `itens`: lista de dicts, cada um:
@@ -599,7 +622,8 @@ def grafico_waterfall(c, x0, x1, y0_top, y1_top, itens):
         c.setStrokeColor(HexColor(BORDER_LIGHT))
         c.setLineWidth(0.75)
         c.line(x0, Y(baseline_y), x1, Y(baseline_y))
-        txt(c, x0, baseline_y - 3, "R$ 0", font="regular", size=8, color=GREY_TEXT, align="left")
+        if rotulo_zero:
+            txt(c, x0, baseline_y - 3, "R$ 0", font="regular", size=8, color=GREY_TEXT, align="left")
 
     prev_topo_y = None
     for i, (it, (base, topo)) in enumerate(zip(itens, pontos)):
@@ -619,10 +643,24 @@ def grafico_waterfall(c, x0, x1, y0_top, y1_top, itens):
             c.restoreState()
 
         rect(c, xs, y_alto, xe, y_baixo, fill=it["cor"])
+        if it.get("hachura") and y_baixo > y_alto:
+            # v0.48.0: barra hachurada (itens "nao recorrentes" -- ajuste, nao valor contabil)
+            c.saveState()
+            clip = c.beginPath()
+            clip.rect(xs, Y(y_baixo), xe - xs, y_baixo - y_alto)
+            c.clipPath(clip, stroke=0, fill=0)
+            c.setStrokeColor(HexColor("#FFFFFF"))
+            c.setLineWidth(1.0)
+            h = y_baixo - y_alto
+            xh = xs - h
+            while xh < xe:
+                c.line(xh, Y(y_baixo), xh + h, Y(y_alto))
+                xh += 5.0
+            c.restoreState()
 
         cor_rotulo = it.get("cor_rotulo", NAVY)
         txt(c, xs + largura_barra / 2, y_alto - 8, it["rotulo_valor"],
-            font="bold", size=10.5, color=cor_rotulo, align="center")
+            font="bold", size=it.get("tamanho_rotulo", 10.5), color=cor_rotulo, align="center")
 
         for j, linha in enumerate(it["label"].split("\n")):
             txt(c, xs + largura_barra / 2, y1_top + 16 + j * 12, linha,
@@ -637,7 +675,7 @@ def grafico_ranking_horizontal(c, x0, x1, y0_top, altura_linha, itens):
 
     `itens`: lista JA ORDENADA (maior primeiro) de dicts com label, pct
     (0-100), rotulo_valor (string formatada), cor (opcional -- default
-    ORANGE pro 1o item, gradiente NAVY->cinza-azulado pros demais).
+    azul degrade NAVY (maior) -> azul claro (menor); v0.48.0: nao usa mais laranja).
     Devolve o y_top final (apos a ultima barra)."""
     n = len(itens)
     col_label_w = 168
@@ -654,7 +692,7 @@ def grafico_ranking_horizontal(c, x0, x1, y0_top, altura_linha, itens):
     for i, it in enumerate(itens):
         cor = it.get("cor")
         if cor is None:
-            cor = ORANGE if i == 0 else _interp_cor(NAVY, "#A9AFC9", (i - 1) / max(1, n - 2))
+            cor = _interp_cor(NAVY, BLUE_DEGRADE[0], i / max(1, n - 1))
         h_barra = altura_linha * 0.55
         y_barra0 = y + (altura_linha - h_barra) / 2
         txt(c, x0, y + altura_linha / 2 + 3, it["label"], font="regular", size=9.5, color=NAVY)
@@ -1236,16 +1274,16 @@ def pagina_receita_custos(c, dados, pagina: int, total_paginas: int):
         font="regular", size=10, color=GREY_TEXT)
 
     itens = [
-        dict(tipo="abs", valor=d["receita_bruta"] / 1e6, cor=NAVY, label="Receita\nBruta",
+        dict(tipo="abs", valor=d["receita_bruta"] / 1e6, cor=cor_barra_por_sinal(d["receita_bruta"], BLUE_DEGRADE[2]), label="Receita\nBruta",
              rotulo_valor=f"{moeda_br(d['receita_bruta'] / 1e6)} MM"),
         dict(tipo="delta", valor=-d["deducoes_receita"] / 1e6, cor=RED_ACCENT, label="Deduções\nda Receita",
              rotulo_valor=f"-{moeda_br(d['deducoes_receita'] / 1e6)} MM", cor_rotulo=NEG_TEXT),
-        dict(tipo="abs", valor=d["receita_liquida"] / 1e6, cor=NAVY, label="Receita\nLíquida",
-             rotulo_valor=f"{moeda_br(d['receita_liquida'] / 1e6)} MM", conectar=True),
+        dict(tipo="abs", valor=d["receita_liquida"] / 1e6, cor=cor_barra_por_sinal(d["receita_liquida"], BLUE_DEGRADE[3]), label="Receita\nLíquida",
+             rotulo_valor=f"{moeda_br(d['receita_liquida'] / 1e6)} MM", cor_rotulo=cor_texto_por_sinal(d["receita_liquida"]), conectar=True),
         dict(tipo="delta", valor=-d["custo_servicos"] / 1e6, cor=RED_ACCENT, label="Custo dos\nServiços",
              rotulo_valor=f"-{moeda_br(d['custo_servicos'] / 1e6)} MM", cor_rotulo=NEG_TEXT),
-        dict(tipo="abs", valor=d["lucro_bruto"] / 1e6, cor=ORANGE, label="Lucro\nBruto",
-             rotulo_valor=f"{moeda_br(d['lucro_bruto'] / 1e6)} MM", cor_rotulo=ORANGE),
+        dict(tipo="abs", valor=d["lucro_bruto"] / 1e6, cor=cor_barra_por_sinal(d["lucro_bruto"], NAVY), label="Lucro\nBruto",
+             rotulo_valor=f"{moeda_br(d['lucro_bruto'] / 1e6)} MM", cor_rotulo=cor_texto_por_sinal(d["lucro_bruto"])),
     ]
     grafico_waterfall(c, MARGEM, MARGEM + CONTEUDO_W, 150, 430, itens)
 
@@ -1384,15 +1422,15 @@ def pagina_resultado(c, dados, pagina: int, total_paginas: int):
 
     resultado_antes_csir = d["lucro_bruto"] - d["despesas_operacionais"]
     itens = [
-        dict(tipo="abs", valor=d["lucro_bruto"] / 1e6, cor=NAVY, label="Lucro Bruto",
-             rotulo_valor=f"{moeda_br(d['lucro_bruto'] / 1e6)} MM"),
+        dict(tipo="abs", valor=d["lucro_bruto"] / 1e6, cor=cor_barra_por_sinal(d["lucro_bruto"], BLUE_DEGRADE[3]), label="Lucro Bruto",
+             rotulo_valor=f"{moeda_br(d['lucro_bruto'] / 1e6)} MM", cor_rotulo=cor_texto_por_sinal(d["lucro_bruto"])),
         dict(tipo="delta", valor=-d["despesas_operacionais"] / 1e6, cor=RED_ACCENT, label="Despesas\nOperacionais",
              rotulo_valor=f"-{moeda_br(d['despesas_operacionais'] / 1e6)} MM", cor_rotulo=NEG_TEXT),
         dict(tipo="delta", valor=-d["csll_irpj"] / 1e6, cor=RED_ACCENT, label="CSLL + IRPJ",
              rotulo_valor=f"-{moeda_br(d['csll_irpj'] / 1e6)} MM", cor_rotulo=NEG_TEXT),
-        dict(tipo="abs", valor=d["resultado_liquido"] / 1e6, cor=RED_ACCENT, label="Resultado Líquido\ndo Período",
+        dict(tipo="abs", valor=d["resultado_liquido"] / 1e6, cor=cor_barra_por_sinal(d["resultado_liquido"], NAVY), label="Resultado Líquido\ndo Período",
              rotulo_valor=f"{moeda_br(d['resultado_liquido'] / 1e6, forcar_sinal=True)} MM",
-             cor_rotulo=NEG_TEXT, conectar=False),
+             cor_rotulo=cor_texto_por_sinal(d["resultado_liquido"]), conectar=False),
     ]
     grafico_waterfall(c, MARGEM, MARGEM + CONTEUDO_W, 150, 420, itens)
 
@@ -1410,7 +1448,7 @@ def pagina_resultado(c, dados, pagina: int, total_paginas: int):
     col_w = (CONTEUDO_W - 10) / 2
     rect(c, MARGEM, y, MARGEM + col_w, y + 55, fill=NAVY, radius=6)
     txt(c, MARGEM + 16, y + 20, "RESULTADO LÍQUIDO DO PERÍODO", font="bold", size=8.5, color="#FFFFFF")
-    txt(c, MARGEM + 16, y + 44, f"{moeda_br(d['resultado_liquido'] / 1e6, forcar_sinal=True)} MM", font="heavy", size=20, color=ORANGE)
+    txt(c, MARGEM + 16, y + 44, f"{moeda_br(d['resultado_liquido'] / 1e6, forcar_sinal=True)} MM", font="heavy", size=20, color=(ORANGE if d["resultado_liquido"] < 0 else "#FFFFFF"))
     x2 = MARGEM + col_w + 10
     rect(c, x2, y, x2 + col_w, y + 55, fill=GREY_BG)
     txt(c, x2 + 16, y + 20, "MARGEM LÍQUIDA", font="bold", size=8.5, color=NAVY)
@@ -1471,22 +1509,31 @@ def pagina_ebitda(c, dados, pagina: int, total_paginas: int):
     # existe (pagina_resultado e' pulada) -- soma 0, que e' o valor certo
     # (nao ha provisao separada pra somar de volta nesse regime).
     csll_irpj = d.get("csll_irpj", 0) or 0
+    # v0.48.0 (regra de cor): positivo = azul degrade (claro -> escuro, na ordem
+    # das barras), laranja so' quando o valor da barra e' negativo.
+    n_deltas = (1 if csll_irpj else 0) + 2
+    tons = [BLUE_DEGRADE[1], BLUE_DEGRADE[2], BLUE_DEGRADE[3], BLUE_DEGRADE[4]]
+    if n_deltas == 2:
+        tons = [BLUE_DEGRADE[1], BLUE_DEGRADE[2], BLUE_DEGRADE[3]]
+    k = 0
     itens = [
-        dict(tipo="abs", valor=d["resultado_liquido"] / 1e6, cor=RED_ACCENT, label="Resultado Líquido\ndo Período",
-             rotulo_valor=f"{moeda_br(d['resultado_liquido'] / 1e6, forcar_sinal=True)} MM", cor_rotulo=NEG_TEXT, conectar=False),
+        dict(tipo="abs", valor=d["resultado_liquido"] / 1e6, cor=cor_barra_por_sinal(d["resultado_liquido"], tons[k]), label="Resultado Líquido\ndo Período",
+             rotulo_valor=f"{moeda_br(d['resultado_liquido'] / 1e6, forcar_sinal=True)} MM", cor_rotulo=cor_texto_por_sinal(d["resultado_liquido"]), conectar=False),
     ]
+    k += 1
     if csll_irpj:
         itens.append(
-            dict(tipo="delta", valor=csll_irpj / 1e6, cor="#7a7fb0", label="(+) CSLL e IRPJ\nProvisionados",
-                 rotulo_valor=f"+{moeda_br(csll_irpj / 1e6)} MM")
+            dict(tipo="delta", valor=csll_irpj / 1e6, cor=cor_barra_por_sinal(csll_irpj, tons[k]), label="(+) CSLL e IRPJ\nProvisionados",
+                 rotulo_valor=rotulo_delta_mm(csll_irpj / 1e6), cor_rotulo=cor_texto_por_sinal(csll_irpj))
         )
+        k += 1
     itens += [
-        dict(tipo="delta", valor=d["resultado_financeiro"] / 1e6, cor="#5b5f8c", label="(+) Resultado\nFinanceiro Líquido",
-             rotulo_valor=f"+{moeda_br(d['resultado_financeiro'] / 1e6)} MM"),
-        dict(tipo="delta", valor=d["deprec_amortiz"] / 1e6, cor="#9297bb", label="(+) Depreciação e\nAmortização",
-             rotulo_valor=f"+{moeda_br(d['deprec_amortiz'] / 1e6)} MM"),
-        dict(tipo="abs", valor=d["ebitda"] / 1e6, cor=ORANGE, label="EBITDA",
-             rotulo_valor=f"{moeda_br(d['ebitda'] / 1e6, forcar_sinal=True)} MM", cor_rotulo=ORANGE, conectar=False),
+        dict(tipo="delta", valor=d["resultado_financeiro"] / 1e6, cor=cor_barra_por_sinal(d["resultado_financeiro"], tons[k]), label="(+) Resultado\nFinanceiro Líquido",
+             rotulo_valor=rotulo_delta_mm(d["resultado_financeiro"] / 1e6), cor_rotulo=cor_texto_por_sinal(d["resultado_financeiro"])),
+        dict(tipo="delta", valor=d["deprec_amortiz"] / 1e6, cor=cor_barra_por_sinal(d["deprec_amortiz"], tons[k + 1]), label="(+) Depreciação e\nAmortização",
+             rotulo_valor=rotulo_delta_mm(d["deprec_amortiz"] / 1e6), cor_rotulo=cor_texto_por_sinal(d["deprec_amortiz"])),
+        dict(tipo="abs", valor=d["ebitda"] / 1e6, cor=cor_barra_por_sinal(d["ebitda"], NAVY), label="EBITDA",
+             rotulo_valor=f"{moeda_br(d['ebitda'] / 1e6, forcar_sinal=True)} MM", cor_rotulo=cor_texto_por_sinal(d["ebitda"]), conectar=False),
     ]
     grafico_waterfall(c, MARGEM, MARGEM + CONTEUDO_W, 150, 420, itens)
 
@@ -1590,20 +1637,20 @@ def pagina_balanco(c, dados, pagina: int, total_paginas: int, tem_pagina_resulta
     txt(c, MARGEM, 150, "ATIVO", font="bold", size=9.5, color=NAVY)
     y = grafico_barra_empilhada(c, MARGEM, MARGEM + CONTEUDO_W, 158, 34, [
         dict(label="Circulante", valor=d["ativo_circulante"], pct=100 * d["ativo_circulante"] / d["total_ativo"],
-             cor=NAVY, rotulo_valor=f"{moeda_br(d['ativo_circulante'] / 1e6)} MM"),
+             cor=BLUE_DEGRADE[5], rotulo_valor=f"{moeda_br(d['ativo_circulante'] / 1e6)} MM"),
         dict(label="Não Circulante", valor=d["ativo_nao_circulante"], pct=100 * d["ativo_nao_circulante"] / d["total_ativo"],
-             cor="#3d4290", rotulo_valor=f"{moeda_br(d['ativo_nao_circulante'] / 1e6)} MM"),
+             cor=BLUE_DEGRADE[3], rotulo_valor=f"{moeda_br(d['ativo_nao_circulante'] / 1e6)} MM"),
     ])
 
     y += 20
     txt(c, MARGEM, y, "PASSIVO + PATRIMÔNIO LÍQUIDO", font="bold", size=9.5, color=NAVY)
     y = grafico_barra_empilhada(c, MARGEM, MARGEM + CONTEUDO_W, y + 8, 34, [
         dict(label="Circulante", valor=d["passivo_circulante"], pct=100 * d["passivo_circulante"] / d["total_ativo"],
-             cor=NAVY, rotulo_valor=f"{moeda_br(d['passivo_circulante'] / 1e6)} MM"),
+             cor=BLUE_DEGRADE[5], rotulo_valor=f"{moeda_br(d['passivo_circulante'] / 1e6)} MM"),
         dict(label="Não Circulante", valor=d["passivo_nao_circulante"], pct=100 * d["passivo_nao_circulante"] / d["total_ativo"],
-             cor="#3d4290", rotulo_valor=f"{moeda_br(d['passivo_nao_circulante'] / 1e6)} MM"),
+             cor=BLUE_DEGRADE[3], rotulo_valor=f"{moeda_br(d['passivo_nao_circulante'] / 1e6)} MM"),
         dict(label="Patrimônio Líquido", valor=d["patrimonio_liquido"], pct=100 * d["patrimonio_liquido"] / d["total_ativo"],
-             cor=ORANGE, rotulo_valor=f"{moeda_br(d['patrimonio_liquido'] / 1e6)} MM"),
+             cor=cor_barra_por_sinal(d["patrimonio_liquido"], BLUE_DEGRADE[1]), rotulo_valor=f"{moeda_br(d['patrimonio_liquido'] / 1e6)} MM"),
     ])
 
     y += 26
@@ -1756,6 +1803,225 @@ def pagina_fechamento(c, dados, pagina: int, total_paginas: int):
     _footer(c, pagina, total_paginas)
 
 
+# ------------------------------------------------------- pagina: EBITDA Ajustado
+# v0.48.0 (pedido do Rafael 06-07/10/2026; esboco aprovado v0.4). Vem logo DEPOIS da pagina do EBITDA
+# nos Demonstrativos Comentados (Fornecedor e Gerencial). Mostra a RECONCILIACAO do resultado liquido ate
+# o EBITDA contabil (mesmo numero do indicador do app) e, SO' quando a lista de itens nao recorrentes do
+# periodo foi CONFIRMADA (ver nao_recorrentes.py), o EBITDA ajustado. Sem lista confirmada: so' ate o
+# EBITDA contabil -- nunca um ajuste nao confirmado. Valores em R$ completos (sem "mil"/"MM" na tabela).
+
+def nao_recorrentes_categorias():
+    import nao_recorrentes
+    return list(nao_recorrentes.CATEGORIAS)
+
+
+def _reais(v, sinal=False):
+    """R$ inteiros ('R$ 724.975', '-R$ 1.337.675'); zero vira '—'. sinal=True poe '+' em positivo."""
+    r = int(round(abs(v)))
+    if r == 0:
+        return "—"
+    s = f"R$ {r:,}".replace(",", ".")
+    if v < 0:
+        return "-" + s
+    return ("+" + s) if sinal else s
+
+
+def _pct_rol(v, rol):
+    return pct_br(v / rol) if rol else "—"
+
+
+def _mm_sinal(v):
+    return f"{'-' if v < 0 else '+'}R$ {moeda_br(abs(v) / 1e6).replace('R$ ', '')} MM"
+
+
+def _linhas_ponte(pt, nr_confirmado, nr_total):
+    """[(rotulo, valor, destaque)] da reconciliacao. Linhas que nao existem no periodo (CSLL/IRPJ em lucro
+    presumido, 'outros resultados' = 0) simplesmente nao aparecem -- nada e' inventado."""
+    linhas = [("Resultado líquido do período", pt["resultado_liquido"], False)]
+    if pt["csll_irpj"]:
+        linhas.append(("(+) CSLL e IRPJ provisionados", pt["csll_irpj"], False))
+    if pt["outros_resultados"]:
+        linhas.append(("(-) Outros resultados operacionais", -pt["outros_resultados"], False))
+    if pt["csll_irpj"] or pt["outros_resultados"]:
+        rot = "(=) Lucro operacional líquido" if pt["outros_resultados"] else "(=) Resultado antes de CSLL e IRPJ"
+        linhas.append((rot, pt["lucro_operacional"], True))
+    linhas += [
+        ("(+) Resultado financeiro líquido", pt["resultado_financeiro"], False),
+        ("(=) EBIT", pt["ebit"], True),
+        ("(+) Depreciações e amortizações", pt["deprec_amortiz"], False),
+        ("(=) EBITDA contábil", pt["ebitda"], True),
+    ]
+    if nr_confirmado:
+        linhas += [("(+) Não recorrentes", nr_total, False), ("(=) EBITDA ajustado", pt["ebitda"] + nr_total, True)]
+    return linhas
+
+
+def _leitura_ebitda_ajustado(dados, nr_confirmado, nr_total) -> list[str]:
+    pt = dados["ponte_ebitda"]
+    rol = pt["receita_liquida"]
+    partes = [f"soma CSLL e IRPJ provisionados ({moeda_br(pt['csll_irpj'], forcar_sinal=True)})"] if pt["csll_irpj"] else []
+    if pt["outros_resultados"]:
+        partes.append(f"deduz outros resultados operacionais ({moeda_br(-pt['outros_resultados'], forcar_sinal=True)})")
+    partes.append(f"soma o resultado financeiro líquido ({moeda_br(pt['resultado_financeiro'], forcar_sinal=True)})")
+    partes.append(f"soma as depreciações e amortizações ({moeda_br(pt['deprec_amortiz'], forcar_sinal=True)})")
+    p1 = (
+        f"O EBITDA contábil do período é de {moeda_br(pt['ebitda'], forcar_sinal=True)} "
+        f"({pct_br(pt['ebitda'] / rol, forcar_sinal=True) if rol else '—'} da receita operacional líquida). "
+        f"Ele parte do resultado líquido de {moeda_br(pt['resultado_liquido'], forcar_sinal=True)}, "
+        + ", ".join(partes[:-1]) + (" e " if len(partes) > 1 else "") + partes[-1] + "."
+    )
+    if not nr_confirmado:
+        return [p1, "Os itens não recorrentes deste período ainda não foram confirmados; por isso o EBITDA ajustado não é apresentado."]
+    aj = pt["ebitda"] + nr_total
+    var = f", variação de {pct_br(nr_total / pt['ebitda'], forcar_sinal=True)} sobre o EBITDA contábil" if pt["ebitda"] > 0 else ""
+    p2 = (
+        f"O EBITDA ajustado incorpora os itens classificados como não recorrentes ({moeda_br(nr_total, forcar_sinal=True)}), "
+        f"chegando a {moeda_br(aj, forcar_sinal=True)} ({pct_br(aj / rol, forcar_sinal=True) if rol else '—'} da receita líquida){var}. "
+        "O ajuste não altera o resultado contábil nem o caixa: apenas mostra o desempenho operacional sem os itens "
+        "que a administração classificou como pontuais."
+    )
+    return [p1, p2]
+
+
+def pagina_ebitda_ajustado(c, dados, pagina: int, total_paginas: int):
+    d = dados
+    pt = d["ponte_ebitda"]
+    nr = d.get("nao_recorrentes") or {}
+    nr_conf = nr.get("status") == "confirmado"
+    nr_total = float(nr.get("total", 0.0)) if nr_conf else 0.0
+    nr_itens = list(nr.get("itens", [])) if nr_conf else []
+    rol = pt["receita_liquida"]
+    ebitda, aj = pt["ebitda"], pt["ebitda"] + nr_total
+
+    _fundo_marca_dagua(c)
+    _header(c, dados, "EBITDA Ajustado" if nr_conf else "Reconciliação do EBITDA")
+    txt(c, MARGEM, 100, "EBITDA Ajustado" if nr_conf else "Reconciliação do EBITDA", font="heavy", size=17, color=NAVY)
+    txt(c, MARGEM, 120, "Do resultado líquido ao EBITDA ajustado — valores em R$" if nr_conf
+        else "Do resultado líquido ao EBITDA contábil — valores em R$", font="regular", size=10, color=GREY_TEXT)
+
+    # ---- cards
+    def card(x0, x1, label, valor, sub, destaque=False):
+        if destaque:
+            rect(c, x0, 140, x1, 192, fill="#FFFFFF", stroke=NAVY, width=1.1, radius=5)
+        else:
+            rect(c, x0, 140, x1, 192, fill=GREY_BG, radius=5)
+        txt(c, x0 + 10, 154, label, font="bold", size=7.5, color=ORANGE if destaque else NAVY)
+        txt(c, x0 + 10, 175, valor, font="heavy", size=15, color=cor_texto_por_sinal(0 if valor[:1] != "-" else -1))
+        txt(c, x0 + 10, 188, sub, font="regular", size=7.5, color=GREY_TEXT)
+
+    if nr_conf:
+        cw = (CONTEUDO_W - 24) / 3
+        card(MARGEM, MARGEM + cw, "EBITDA CONTÁBIL", _mm_sinal(ebitda), f"{_pct_rol(ebitda, rol)} da receita líquida")
+        card(MARGEM + cw + 12, MARGEM + 2 * cw + 12, "(+) NÃO RECORRENTES", _mm_sinal(nr_total), f"{_pct_rol(nr_total, rol)} da receita líquida")
+        card(MARGEM + 2 * (cw + 12), MARGEM + CONTEUDO_W, "EBITDA AJUSTADO", _mm_sinal(aj),
+             f"{_pct_rol(aj, rol)} da receita líquida", destaque=True)
+    else:
+        cw = (CONTEUDO_W - 12) / 2
+        card(MARGEM, MARGEM + cw, "EBITDA CONTÁBIL", _mm_sinal(ebitda), "", destaque=True)
+        card(MARGEM + cw + 12, MARGEM + CONTEUDO_W, "MARGEM EBITDA", pct_br(ebitda / rol, forcar_sinal=True) if rol else "—",
+             "sobre a receita operacional líquida")
+
+    # ---- grafico em cascata
+    txt(c, MARGEM, 214, "Do resultado líquido ao EBITDA ajustado" if nr_conf else "Do resultado líquido ao EBITDA contábil",
+        font="heavy", size=11, color=NAVY)
+    deltas = [("(+) CSLL\ne IRPJ", pt["csll_irpj"])] if pt["csll_irpj"] else []
+    if pt["outros_resultados"]:
+        deltas.append(("(-) Outros\nresultados", -pt["outros_resultados"]))
+    deltas += [("(+) Resultado\nfinanceiro", pt["resultado_financeiro"]), ("(+) Deprec. e\namortização", pt["deprec_amortiz"])]
+    tons = [BLUE_DEGRADE[1], BLUE_DEGRADE[2], BLUE_DEGRADE[3], BLUE_DEGRADE[3]]
+    itens = [dict(tipo="abs", valor=pt["resultado_liquido"], cor=cor_barra_por_sinal(pt["resultado_liquido"], BLUE_DEGRADE[0]),
+                  label="Resultado\nlíquido", rotulo_valor=_reais(pt["resultado_liquido"]) if pt["resultado_liquido"] else "R$ 0",
+                  cor_rotulo=cor_texto_por_sinal(pt["resultado_liquido"]), conectar=False, tamanho_rotulo=8)]
+    for i, (lab, v) in enumerate(deltas):
+        itens.append(dict(tipo="delta", valor=v, cor=cor_barra_por_sinal(v, tons[min(i, 3)]), label=lab,
+                          rotulo_valor=_reais(v, sinal=True), cor_rotulo=cor_texto_por_sinal(v), tamanho_rotulo=8))
+    itens.append(dict(tipo="abs", valor=ebitda, cor=cor_barra_por_sinal(ebitda, BLUE_DEGRADE[4]), label="EBITDA\ncontábil",
+                      rotulo_valor=_reais(ebitda) if ebitda else "R$ 0", cor_rotulo=cor_texto_por_sinal(ebitda), conectar=False, tamanho_rotulo=8))
+    if nr_conf:
+        itens.append(dict(tipo="delta", valor=nr_total, cor=cor_barra_por_sinal(nr_total, BLUE_DEGRADE[1]), label="(+) Não\nrecorrentes",
+                          rotulo_valor=_reais(nr_total, sinal=True) if nr_total else "R$ 0", cor_rotulo=cor_texto_por_sinal(nr_total),
+                          hachura=True, tamanho_rotulo=8))
+        itens.append(dict(tipo="abs", valor=aj, cor=cor_barra_por_sinal(aj, BLUE_DEGRADE[5]), label="EBITDA\najustado",
+                          rotulo_valor=_reais(aj) if aj else "R$ 0", cor_rotulo=cor_texto_por_sinal(aj), conectar=False, tamanho_rotulo=8))
+    grafico_waterfall(c, MARGEM, MARGEM + CONTEUDO_W, 224, 330, itens, rotulo_zero=False)
+
+    # ---- tabela da reconciliacao (esquerda) + abertura dos nao recorrentes (direita)
+    y_t = 392
+    txt(c, MARGEM, y_t, "Reconciliação do EBITDA", font="heavy", size=12, color=NAVY)
+    txt(c, MARGEM, y_t + 13, "(valores em R$)", font="italic", size=7.5, color=GREY_TEXT)
+    LW, CWd = 152.0, 70.0
+    rotulo_periodo = (d.get("periodo_label") or "").strip() or "Período"
+    for k, (rot, fc, tc) in enumerate(((rotulo_periodo, NAVY, "#FFFFFF"), ("% ROL", BLUE_DEGRADE[1], NAVY))):
+        x0 = MARGEM + LW + CWd * k
+        rect(c, x0, y_t + 20, x0 + CWd, y_t + 36, fill=fc)
+        sz = _tamanho_fonte_1_linha(rot, FONT["bold"], 7.5, CWd - 6, minimo=5.5)
+        txt(c, x0 + CWd / 2, y_t + 31, rot, font="bold", size=sz, color=tc, align="center")
+    y = y_t + 54
+    passo = 15.5
+    for rot, v, destaque in _linhas_ponte(pt, nr_conf, nr_total):
+        if destaque:
+            c.setStrokeColor(HexColor(NAVY)); c.setLineWidth(0.9)
+            c.line(MARGEM, Y(y - 10), MARGEM + LW + 2 * CWd, Y(y - 10))
+        fonte = "bold" if destaque else "regular"
+        txt(c, MARGEM, y, rot, font=fonte, size=8.5, color=NAVY)
+        txt(c, MARGEM + LW + CWd - 5, y, _reais(v), font=fonte, size=8.5, color=cor_texto_por_sinal(v, "#1c1c1a"), align="right")
+        txt(c, MARGEM + LW + 2 * CWd - 5, y, _pct_rol(v, rol) if round(v) else "—", font="italic", size=8.5, color=GREY_TEXT, align="right")
+        y += passo
+    y_fim_tabela = y
+
+    y_fim_direita = y_t
+    if nr_conf:
+        RX = MARGEM + LW + 2 * CWd + 26
+        RW = MARGEM + CONTEUDO_W - RX
+        txt(c, RX, y_t, "Abertura do não recorrente", font="heavy", size=10.5, color=NAVY)
+        txt(c, RX, y_t + 13, "(valores em R$)", font="italic", size=7.5, color=GREY_TEXT)
+        rect(c, MARGEM + CONTEUDO_W - 82, y_t + 20, MARGEM + CONTEUDO_W, y_t + 36, fill=NAVY)
+        txt(c, MARGEM + CONTEUDO_W - 41, y_t + 31, "VALOR", font="bold", size=7.5, color="#FFFFFF", align="center")
+        yy = y_t + 54
+        if nr_itens:
+            for nome, v in nr_itens:
+                sz = _tamanho_fonte_1_linha(nome, FONT["regular"], 8.5, RW - 90, minimo=6.5)
+                txt(c, RX, yy, nome, font="regular", size=sz, color=NAVY)
+                txt(c, MARGEM + CONTEUDO_W - 5, yy, _reais(v), font="regular", size=8.5, color=cor_texto_por_sinal(v, "#1c1c1a"), align="right")
+                yy += passo
+            c.setStrokeColor(HexColor(NAVY)); c.setLineWidth(0.9)
+            c.line(RX, Y(yy - 10), MARGEM + CONTEUDO_W, Y(yy - 10))
+            txt(c, RX, yy, "Total não recorrente", font="bold", size=8.5, color=NAVY)
+            txt(c, MARGEM + CONTEUDO_W - 5, yy, _reais(nr_total), font="bold", size=8.5, color=cor_texto_por_sinal(nr_total, "#1c1c1a"), align="right")
+            yy += passo
+        else:
+            txt(c, RX, yy, "Nenhum item não recorrente confirmado", font="italic", size=8.5, color=GREY_TEXT)
+            yy += passo
+        y_fim_direita = yy
+
+    # ---- leitura + memoria de calculo
+    y = max(y_fim_tabela, y_fim_direita) + 16
+    txt(c, MARGEM, y, "Leitura do EBITDA Ajustado" if nr_conf else "Leitura da Reconciliação", font="heavy", size=12, color=NAVY)
+    c.setStrokeColor(HexColor(ORANGE)); c.setLineWidth(2)
+    c.line(MARGEM, Y(y + 6), MARGEM + 34, Y(y + 6))
+    y += 24
+    for par in _leitura_ebitda_ajustado(d, nr_conf, nr_total):
+        y = paragrafo(c, MARGEM, y, par, CONTEUDO_W, size=9, leading=12.5) + 6
+
+    termos = [f"{moeda_br(pt['resultado_liquido'], forcar_sinal=True)} (resultado líquido)"]
+    if pt["csll_irpj"]:
+        termos.append(f"{moeda_br(pt['csll_irpj'], forcar_sinal=True)} (CSLL e IRPJ provisionados)")
+    if pt["outros_resultados"]:
+        termos.append(f"{moeda_br(-pt['outros_resultados'], forcar_sinal=True)} (outros resultados operacionais)")
+    termos.append(f"{moeda_br(pt['resultado_financeiro'], forcar_sinal=True)} (resultado financeiro líquido)")
+    termos.append(f"{moeda_br(pt['deprec_amortiz'], forcar_sinal=True)} (depreciações e amortizações)")
+    calc = " ".join(termos) + f" = {moeda_br(ebitda, forcar_sinal=True)} (EBITDA contábil)."
+    if nr_conf:
+        calc += f" {moeda_br(ebitda, forcar_sinal=True)} {moeda_br(nr_total, forcar_sinal=True)} (itens não recorrentes confirmados) = {moeda_br(aj, forcar_sinal=True)} (EBITDA ajustado)."
+    y += 4
+    linhas_calc = len(_wrap_text(calc, FONT["regular"], 8.5, CONTEUDO_W - 32))
+    altura_box = 18 + linhas_calc * 11.5
+    rect(c, MARGEM, y, MARGEM + CONTEUDO_W, y + altura_box, fill=GREY_BG, stroke=BORDER_LIGHT, width=0.75, radius=6)
+    paragrafo(c, MARGEM + 16, y + 15, calc, CONTEUDO_W - 32, size=8.5, leading=11.5)
+
+    _footer(c, pagina, total_paginas)
+
+
 # ---------------------------------------------------------------- montagem
 PAGINAS = [
     pagina_capa,
@@ -1764,10 +2030,28 @@ PAGINAS = [
     pagina_despesas,
     pagina_resultado,
     pagina_ebitda,
+    pagina_ebitda_ajustado,
     pagina_balanco,
     pagina_anexo,
     pagina_fechamento,
 ]
+
+
+def paginas_do_relatorio(dados: dict, incluir_pagina_resultado: bool = True) -> list:
+    """Lista (na ordem) das funcoes de pagina que entram neste relatorio. Fonte UNICA para
+    gerar_pdf_completo e para a tela contar as paginas (v0.48.0)."""
+    paginas = PAGINAS if incluir_pagina_resultado else [p for p in PAGINAS if p is not pagina_resultado]
+    if dados.get("variante", "padrao") in VARIANTES_SEM_PAGINA_DESPESAS:
+        paginas = [p for p in paginas if p is not pagina_despesas]
+    # EBITDA Ajustado (v0.48.0): so' quando a camada de dados montou a ponte do EBITDA (dado real) e a
+    # tela nao desligou a pagina. Dict montado a mao (testes antigos) nao tem ponte -> pagina nao entra.
+    if not dados.get("ponte_ebitda") or not dados.get("incluir_ebitda_ajustado", True):
+        paginas = [p for p in paginas if p is not pagina_ebitda_ajustado]
+    return paginas
+
+
+def numero_de_paginas(dados: dict, incluir_pagina_resultado: bool = True) -> int:
+    return len(paginas_do_relatorio(dados, incluir_pagina_resultado)) + paginas_extras_anexo(dados)
 
 
 def gerar_pdf_completo(dados: dict, caminho_saida: str, incluir_pagina_resultado: bool = True) -> str:
@@ -1814,9 +2098,7 @@ def gerar_pdf_completo(dados: dict, caminho_saida: str, incluir_pagina_resultado
     a ultima pagina fisica que usou)."""
     _registrar_fontes()
     c = canvas.Canvas(caminho_saida, pagesize=(PAGE_W, PAGE_H))
-    paginas = PAGINAS if incluir_pagina_resultado else [p for p in PAGINAS if p is not pagina_resultado]
-    if dados.get("variante", "padrao") in VARIANTES_SEM_PAGINA_DESPESAS:
-        paginas = [p for p in paginas if p is not pagina_despesas]
+    paginas = paginas_do_relatorio(dados, incluir_pagina_resultado)
     # FIX_20260930: `pagina_balanco`/`_leitura_balanco` nao podem mais
     # adivinhar "tem pagina_resultado?" pelo NUMERO absoluto da pagina do
     # Balanco (ver docstring de `_leitura_balanco`) -- com a pagina de
