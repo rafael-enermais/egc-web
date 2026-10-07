@@ -4,6 +4,7 @@ WITH esperado_tabelas(t) AS (VALUES
   ('chat_acao'),('chat_mensagem'),('config_relatorio'),('contatos_relatorio'),('contexto_fiscal'),
   ('despesas_admin_itens'),('empresas'),('eventos_sistema'),('importacoes'),('lancamentos'),('nf_anotacao'),
   ('nf_bills_orfaos'),('nf_bills_sync'),('nf_conciliacao'),('nf_creditors_sync'),('nf_debtor_empresa'),
+  ('nao_recorrente'),('nao_recorrente_confirmacao'),('nao_recorrente_historico'),
   ('nf_import_historico'),('nf_manifesto_ignoradas'),('nf_manifesto_import'),('projecoes'),('projecoes_ajustes'),
   ('relatorios_gerados'),('textos_relatorio')),
 esperado_colunas(t, c) AS (VALUES

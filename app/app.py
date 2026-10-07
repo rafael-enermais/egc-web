@@ -363,6 +363,8 @@ paginas = [
     # Supabase -- ver dados_relatorio_comentado.py. 1ª versão, 1 empresa +
     # 1 período por geração.
     st.Page("telas/8_Relatorio_Comentado.py", title="Relatório Comentado", icon="📄"),
+    # v0.48.0: itens nao recorrentes (EBITDA Ajustado) -- cadastro, historico e confirmacao da lista.
+    st.Page("telas/9_Nao_Recorrentes.py", title="Não Recorrentes", icon="🧮"),
     # Dashboard de Projeção removido (22/09/2026, pedido do Rafael: numeros
     # irreais em horizonte longo) e o codigo morto apagado em v0.44.2. As
     # tabelas egc.projecoes/projecoes_ajustes continuam no banco (sem uso);

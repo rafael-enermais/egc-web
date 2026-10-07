@@ -59,6 +59,7 @@ import pandas as pd
 
 import db
 import indicadores
+import nao_recorrentes
 import selecao_periodos
 import visao_grupo
 
@@ -982,6 +983,24 @@ def montar_dados_relatorio(
         dados["empresas_nomes"] = [empresas.get(cod, {}).get("nome", cod) for cod in codigos]
     if tem_csll_irpj:
         dados["csll_irpj"] = csll_irpj
+    # v0.48.0 -- PONTE DO EBITDA (pagina "EBITDA Ajustado"). Tudo derivado do EBITDA do app (mesmo numero
+    # do indicador): lucro operacional = EBITDA - D&A - resultado financeiro. "Outros resultados" = o que
+    # separa o resultado liquido (+ CSLL/IRPJ) do lucro operacional liquido (ex.: receita de aplicacao
+    # financeira abaixo do lucro operacional em periodos de lucro presumido); 0 quando nao existe.
+    _csll_ponte = csll_irpj or 0.0
+    _lucro_op = ebitda - deprec_amortiz - resultado_financeiro
+    _outros = resultado_liquido + _csll_ponte - _lucro_op
+    if abs(_outros) < 0.005:
+        _outros = 0.0
+    dados["ponte_ebitda"] = dict(
+        receita_liquida=receita_liquida, resultado_liquido=resultado_liquido, csll_irpj=_csll_ponte,
+        outros_resultados=_outros, lucro_operacional=_lucro_op, resultado_financeiro=resultado_financeiro,
+        ebit=_lucro_op + resultado_financeiro, deprec_amortiz=deprec_amortiz, ebitda=ebitda,
+    )
+    # Itens nao recorrentes CONFIRMADOS (ver nao_recorrentes.py): sem confirmacao vigente (ou sem as
+    # tabelas do bloco 25) a pagina mostra so' ate o EBITDA contabil -- nunca um ajuste nao confirmado.
+    dados["nao_recorrentes"] = nao_recorrentes.carregar_para_relatorio(conn, codigos, periodo, granularidade)
+    dados["incluir_ebitda_ajustado"] = True
     # Fase 4: metadado de auditoria (a UI mostra) -- qual documento
     # (periodo + granularidade) alimentou TODOS os numeros deste relatorio.
     dados["granularidade"] = granularidade
@@ -1155,6 +1174,23 @@ def _chave_ordem_label(label: str):
     return (sem.casefold(), label)
 
 
+def _somar_nao_recorrentes(lista: list) -> dict:
+    """Junta os nao recorrentes de varias empresas na MESMA coluna (periodo + granularidade).
+    So' e' 'confirmado' se TODAS as empresas estao confirmadas; se alguma esta pendente a coluna fica
+    'pendente' (nao ajusta, nao soma parcial); sem as tabelas do bloco 25 -> 'indisponivel'."""
+    if any(x.get("status") == "indisponivel" for x in lista):
+        return {"status": "indisponivel", "itens": [], "total": 0.0}
+    if any(x.get("status") != "confirmado" for x in lista):
+        return {"status": "pendente", "itens": [], "total": 0.0}
+    por_cat: dict = {}
+    for x in lista:
+        for cat, v in x.get("itens", []):
+            por_cat[cat] = por_cat.get(cat, 0.0) + v
+    ordem = {c: i for i, c in enumerate(nao_recorrentes.CATEGORIAS)}
+    itens = [(c, round(v, 2)) for c, v in sorted(por_cat.items(), key=lambda kv: ordem.get(kv[0], 99))]
+    return {"status": "confirmado", "itens": itens, "total": round(sum(v for _, v in itens), 2)}
+
+
 def montar_dados_relatorio_comparativo(
     conn,
     empresas_codigos,
@@ -1258,15 +1294,24 @@ def montar_dados_relatorio_comparativo(
 
     dados_por_periodo = []
     bp_por_periodo = []
+    ponte_por_periodo = []   # v0.48.0 -- ponte do EBITDA (soma das empresas) por coluna
+    nr_por_periodo = []      # v0.48.0 -- itens nao recorrentes confirmados por coluna (ou pendente)
     for periodo, granularidade in zip(periodos, granularidades):
         somas = {campo: 0.0 for campo in campos_kpi}
+        ponte_soma, nr_cols = None, []
         for cod in empresas_codigos:
             dados_p, _incluir_resultado = montar_dados_relatorio(
                 conn, cod, periodo, periodo_label=str(periodo), granularidade=granularidade,
             )
             for campo in campos_kpi:
                 somas[campo] += dados_p[campo]
+            pt_p = dados_p.get("ponte_ebitda")
+            if pt_p is not None:
+                ponte_soma = dict(pt_p) if ponte_soma is None else {k: ponte_soma[k] + pt_p[k] for k in ponte_soma}
+            nr_cols.append(dados_p.get("nao_recorrentes") or {"status": "indisponivel", "itens": [], "total": 0.0})
         dados_por_periodo.append(somas)
+        ponte_por_periodo.append(ponte_soma)
+        nr_por_periodo.append(_somar_nao_recorrentes(nr_cols))
 
         if grupo:
             lancs = db.listar_lancamentos_grupo(conn, periodo, "BP", empresas_codigos, granularidade=granularidade)
@@ -1319,7 +1364,13 @@ def montar_dados_relatorio_comparativo(
         cnpj = empresa.get("cnpj", "")
         escopo_label = f"{nome_empresa} · {periodo_range_label}"
 
+    ebitda_ajustado = None
+    if all(pt_c is not None for pt_c in ponte_por_periodo):
+        ebitda_ajustado = dict(ponte=ponte_por_periodo, nr=nr_por_periodo)
+
     return dict(
+        ebitda_ajustado=ebitda_ajustado,
+        incluir_ebitda_ajustado=True,
         empresa_codigo=empresas_codigos[0],
         empresas_codigos=list(empresas_codigos),
         # FIX_20260930 (Rafael, capa multi-empresa: "quero a LISTA dos

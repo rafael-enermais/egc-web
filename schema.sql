@@ -930,3 +930,70 @@ ALTER TABLE egc.nf_anotacao ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS egc_app_full_access ON egc.nf_anotacao;
 CREATE POLICY egc_app_full_access ON egc.nf_anotacao FOR ALL TO egc_app USING (true) WITH CHECK (true);
 -- Fim do bloco 24. Rodar so' este bloco no SQL Editor do Supabase.
+
+-- =====================================================================
+-- BLOCO 25 — v0.48.0: ITENS NAO RECORRENTES (EBITDA Ajustado).
+--  * egc.nao_recorrente            : os itens, por empresa + periodo + granularidade (nunca apaga: "remover" = ativo=false).
+--  * egc.nao_recorrente_confirmacao: a CONFIRMACAO da lista (quem/quando + assinatura). Alterar um item depois invalida.
+--  * egc.nao_recorrente_historico  : trilha de auditoria (criou/editou/removeu/restaurou/confirmou), com antes e depois.
+-- Sem este bloco o app segue normal: o relatorio so' mostra a reconciliacao ate o EBITDA contabil (sem ajustado).
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS egc.nao_recorrente (
+  id              bigserial PRIMARY KEY,
+  empresa_codigo  text NOT NULL,
+  periodo         date NOT NULL,
+  granularidade   text NOT NULL DEFAULT '',
+  categoria       text NOT NULL,
+  descricao       text NOT NULL DEFAULT '',
+  contas_dre      text,
+  valor           numeric(18,2) NOT NULL CHECK (valor >= 0),
+  sinal           smallint NOT NULL DEFAULT 1 CHECK (sinal IN (1, -1)),
+  justificativa   text,
+  documento       text,
+  sugerido_regra  boolean NOT NULL DEFAULT false,
+  ativo           boolean NOT NULL DEFAULT true,
+  criado_por      text,
+  criado_em       timestamptz NOT NULL DEFAULT now(),
+  atualizado_por  text,
+  atualizado_em   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_nao_recorrente_chave ON egc.nao_recorrente (empresa_codigo, periodo, granularidade);
+
+CREATE TABLE IF NOT EXISTS egc.nao_recorrente_confirmacao (
+  empresa_codigo  text NOT NULL,
+  periodo         date NOT NULL,
+  granularidade   text NOT NULL DEFAULT '',
+  itens           integer NOT NULL DEFAULT 0,
+  total           numeric(18,2) NOT NULL DEFAULT 0,
+  assinatura      text NOT NULL,
+  confirmado_por  text,
+  confirmado_em   timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (empresa_codigo, periodo, granularidade)
+);
+
+CREATE TABLE IF NOT EXISTS egc.nao_recorrente_historico (
+  id              bigserial PRIMARY KEY,
+  empresa_codigo  text NOT NULL,
+  periodo         date NOT NULL,
+  granularidade   text NOT NULL DEFAULT '',
+  item_id         bigint,
+  acao            text NOT NULL,
+  antes           jsonb,
+  depois          jsonb,
+  por             text,
+  em              timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_nao_recorrente_hist_chave ON egc.nao_recorrente_historico (empresa_codigo, periodo, granularidade);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON egc.nao_recorrente, egc.nao_recorrente_confirmacao, egc.nao_recorrente_historico TO egc_app;
+GRANT USAGE, SELECT ON SEQUENCE egc.nao_recorrente_id_seq, egc.nao_recorrente_historico_id_seq TO egc_app;
+ALTER TABLE egc.nao_recorrente ENABLE ROW LEVEL SECURITY;
+ALTER TABLE egc.nao_recorrente_confirmacao ENABLE ROW LEVEL SECURITY;
+ALTER TABLE egc.nao_recorrente_historico ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS egc_app_full_access ON egc.nao_recorrente;
+CREATE POLICY egc_app_full_access ON egc.nao_recorrente FOR ALL TO egc_app USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS egc_app_full_access ON egc.nao_recorrente_confirmacao;
+CREATE POLICY egc_app_full_access ON egc.nao_recorrente_confirmacao FOR ALL TO egc_app USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS egc_app_full_access ON egc.nao_recorrente_historico;
+CREATE POLICY egc_app_full_access ON egc.nao_recorrente_historico FOR ALL TO egc_app USING (true) WITH CHECK (true);
+-- Fim do bloco 25. Rodar so' este bloco no SQL Editor do Supabase.

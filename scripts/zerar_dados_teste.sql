@@ -12,6 +12,7 @@
 --   NF: nf_manifesto_import, nf_conciliacao, nf_import_historico,
 --       nf_bills_orfaos, nf_manifesto_ignoradas, nf_anotacao  (notas importadas, conferencias e pendencias)
 --   Erik.AI: chat_mensagem (memoria), chat_acao (trilha de acoes)
+--   EBITDA Ajustado (v0.48.0): nao_recorrente, nao_recorrente_confirmacao, nao_recorrente_historico
 --
 -- MANTEM (configuracao / referencia -- nao e' "dado de teste"):
 --   empresas, textos_relatorio, config_relatorio (assinaturas/CPF/etc.),
@@ -35,7 +36,8 @@ DECLARE
     'lancamentos', 'importacoes', 'despesas_admin_itens', 'relatorios_gerados',
     'projecoes', 'projecoes_ajustes', 'eventos_sistema',
     'nf_manifesto_import', 'nf_conciliacao', 'nf_import_historico', 'nf_bills_orfaos', 'nf_manifesto_ignoradas', 'nf_anotacao',
-    'chat_mensagem', 'chat_acao'
+    'chat_mensagem', 'chat_acao',
+    'nao_recorrente', 'nao_recorrente_confirmacao', 'nao_recorrente_historico'
     -- OPCIONAIS (descomente colocando virgula na linha de cima):
     -- , 'contatos_relatorio'      -- assinantes cadastrados (administrador/contador)
     -- , 'nf_debtor_empresa'       -- mapa credor -> empresa (reaprende sozinho)
@@ -65,7 +67,8 @@ COMMIT;
 SELECT CASE
          WHEN table_name IN ('lancamentos','importacoes','despesas_admin_itens','relatorios_gerados','projecoes',
                              'projecoes_ajustes','eventos_sistema','nf_manifesto_import','nf_conciliacao',
-                             'nf_import_historico','nf_bills_orfaos','nf_manifesto_ignoradas','nf_anotacao','chat_mensagem','chat_acao')
+                             'nf_import_historico','nf_bills_orfaos','nf_manifesto_ignoradas','nf_anotacao','chat_mensagem','chat_acao',
+                             'nao_recorrente','nao_recorrente_confirmacao','nao_recorrente_historico')
            THEN 'APAGADA'
          WHEN table_name IN ('empresas','textos_relatorio','config_relatorio','contexto_fiscal','contatos_relatorio',
                              'nf_debtor_empresa','nf_bills_sync','nf_creditors_sync')

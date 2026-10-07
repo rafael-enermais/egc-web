@@ -44,12 +44,15 @@ from __future__ import annotations
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase.pdfmetrics import stringWidth
 
+from reportlab.lib.colors import HexColor
+
 from formatacao import moeda_br, pct_br
 
 import gerador_relatorio_comentado as A  # Modelo A -- reaproveitado, nao duplicado
 
 # reaproveita tudo do Modelo A em vez de redefinir
 PAGE_W, PAGE_H, MARGEM, CONTEUDO_W = A.PAGE_W, A.PAGE_H, A.MARGEM, A.CONTEUDO_W
+BLUE_DEGRADE = A.BLUE_DEGRADE
 NAVY, ORANGE, GREY_TEXT, GREY_BG, RED_ACCENT, BORDER_LIGHT = (
     A.NAVY, A.ORANGE, A.GREY_TEXT, A.GREY_BG, A.RED_ACCENT, A.BORDER_LIGHT
 )
@@ -463,6 +466,282 @@ def pagina_grafico_evolucao(c, dados, pagina: int, total_paginas: int):
     _footer(c, pagina, total_paginas)
 
 
+# ------------------------------------------------------------------ pagina: EBITDA Ajustado (evolucao)
+# v0.48.0 (esboco aprovado v0.5). Fica logo DEPOIS do "Grafico de Evolucao". Mostra, por periodo, a
+# reconciliacao do resultado liquido ate o EBITDA contabil e -- so' nas colunas cuja lista de itens
+# nao recorrentes foi CONFIRMADA -- o EBITDA ajustado. Coluna sem confirmacao mostra "—" (nunca
+# um ajuste nao confirmado). VARIACAO = ultimo periodo x primeiro (mesma convencao da tabela de
+# indicadores desta evolucao); "n/d" quando a base e' <= 0 ou o final e' negativo.
+
+def _var_txt(a, b, comparavel=True):
+    """Variacao b x a. 'n/c' = periodos de bases diferentes (ano x semestre...): valor em reais nao
+    se compara; 'n/d' = base <= 0 ou final negativo (percentual sem sentido)."""
+    if not comparavel:
+        return "n/c"
+    if a is None or b is None or a <= 0 or b < 0:
+        return "n/d"
+    v = b / a - 1
+    if abs(v) >= 10:
+        return "> +999%" if v > 0 else "< -999%"
+    return pct_br(v, forcar_sinal=True)
+
+
+def _bases_iguais(d, i, j):
+    g = d.get("granularidades")
+    return True if not g else (g[i] == g[j])
+
+
+def _cor_var(txt_var):
+    if txt_var.startswith("+") or txt_var.startswith("> +"):
+        return "#1a7a3c"
+    if txt_var.startswith("-") or txt_var.startswith("< -"):
+        return A.NEG_TEXT
+    return GREY_TEXT
+
+
+def _leitura_ebitda_evolucao(d, pt, nr, labels):
+    n = len(labels)
+    eb = [p["ebitda"] for p in pt]
+    rol = [p["receita_liquida"] for p in pt]
+    marg = lambda i: pct_br(eb[i] / rol[i]) if rol[i] else "—"
+    comp = _bases_iguais(d, 0, n - 1)
+    var0 = f" (variação: {_var_txt(eb[0], eb[-1])})" if comp else ""
+    p1 = (f"O EBITDA contábil passou de {moeda_br(eb[0], forcar_sinal=True)} em {labels[0]} para "
+          f"{moeda_br(eb[-1], forcar_sinal=True)} em {labels[-1]}{var0}, com margem sobre a receita "
+          f"líquida de {marg(0)} para {marg(n - 1)}.")
+    conf = [i for i in range(n) if nr[i]["status"] == "confirmado"]
+    out = [p1]
+    if len(conf) >= 2:
+        i0, i1 = conf[0], conf[-1]
+        aj0, aj1 = eb[i0] + nr[i0]["total"], eb[i1] + nr[i1]["total"]
+        out.append(
+            f"O EBITDA ajustado incorpora os itens classificados como não recorrentes ({moeda_br(nr[i0]['total'], forcar_sinal=True)} em "
+            f"{labels[i0]} e {moeda_br(nr[i1]['total'], forcar_sinal=True)} em {labels[i1]}) e passou de {moeda_br(aj0, forcar_sinal=True)} para "
+            f"{moeda_br(aj1, forcar_sinal=True)}{(' (variação: ' + _var_txt(aj0, aj1) + ')') if _bases_iguais(d, i0, i1) else ''}. O ajuste não altera o resultado contábil nem o caixa: "
+            "apenas mostra o desempenho operacional sem os itens que a administração classificou como pontuais."
+        )
+    elif len(conf) == 1:
+        i = conf[0]
+        out.append(
+            f"Em {labels[i]}, o EBITDA ajustado é de {moeda_br(eb[i] + nr[i]['total'], forcar_sinal=True)}, com itens não recorrentes de "
+            f"{moeda_br(nr[i]['total'], forcar_sinal=True)}. Os demais períodos não têm lista de não recorrentes confirmada e, por isso, "
+            "não têm EBITDA ajustado."
+        )
+    else:
+        out.append("Os itens não recorrentes dos períodos ainda não foram confirmados; por isso o EBITDA ajustado não é apresentado.")
+    grans = set(d.get("granularidades") or [])
+    if len(grans) > 1:
+        out.append("Atenção: as colunas têm bases diferentes (por exemplo, ano e semestre). Valores em reais só se comparam entre períodos "
+                   "da mesma base (n/c = não comparável); as margens sobre a receita líquida podem ser lidas lado a lado.")
+    return out
+
+
+def pagina_ebitda_ajustado_evolucao(c, dados, pagina: int, total_paginas: int):
+    d = dados
+    ea = d["ebitda_ajustado"]
+    pt, nr = ea["ponte"], ea["nr"]
+    labels = d["periodos_labels"]
+    n = len(labels)
+    conf = [x["status"] == "confirmado" for x in nr]
+    tem_aj = any(conf)
+    eb = [p["ebitda"] for p in pt]
+    rol = [p["receita_liquida"] for p in pt]
+    nrt = [x["total"] if ok else None for x, ok in zip(nr, conf)]
+    aj = [(e + t) if t is not None else None for e, t in zip(eb, nrt)]
+
+    _header(c, dados, "EBITDA Ajustado" if tem_aj else "Reconciliação do EBITDA")
+    rect(c, MARGEM, 96, MARGEM + 72, 116, fill=NAVY, radius=3)
+    txt(c, MARGEM + 36, 110, "EBITDA", font="bold", size=9, color="#FFFFFF", align="center")
+    txt(c, MARGEM + 84, 112, "Evolução do EBITDA Ajustado" if tem_aj else "Evolução da Reconciliação do EBITDA", font="heavy", size=14.5, color=NAVY)
+    txt(c, MARGEM, 134, f"{d.get('anexo_escopo_label', d['empresa_nome'])} · valores em R$", font="regular", size=9, color=GREY_TEXT)
+
+    # ---- cards (ultimo periodo)
+    ult, pen = n - 1, n - 2
+    def card(x0, x1, label, valor, sub, destaque=False):
+        if destaque:
+            rect(c, x0, 148, x1, 204, fill="#FFFFFF", stroke=NAVY, width=1.1, radius=5)
+        else:
+            rect(c, x0, 148, x1, 204, fill=GREY_BG, radius=5)
+        txt(c, x0 + 10, 163, label, font="bold", size=7.5, color=ORANGE if destaque else NAVY)
+        txt(c, x0 + 10, 185, valor, font="heavy", size=15, color=A.cor_texto_por_sinal(-1 if valor.startswith("-") else 0))
+        txt(c, x0 + 10, 198, sub, font="regular", size=7.2, color=GREY_TEXT)
+    comp_u = _bases_iguais(d, pen, ult)
+    vs = lambda a_, b_: (f"{_var_txt(a_, b_)} vs {labels[pen]} · " if comp_u else "")
+    sub_eb = f"{vs(eb[pen], eb[ult])}{A._pct_rol(eb[ult], rol[ult])} ROL"
+    if conf[ult]:
+        cw = (CONTEUDO_W - 24) / 3
+        card(MARGEM, MARGEM + cw, f"EBITDA CONTÁBIL · {labels[ult].upper()}", A._mm_sinal(eb[ult]), sub_eb)
+        card(MARGEM + cw + 12, MARGEM + 2 * cw + 12, f"(+) NÃO RECORRENTES · {labels[ult].upper()}", A._mm_sinal(nrt[ult]),
+             (vs(nrt[pen], nrt[ult]) if conf[pen] else "") + f"{A._pct_rol(nrt[ult], rol[ult])} ROL")
+        card(MARGEM + 2 * (cw + 12), MARGEM + CONTEUDO_W, f"EBITDA AJUSTADO · {labels[ult].upper()}", A._mm_sinal(aj[ult]),
+             (vs(aj[pen], aj[ult]) if conf[pen] else "") + f"{A._pct_rol(aj[ult], rol[ult])} ROL", True)
+    else:
+        cw = (CONTEUDO_W - 12) / 2
+        card(MARGEM, MARGEM + cw, f"EBITDA CONTÁBIL · {labels[ult].upper()}", A._mm_sinal(eb[ult]), sub_eb, True)
+        card(MARGEM + cw + 12, MARGEM + CONTEUDO_W, f"MARGEM EBITDA · {labels[ult].upper()}",
+             pct_br(eb[ult] / rol[ult], forcar_sinal=True) if rol[ult] else "—", "sobre a receita operacional líquida")
+
+    # ---- grafico: contabil x ajustado por periodo (esquerda)
+    txt(c, MARGEM, 232, "EBITDA contábil x ajustado" if tem_aj else "EBITDA contábil", font="heavy", size=10.5, color=NAVY)
+    gx0, gx1, gy_base, gy_top = MARGEM, MARGEM + 178, 350, 296
+    valores = [v for v in eb + [x for x in aj if x is not None]]
+    vmax, vmin = max(valores + [0.0]), min(valores + [0.0])
+    esc = (gy_base - gy_top) / ((vmax - vmin) or 1.0)
+    y0 = gy_base - (0 - vmin) * esc  # y do zero
+    slot = (gx1 - gx0) / n
+    larg = min(slot * 0.36, 22.0)
+    c.setStrokeColor(HexColor(BORDER_LIGHT)); c.setLineWidth(0.6)
+    c.line(gx0, Y(y0), gx1, Y(y0))
+    leg_x = gx0
+    for i in range(n):
+        cx = gx0 + slot * (i + 0.5)
+        pares = [(eb[i], BLUE_DEGRADE[3])] + ([(aj[i], BLUE_DEGRADE[5])] if aj[i] is not None else [])
+        xs0 = cx - (larg * len(pares) + 2 * (len(pares) - 1)) / 2
+        for k, (v, cor_pos) in enumerate(pares):
+            xb = xs0 + k * (larg + 2)
+            yv = y0 - v * esc
+            rect(c, xb, min(y0, yv), xb + larg, max(y0, yv) if abs(yv - y0) > 0.5 else y0 + 0.5,
+                 fill=A.cor_barra_por_sinal(v, cor_pos))
+            c.saveState()
+            c.translate(xb + larg / 2 + 2.6, Y(min(y0, yv) - 3) if v >= 0 else Y(max(y0, yv) + 3))
+            c.rotate(90 if v >= 0 else -90)
+            c.setFont(FONT["bold"], 6.2)
+            c.setFillColor(HexColor(A.cor_texto_por_sinal(v, BLUE_DEGRADE[5])))
+            rot = f"{'-' if v < 0 else ''}R$ {moeda_br(abs(v) / 1e6).replace('R$ ', '')} MM"
+            if v >= 0:
+                c.drawString(0, 0, rot)
+            else:
+                c.drawRightString(0, 0, rot)
+            c.restoreState()
+        txt(c, cx, gy_base + 14, labels[i], font="regular", size=7, color=GREY_TEXT, align="center")
+    rect(c, gx0, 371, gx0 + 7, 378, fill=BLUE_DEGRADE[3]); txt(c, gx0 + 11, 378, "Contábil", font="regular", size=7, color=NAVY)
+    if tem_aj:
+        rect(c, gx0 + 56, 371, gx0 + 63, 378, fill=BLUE_DEGRADE[5]); txt(c, gx0 + 67, 378, "Ajustado", font="regular", size=7, color=NAVY)
+
+    # ---- abertura do nao recorrente (direita)
+    RX = MARGEM + 178 + 22
+    RW = MARGEM + CONTEUDO_W - RX
+    col_w = min(54.0, (RW - 104) / n)
+    x_cols = [MARGEM + CONTEUDO_W - col_w * (n - i) for i in range(n)]
+    if tem_aj:
+        txt(c, RX, 232, "Abertura do não recorrente", font="heavy", size=10.5, color=NAVY)
+        txt(c, RX, 244, "(valores em R$)", font="italic", size=7, color=GREY_TEXT)
+        for i in range(n):
+            rect(c, x_cols[i], 250, x_cols[i] + col_w, 264, fill=NAVY if i == n - 1 else BLUE_DEGRADE[1])
+            txt(c, x_cols[i] + col_w / 2, 260.5, labels[i], font="bold", size=6.8, color="#FFFFFF" if i == n - 1 else NAVY, align="center")
+        cats = []
+        for x in nr:
+            for cat, _v in x["itens"]:
+                if cat not in cats:
+                    cats.append(cat)
+        ordem = {cat: k for k, cat in enumerate(A.nao_recorrentes_categorias())}
+        cats.sort(key=lambda cat: ordem.get(cat, 99))
+        yy = 278
+        for cat in cats:
+            sz = A._tamanho_fonte_1_linha(cat, FONT["regular"], 7.5, RW - col_w * n - 6, minimo=5.8)
+            txt(c, RX, yy, cat, font="regular", size=sz, color=NAVY)
+            for i in range(n):
+                v = dict(nr[i]["itens"]).get(cat) if conf[i] else None
+                txt(c, x_cols[i] + col_w - 3, yy, A._reais(v) if v is not None else "—", font="regular", size=7,
+                    color=A.cor_texto_por_sinal(v or 0, "#1c1c1a") if v is not None else GREY_TEXT, align="right")
+            yy += 12.5
+        if not cats:
+            txt(c, RX, yy, "Nenhum item não recorrente nos períodos confirmados", font="italic", size=7.5, color=GREY_TEXT)
+            yy += 12.5
+        c.setStrokeColor(HexColor(NAVY)); c.setLineWidth(0.9)
+        c.line(RX, Y(yy - 8), MARGEM + CONTEUDO_W, Y(yy - 8))
+        txt(c, RX, yy, "Total não recorrente", font="bold", size=7.5, color=NAVY)
+        for i in range(n):
+            txt(c, x_cols[i] + col_w - 3, yy, A._reais(nrt[i]) if nrt[i] is not None else "—", font="bold", size=7,
+                color=A.cor_texto_por_sinal(nrt[i] or 0, "#1c1c1a") if nrt[i] is not None else GREY_TEXT, align="right")
+    else:
+        paragrafo(c, RX, 244, "Os itens não recorrentes destes períodos ainda não foram confirmados; por isso o EBITDA ajustado não é apresentado.",
+                  RW, font="regular", size=8.5, color=GREY_TEXT, leading=12)
+
+    # ---- tabela da reconciliacao
+    y_t = 400
+    txt(c, MARGEM, y_t, "Reconciliação do EBITDA", font="heavy", size=12, color=NAVY)
+    txt(c, MARGEM, y_t + 12, "(valores em R$)", font="italic", size=7, color=GREY_TEXT)
+    LW = 150.0
+    CW = (CONTEUDO_W - LW) / (n + 1)
+    for i in range(n):
+        x0 = MARGEM + LW + CW * i
+        rect(c, x0, y_t + 18, x0 + CW, y_t + 34, fill=NAVY if i == n - 1 else BLUE_DEGRADE[1])
+        sz = A._tamanho_fonte_1_linha(labels[i], FONT["bold"], 7.5, CW - 6, minimo=5.5)
+        txt(c, x0 + CW / 2, y_t + 29, labels[i], font="bold", size=sz, color="#FFFFFF" if i == n - 1 else NAVY, align="center")
+    x0 = MARGEM + LW + CW * n
+    rect(c, x0, y_t + 18, x0 + CW, y_t + 34, fill=BLUE_DEGRADE[1])
+    txt(c, x0 + CW / 2, y_t + 29, "VARIAÇÃO", font="bold", size=7, color=NAVY, align="center")
+
+    def serie(chave, sinal=1):
+        return [sinal * p[chave] for p in pt]
+    linhas = [("Resultado líquido do exercício", serie("resultado_liquido"), False, False)]
+    if any(p["csll_irpj"] for p in pt):
+        linhas.append(("(+) CSLL e IRPJ provisionados", serie("csll_irpj"), False, False))
+    if any(p["outros_resultados"] for p in pt):
+        linhas.append(("(-) Outros resultados operacionais", serie("outros_resultados", -1), False, False))
+    linhas += [
+        ("(=) Lucro operacional líquido", serie("lucro_operacional"), True, False),
+        ("(+) Resultado financeiro líquido", serie("resultado_financeiro"), False, False),
+        ("(=) EBIT", serie("ebit"), True, False),
+        ("(+) Depreciações e amortizações", serie("deprec_amortiz"), False, False),
+        ("(=) EBITDA contábil", eb, True, False),
+        ("% da receita operacional líquida", [e / r if r else None for e, r in zip(eb, rol)], False, True),
+    ]
+    if tem_aj:
+        linhas += [
+            ("(+) Não recorrentes", nrt, False, False),
+            ("(=) EBITDA ajustado", aj, True, False),
+            ("% da receita operacional líquida", [(a / r if (a is not None and r) else None) for a, r in zip(aj, rol)], False, True),
+        ]
+    y = y_t + 52
+    passo = 13.4
+    for rot, vals, destaque, eh_pct in linhas:
+        if destaque:
+            c.setStrokeColor(HexColor(NAVY)); c.setLineWidth(0.9)
+            c.line(MARGEM, Y(y - 10), MARGEM + CONTEUDO_W, Y(y - 10))
+        fonte = "bold" if destaque else ("italic" if eh_pct else "regular")
+        txt(c, MARGEM, y, rot, font=fonte, size=8 if not eh_pct else 7.5, color=GREY_TEXT if eh_pct else NAVY)
+        for i, v in enumerate(vals):
+            if v is None:
+                t_, cor_ = "—", GREY_TEXT
+            elif eh_pct:
+                t_, cor_ = pct_br(v), GREY_TEXT
+            else:
+                t_, cor_ = A._reais(v), A.cor_texto_por_sinal(v, "#1c1c1a")
+            sz_v = A._tamanho_fonte_1_linha(t_, FONT[fonte if fonte != "italic" else "regular"], 8, CW - 6, minimo=5.8)
+            txt(c, MARGEM + LW + CW * (i + 1) - 4, y, t_, font=fonte, size=sz_v, color=cor_, align="right")
+        a_, b_ = vals[0], vals[-1]
+        if a_ is None or b_ is None:
+            vt = "n/d"
+        elif eh_pct:
+            vt = f"{(b_ - a_) * 100:+.1f}".replace(".", ",") + " p.p."
+        else:
+            vt = _var_txt(a_, b_, comparavel=_bases_iguais(d, 0, n - 1))
+        txt(c, MARGEM + LW + CW * (n + 1) - 4, y, vt, font="bold", size=7.5, color=_cor_var(vt), align="right")
+        y += passo
+
+    # ---- leitura + memoria de calculo
+    y += 8
+    txt(c, MARGEM, y, "Leitura da Evolução", font="heavy", size=12, color=NAVY)
+    c.setStrokeColor(HexColor(ORANGE)); c.setLineWidth(2)
+    c.line(MARGEM, Y(y + 6), MARGEM + 34, Y(y + 6))
+    y += 22
+    for par in _leitura_ebitda_evolucao(d, pt, nr, labels):
+        y = paragrafo(c, MARGEM, y, par, CONTEUDO_W, size=8.8, leading=12) + 5
+    p = pt[-1]
+    calc = (f"{labels[-1]}: {moeda_br(p['lucro_operacional'], forcar_sinal=True)} (lucro operacional) {moeda_br(p['resultado_financeiro'], forcar_sinal=True)} "
+            f"(resultado financeiro líquido) {moeda_br(p['deprec_amortiz'], forcar_sinal=True)} (depreciações e amortizações) = "
+            f"{moeda_br(p['ebitda'], forcar_sinal=True)} (EBITDA contábil).")
+    if conf[-1]:
+        calc += f" {moeda_br(p['ebitda'], forcar_sinal=True)} {moeda_br(nrt[-1], forcar_sinal=True)} (itens não recorrentes confirmados) = {moeda_br(aj[-1], forcar_sinal=True)} (EBITDA ajustado)."
+    y += 3
+    linhas_calc = len(A._wrap_text(calc, FONT["regular"], 8.2, CONTEUDO_W - 32))
+    rect(c, MARGEM, y, MARGEM + CONTEUDO_W, y + 16 + linhas_calc * 11, fill=GREY_BG, stroke=BORDER_LIGHT, width=0.75, radius=6)
+    paragrafo(c, MARGEM + 16, y + 14, calc, CONTEUDO_W - 32, size=8.2, leading=11)
+    _footer(c, pagina, total_paginas)
+
+
 # ------------------------------------------------------------------ pagina 5
 def pagina_fechamento_comparativa(c, dados, pagina: int, total_paginas: int):
     d = dados
@@ -517,9 +796,22 @@ PAGINAS = [
     pagina_capa_comparativa,
     pagina_resumo_evolucao,
     pagina_grafico_evolucao,
+    pagina_ebitda_ajustado_evolucao,
     pagina_anexo,  # reaproveitado do Modelo A sem alteracao -- ja e' multi-coluna
     pagina_fechamento_comparativa,
 ]
+
+
+def paginas_do_comparativo(dados: dict) -> list:
+    """Paginas deste relatorio. A de EBITDA Ajustado (v0.48.0) so' entra quando a camada de dados montou
+    a ponte do EBITDA de TODAS as colunas e a tela nao a desligou (dict montado a mao nao tem a ponte)."""
+    if not dados.get("ebitda_ajustado") or not dados.get("incluir_ebitda_ajustado", True):
+        return [p for p in PAGINAS if p is not pagina_ebitda_ajustado_evolucao]
+    return list(PAGINAS)
+
+
+def numero_de_paginas_comparativo(dados: dict) -> int:
+    return len(paginas_do_comparativo(dados)) + paginas_extras_anexo(dados)
 
 
 def gerar_pdf_comparativo(dados: dict, caminho_saida: str) -> str:
@@ -540,9 +832,10 @@ def gerar_pdf_comparativo(dados: dict, caminho_saida: str) -> str:
     # Y" de TODAS as paginas usa o mesmo total).
     _registrar_fontes()
     c = canvas.Canvas(caminho_saida, pagesize=(PAGE_W, PAGE_H))
-    total = len(PAGINAS) + paginas_extras_anexo(dados)
+    paginas = paginas_do_comparativo(dados)
+    total = len(paginas) + paginas_extras_anexo(dados)
     pagina_atual = 1
-    for pagina_fn in PAGINAS:
+    for pagina_fn in paginas:
         resultado = pagina_fn(c, dados, pagina=pagina_atual, total_paginas=total)
         pagina_atual = (resultado if isinstance(resultado, int) else pagina_atual) + 1
         c.showPage()
