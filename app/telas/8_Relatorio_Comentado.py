@@ -540,9 +540,16 @@ pode_gerar = (
 # A pagina "EBITDA Ajustado" so' soma itens nao recorrentes de lista CONFIRMADA (ver nao_recorrentes.py).
 # Aqui a contadora ve o que vai valer em cada empresa/periodo e confirma na hora; sem confirmacao o
 # relatorio sai com a reconciliacao so' ate o EBITDA contabil (nunca com ajuste nao confirmado).
-incluir_ebitda_ajustado = st.checkbox(
-    "Incluir a página **EBITDA Ajustado** (reconciliação do resultado até o EBITDA)", value=True, key="relatorio_incluir_ebitda_aj",
-)
+# v0.48.2: chave geral na tela Nao Recorrentes. Desativada (padrao) = relatorio sai SEM a pagina e sem a conferencia abaixo.
+_ebitda_aj_liberado = nrec.ebitda_ajustado_ativo(conn)
+if _ebitda_aj_liberado:
+    incluir_ebitda_ajustado = st.checkbox(
+        "Incluir a página **EBITDA Ajustado** (reconciliação do resultado até o EBITDA)", value=True, key="relatorio_incluir_ebitda_aj",
+    )
+else:
+    incluir_ebitda_ajustado = False
+    st.caption("ℹ️ A página **EBITDA Ajustado** está **desativada** por enquanto — o relatório sai sem ela. "
+               "Para ativar: menu **Não Recorrentes** → chave \"Usar o EBITDA Ajustado nos relatórios\".")
 if incluir_ebitda_ajustado and pode_gerar:
     if modo == "Período único":
         _chaves_nr = [(cod_, periodo_sel, granularidade_sel) for cod_ in empresas_unico_multi]

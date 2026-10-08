@@ -65,8 +65,19 @@ DROP POLICY IF EXISTS egc_app_full_access ON egc.nao_recorrente_confirmacao;
 CREATE POLICY egc_app_full_access ON egc.nao_recorrente_confirmacao FOR ALL TO egc_app USING (true) WITH CHECK (true);
 DROP POLICY IF EXISTS egc_app_full_access ON egc.nao_recorrente_historico;
 CREATE POLICY egc_app_full_access ON egc.nao_recorrente_historico FOR ALL TO egc_app USING (true) WITH CHECK (true);
+-- v0.48.2: chave geral "EBITDA Ajustado nos relatorios" (desligada por padrao; ligar/desligar na tela Nao Recorrentes).
+CREATE TABLE IF NOT EXISTS egc.nao_recorrente_config (
+  chave           text PRIMARY KEY,
+  valor           text NOT NULL,
+  atualizado_por  text,
+  atualizado_em   timestamptz NOT NULL DEFAULT now()
+);
+GRANT SELECT, INSERT, UPDATE, DELETE ON egc.nao_recorrente_config TO egc_app;
+ALTER TABLE egc.nao_recorrente_config ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS egc_app_full_access ON egc.nao_recorrente_config;
+CREATE POLICY egc_app_full_access ON egc.nao_recorrente_config FOR ALL TO egc_app USING (true) WITH CHECK (true);
 -- Fim do bloco 25. Rodar so' este bloco no SQL Editor do Supabase.
 
--- Conferencia (deve listar as 3 tabelas):
+-- Conferencia (deve listar as 4 tabelas):
 SELECT table_name FROM information_schema.tables
-WHERE table_schema = 'egc' AND table_name IN ('nao_recorrente', 'nao_recorrente_confirmacao', 'nao_recorrente_historico') ORDER BY 1;
+WHERE table_schema = 'egc' AND table_name IN ('nao_recorrente', 'nao_recorrente_confirmacao', 'nao_recorrente_historico', 'nao_recorrente_config') ORDER BY 1;

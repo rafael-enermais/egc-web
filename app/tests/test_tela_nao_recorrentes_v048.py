@@ -71,3 +71,61 @@ def test_com_item_confirmado_mostra_sucesso():
     ])
     assert not at.exception, [e.value for e in at.exception]
     assert any("confirmada" in s.value for s in at.success)
+
+
+# ---------------------------------------------------------------- v0.48.2: chave "desativar" o EBITDA Ajustado
+def _com_tabelas(extra):
+    return _rodar([
+        patch.object(nr, "tabelas_existem", return_value=True),
+        patch.object(nr, "listar_itens", return_value=[]),
+        patch.object(nr, "listar_historico", return_value=[]),
+        patch.object(nr, "status_confirmacao", return_value={"status": "nao_confirmado", "itens": 0, "total": 0.0,
+                                                                "confirmado_por": None, "confirmado_em": None}),
+    ] + extra)
+
+
+def test_chave_desativada_mostra_aviso_e_toggle_desligado():
+    at = _com_tabelas([patch.object(nr, "config_existe", return_value=True),
+                       patch.object(nr, "ebitda_ajustado_ativo", return_value=False)])
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("DESATIVADO" in e.value for e in at.error)
+    assert at.toggle(key="nr_chave_ativo").value is False
+
+
+def test_chave_ativa_mostra_selo_ativo():
+    at = _com_tabelas([patch.object(nr, "config_existe", return_value=True),
+                       patch.object(nr, "ebitda_ajustado_ativo", return_value=True)])
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("ATIVO" in s.value and "DESATIVADO" not in s.value for s in at.success)
+    assert at.toggle(key="nr_chave_ativo").value is True
+
+
+def test_ligar_o_toggle_grava_a_chave():
+    gravou = []
+    # o "banco" lembra o que foi gravado (senao o st.rerun() da tela entraria em loop com o mock fixo)
+    ps = [patch.object(nr, "config_existe", return_value=True),
+          patch.object(nr, "ebitda_ajustado_ativo", side_effect=lambda c: bool(gravou and gravou[-1])),
+          patch.object(nr, "definir_ebitda_ajustado_ativo", side_effect=lambda c, a, usuario=None: gravou.append(a))]
+    ps_all = _base() + [
+        patch.object(nr, "tabelas_existem", return_value=True),
+        patch.object(nr, "listar_itens", return_value=[]),
+        patch.object(nr, "listar_historico", return_value=[]),
+        patch.object(nr, "status_confirmacao", return_value={"status": "nao_confirmado", "itens": 0, "total": 0.0,
+                                                                "confirmado_por": None, "confirmado_em": None}),
+    ] + ps
+    for p in ps_all:
+        p.start()
+    try:
+        at = AppTest.from_file(PAGE, default_timeout=30)
+        at.run()
+        at.toggle(key="nr_chave_ativo").set_value(True).run()
+    finally:
+        for p in reversed(ps_all):
+            p.stop()
+    assert gravou == [True]
+
+
+def test_sem_tabela_de_config_avisa_para_rodar_o_bloco_25_de_novo():
+    at = _com_tabelas([patch.object(nr, "config_existe", return_value=False)])
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("ativar/desativar" in w.value for w in at.warning)

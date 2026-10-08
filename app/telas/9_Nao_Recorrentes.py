@@ -49,6 +49,37 @@ if not tabelas_ok:
     )
     st.stop()
 
+# ------------------------------------------------------------------ chave geral (v0.48.2)
+# Enquanto a contabilidade decide o criterio, os relatorios saem SEM a pagina "EBITDA Ajustado". Esta chave liga/desliga
+# isso para TODOS os relatorios. Desligada = nada e' apagado: itens, confirmacoes e historico continuam aqui.
+_ativo_atual = nr.ebitda_ajustado_ativo(conn)
+if not nr.config_existe(conn):
+    st.warning(
+        "A chave de **ativar/desativar** ainda não existe no banco: rode de novo o **bloco 25** "
+        "(`scripts/bloco25_nao_recorrentes.txt`, é seguro repetir). Até lá o EBITDA Ajustado fica **desativado** nos relatórios."
+    )
+else:
+    if _ativo_atual:
+        st.success("🟢 **EBITDA Ajustado ATIVO** nos relatórios (só entram listas confirmadas).")
+    else:
+        st.error("⛔ **EBITDA Ajustado DESATIVADO** — os relatórios saem **sem** a página EBITDA Ajustado (nem a reconciliação).")
+    _novo = st.toggle(
+        "Usar o EBITDA Ajustado nos relatórios", value=_ativo_atual, key="nr_chave_ativo",
+        help="Desligado: os relatórios saem sem a página. Os itens e confirmações abaixo continuam guardados e podem ser editados.",
+    )
+    if _novo != _ativo_atual:
+        try:
+            nr.definir_ebitda_ajustado_ativo(conn, _novo, usuario=usuario)
+            flash("ok", "EBITDA Ajustado ativado nos relatórios." if _novo else "EBITDA Ajustado desativado: os relatórios saem sem a página.")
+            st.rerun()
+        except Exception as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            st.error(f"Não foi possível alterar a chave: {exc}")
+st.divider()
+
 nomes_emp = [f"{nome} ({cod})" for cod, nome, _cnpj in EMPRESAS_FIXAS]
 idx = st.selectbox("Empresa", range(len(EMPRESAS_FIXAS)), format_func=lambda i: nomes_emp[i], key="nr_empresa_sel")
 cod, nome_emp, _cnpj = EMPRESAS_FIXAS[idx]

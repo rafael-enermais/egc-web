@@ -26,7 +26,7 @@ import conexao  # noqa: E402
 APP = Path(__file__).resolve().parent.parent
 TELAS = ["telas/1_Importar_PDF.py", "telas/2_Revisao_Correcao.py", "telas/3_Arquivar_Recuperar.py",
          "telas/4_Visao_Grupo.py", "telas/6_Assistente.py", "telas/7_Notas_Fiscais.py",
-         "telas/8_Relatorio_Comentado.py"]
+         "telas/8_Relatorio_Comentado.py", "telas/9_Nao_Recorrentes.py"]
 
 
 @pytest.fixture()
@@ -92,3 +92,37 @@ def test_consulta_rapida_do_erik_empresa_so_com_dre(conn):
     at.selectbox(key="assistente_empresa_sel").select(idx).run(timeout=120)
     assert not at.exception, [str(e.value) for e in at.exception]
     assert any("não tem BP ativo" in i.value for i in at.info)
+
+
+# ---------------------------------------------------------------- v0.48.2: chave do EBITDA Ajustado
+def _checkbox_ebitda(at):
+    return [c for c in at.checkbox if c.key == "relatorio_incluir_ebitda_aj"]
+
+
+def test_relatorio_sem_chave_ligada_nao_oferece_a_pagina_ebitda_ajustado(conn):
+    import nao_recorrentes as nr
+    assert nr.ebitda_ajustado_ativo(conn) is False            # padrao: desativado
+    at = _abrir("telas/8_Relatorio_Comentado.py")
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert _checkbox_ebitda(at) == []
+    assert any("desativada" in c.value for c in at.caption)
+
+
+def test_relatorio_com_chave_ligada_oferece_a_pagina(conn):
+    import nao_recorrentes as nr
+    nr.definir_ebitda_ajustado_ativo(conn, True, usuario="t@x")
+    at = _abrir("telas/8_Relatorio_Comentado.py")
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert len(_checkbox_ebitda(at)) == 1
+
+
+def test_tela_nao_recorrentes_liga_e_desliga_a_chave_no_banco(conn):
+    import nao_recorrentes as nr
+    at = _abrir("telas/9_Nao_Recorrentes.py")
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert any("DESATIVADO" in e.value for e in at.error)
+    at.toggle(key="nr_chave_ativo").set_value(True).run(timeout=120)
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert nr.ebitda_ajustado_ativo(conn) is True
+    at.toggle(key="nr_chave_ativo").set_value(False).run(timeout=120)
+    assert nr.ebitda_ajustado_ativo(conn) is False
