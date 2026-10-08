@@ -444,7 +444,7 @@ def _altura_kpi_pequeno(x0, x1, complementos, altura_minima=75.0):
     return max(altura_minima, altura_necessaria)
 
 
-def _kpi_pequeno(c, x0, x1, y0, y1, label, valor, complemento, cor_borda):
+def _kpi_pequeno(c, x0, x1, y0, y1, label, valor, complemento, cor_borda, valor_negativo=False):
     rect(c, x0, y0, x0 + 3, y1, fill=cor_borda)
     rect(c, x0 + 3, y0, x1, y1, fill=GREY_BG)
     pad = 12
@@ -457,7 +457,7 @@ def _kpi_pequeno(c, x0, x1, y0, y1, label, valor, complemento, cor_borda):
     label_txt = label.upper()
     label_size = _tamanho_fonte_1_linha(label_txt, FONT["bold"], 7.6, x1 - x0 - 2 * pad)
     txt(c, x0 + pad, y0 + 16, label_txt, font="bold", size=label_size, color=NAVY)
-    _valor_com_unidade(c, x0 + pad, y0 + 42, valor, font_num="heavy", size_num=16, cor_num=NAVY)
+    _valor_com_unidade(c, x0 + pad, y0 + 42, valor, font_num="heavy", size_num=16, cor_num=(NEG_TEXT if valor_negativo else NAVY))
     # FIX_20260928 (achado revisando PDF real, Rafael): txt() (1 linha, sem
     # quebra) deixava o complemento vazar pro card vizinho sempre que o
     # texto real (ex. "Despesas operacionais: -15,4% em relação ao período
@@ -514,22 +514,23 @@ def pagina_destaques(c, dados, pagina: int, total_paginas: int):
                 "EBITDA do Período", f"{moeda_br(dados['ebitda'] / 1_000_000)} MM",
                 dados["complemento_ebitda"], invertido=True, valor_negativo=dados["ebitda"] < 0)
 
-    # 4 KPIs pequenos
-    col_w = (CONTEUDO_W - 3 * 10) / 4
-    cores = [NAVY, NEG_FILL, NAVY, GREY_TEXT]
-    kpis_pequenos = [
-        ("Lucro Bruto", f"{moeda_br(dados['lucro_bruto'] / 1_000_000)} MM", f"margem {pct_br(dados['margem_bruta'])}"),
-        ("Despesas Operacionais", f"{moeda_br(dados['despesas_operacionais'] / 1_000_000)} MM", ""),  # v0.47.4: sem descritivo
-        ("Total do Ativo", f"{moeda_br(dados['total_ativo'] / 1_000_000)} MM", f"posição em {dados['data_posicao']}"),
-        (f"{'Lucro' if dados['resultado_liquido'] >= 0 else 'Prejuízo'} Líquido",
-         f"{moeda_br(abs(dados['resultado_liquido']) / 1_000_000)} MM", f"margem {pct_br(dados['margem_liquida'], forcar_sinal=True)}"),
+    # v0.48.1 (pedido do Rafael): fileira nova de KPIs -- Lucro Bruto / Despesas Operacionais / Despesas
+    # Administrativas / Resultado Liquido (nesta ordem, a do DRE). "Total do Ativo" vai pra fileira de balanco no fim.
+    rl = dados["resultado_liquido"]
+    layout = dados.get("layout_destaques", 1)
+    kpis_dre = [
+        ("Lucro Bruto", f"{moeda_br(dados['lucro_bruto'] / 1_000_000)} MM", f"margem {pct_br(dados['margem_bruta'])}", cor_barra_por_sinal(dados["lucro_bruto"], NAVY), dados["lucro_bruto"] < 0),
+        ("Despesas Operacionais", f"{moeda_br(dados['despesas_operacionais'] / 1_000_000)} MM", "", NEG_FILL, False),
+        ("Despesas Administrativas", f"{moeda_br(dados['despesas_administrativas'] / 1_000_000)} MM", "", NEG_FILL, False),
+        ("Resultado Líquido", f"{moeda_br(rl / 1_000_000)} MM", f"margem {pct_br(dados['margem_liquida'], forcar_sinal=True)}", cor_barra_por_sinal(rl, NAVY), rl < 0),
     ]
     y0_kpi = 255
-    altura_kpi = _altura_kpi_pequeno(MARGEM, MARGEM + col_w, [comp for _, _, comp in kpis_pequenos])
+    col_w = (CONTEUDO_W - 3 * 10) / 4
+    altura_kpi = _altura_kpi_pequeno(MARGEM, MARGEM + col_w, [k[2] for k in kpis_dre])
     y1_kpi = y0_kpi + altura_kpi
     x = MARGEM
-    for (label, valor, comp), cor in zip(kpis_pequenos, cores):
-        _kpi_pequeno(c, x, x + col_w, y0_kpi, y1_kpi, label, valor, comp, cor)
+    for label, valor, comp, cor, neg in kpis_dre:
+        _kpi_pequeno(c, x, x + col_w, y0_kpi, y1_kpi, label, valor, comp, cor, valor_negativo=neg)
         x += col_w + 10
 
     # Leitura Executiva (achatada pro mesmo tanto que a fileira de KPIs
@@ -545,9 +546,24 @@ def pagina_destaques(c, dados, pagina: int, total_paginas: int):
     for par in _leitura_executiva(dados):
         y = paragrafo(c, MARGEM, y, par, CONTEUDO_W, size=10.5, leading=15) + 10
 
+    # v0.48.1: fileira de balanco no fim da pagina (acima da nota do Gerencial)
+    y += 4
+    kpis_bal = [
+        ("Total do Ativo", f"{moeda_br(dados['total_ativo'] / 1_000_000)} MM", f"posição em {dados['data_posicao']}", GREY_TEXT),
+        ("Liquidez Corrente", numero_br(dados["liquidez_corrente"]), "ativo circ. / passivo circ.", NAVY),
+        ("Capital de Terceiros / PL", numero_br(dados["alavancagem"], sufixo="x"), "alavancagem", NAVY),
+        ("Endividamento Geral", pct_br(dados["endividamento_geral"]), "exigível / ativo total", NAVY),
+    ]
+    altura_bal = _altura_kpi_pequeno(MARGEM, MARGEM + col_w, [k[2] for k in kpis_bal])
+    x = MARGEM
+    for label, valor, comp, cor in kpis_bal:
+        _kpi_pequeno(c, x, x + col_w, y, y + altura_bal, label, valor, comp, cor)
+        x += col_w + 10
+    y += altura_bal + 14
+
     # callout de alavancagem/endividamento: so' na variante Gerencial (v0.47.4)
     if _eh_gerencial(dados):
-        y += 6
+        y += 0
         altura_callout = 70
         rect(c, MARGEM, y, MARGEM + CONTEUDO_W, y + altura_callout, fill=GREY_BG, stroke=BORDER_LIGHT, width=0.75, radius=6)
         paragrafo(c, MARGEM + 18, y + 22, dados["callout_estrutura_capital"],
@@ -831,11 +847,11 @@ def _linha_anexo(c, x, largura, y_top, tipo, label, valores, altura_linha, prime
         _draw_valores(y_top + altura_linha / 2 + 4, "bold", 9.5, "#FFFFFF")
         return y_top + altura_linha + 10
 
-    indent = {"conta": 8, "subtotal": 8, "subconta": 22}.get(tipo, 8)
+    indent = {"conta": 8, "subtotal": 8, "subconta": 22, "subconta2": 36}.get(tipo, 8)
     negrito = tipo in ("conta", "subtotal")
     fonte = "bold" if negrito else "regular"
-    cor = NAVY if tipo != "subconta" else GREY_TEXT
-    tamanho = 9 if tipo == "subconta" else 9.5
+    cor = NAVY if tipo not in ("subconta", "subconta2") else GREY_TEXT
+    tamanho = 9 if tipo in ("subconta", "subconta2") else 9.5
     if tipo == "subtotal":
         y_top += 3
         if desenhar:
@@ -1179,7 +1195,7 @@ def pagina_capa(c, dados, pagina: int, total_paginas: int):
     # fica na metade superior da pagina, nao no meio vertical.
     logo_path = _logo_dados(dados)
     if logo_path and os.path.exists(logo_path):
-        image(c, logo_path, MARGEM, 130, MARGEM + 260, 210, mask="auto", preserve_ratio=True)
+        image(c, logo_path, MARGEM, 96, MARGEM + 340, 200, mask="auto", preserve_ratio=True)
 
     c.setStrokeColor(HexColor(ORANGE))
     c.setLineWidth(3)
@@ -1285,7 +1301,7 @@ def pagina_receita_custos(c, dados, pagina: int, total_paginas: int):
         dict(tipo="abs", valor=d["lucro_bruto"] / 1e6, cor=cor_barra_por_sinal(d["lucro_bruto"], NAVY), label="Lucro\nBruto",
              rotulo_valor=f"{moeda_br(d['lucro_bruto'] / 1e6)} MM", cor_rotulo=cor_texto_por_sinal(d["lucro_bruto"])),
     ]
-    grafico_waterfall(c, MARGEM, MARGEM + CONTEUDO_W, 150, 430, itens)
+    grafico_waterfall(c, MARGEM, MARGEM + CONTEUDO_W, 150, 415 if d.get("tem_impostos_vendas") else 430, itens)
 
     col_w = (CONTEUDO_W - 2 * 10) / 3
     x = MARGEM
@@ -1300,6 +1316,15 @@ def pagina_receita_custos(c, dados, pagina: int, total_paginas: int):
         x += col_w + 10
 
     y = 565
+    if d.get("tem_impostos_vendas"):
+        # v0.48.1 (pedido do Rafael): ISS / PIS / COFINS (impostos sobre vendas que compoem as deducoes)
+        x = MARGEM
+        for label, valor in [("ISS", d["iss"]), ("PIS", d["pis"]), ("COFINS", d["cofins"])]:
+            rect(c, x, 535, x + col_w, 590, fill=GREY_BG)
+            txt(c, x + 14, 553, label, font="bold", size=8.5, color=NAVY)
+            txt(c, x + 14, 579, moeda_br(valor), font="heavy", size=16, color=NAVY)
+            x += col_w + 10
+        y = 625
     txt(c, MARGEM, y, "Leitura do Período", font="heavy", size=13, color=NAVY)
     c.setStrokeColor(HexColor(ORANGE)); c.setLineWidth(2)
     c.line(MARGEM, Y(y + 6), MARGEM + 34, Y(y + 6))
@@ -1353,7 +1378,7 @@ def pagina_despesas(c, dados, pagina: int, total_paginas: int):
         maior, segundo = d["despesas_admin_itens"][0], d["despesas_admin_itens"][1]
         razao = maior[1] / segundo[1] if segundo[1] else 0
         callout = (
-            f"{maior[0]} é isoladamente o maior driver de custo do período: {moeda_br(maior[1])}, "
+            f"{maior[0]} é isoladamente o maior item de custo do período: {moeda_br(maior[1])}, "
             f"{numero_br(razao, sufixo='x')} o segundo item ({segundo[0]}, {moeda_br(segundo[1])})."
         )
         y_fim += 14
@@ -1659,8 +1684,7 @@ def pagina_balanco(c, dados, pagina: int, total_paginas: int, tem_pagina_resulta
         ("Liquidez Corrente", numero_br(d["liquidez_corrente"]), "ativo circ. / passivo circ."),
         ("Capital de Terceiros / PL", numero_br(d["alavancagem"], sufixo="x"), "alavancagem"),
     ]
-    if _eh_gerencial(d):  # v0.47.4: "Endividamento Geral" so' no Gerencial
-        kpis_balanco.append(("Endividamento Geral", pct_br(d["endividamento_geral"]), "exigível / ativo total"))
+    kpis_balanco.append(("Endividamento Geral", pct_br(d["endividamento_geral"]), "exigível / ativo total"))  # v0.48.1: todas as variantes
     col_w = (CONTEUDO_W - (len(kpis_balanco) - 1) * 10) / len(kpis_balanco)
     for label, valor, comp in kpis_balanco:
         rect(c, x, y, x + col_w, y + 8, fill=RED_ACCENT)
@@ -1735,12 +1759,11 @@ def pagina_anexo(c, dados, pagina: int, total_paginas: int):
     tamanho_nota = 8 if y_nota < 760 else 7
     if multi:
         nota_texto = (
-            "Valores extraídos do Balanço Patrimonial e da DRE de cada empresa/período (SPED contábil). "
             "Em cada coluna, o Total do Ativo confere com o Total do Passivo + Patrimônio Líquido."
         )
     else:
         nota_texto = (
-            f"Valores extraídos do Balanço Patrimonial e da DRE do período (SPED contábil). Total do Ativo "
+            f"Total do Ativo "
             f"({moeda_br(d['total_ativo'])}) confere com o Total do Passivo + Patrimônio Líquido "
             f"({moeda_br(d['total_ativo'])})."
         )
@@ -1762,9 +1785,7 @@ def pagina_fechamento(c, dados, pagina: int, total_paginas: int):
     txt(c, MARGEM, 100, "Nota sobre este Relatório", font="heavy", size=17, color=NAVY)
     y = paragrafo(
         c, MARGEM, 130,
-        f"Os valores apresentados foram extraídos do Balanço Patrimonial e da Demonstração do Resultado do "
-        f"Exercício do período de referência ({d.get('periodo_extenso_texto') or d.get('periodo_extenso') or d['periodo_label']}), gerados a "
-        f"partir do SPED contábil. Este documento é de uso interno da administração e da contabilidade do "
+        f"Este documento é de uso interno da administração e da contabilidade do "
         f"Grupo Enermais. As informações devem "
         f"ser lidas em conjunto com as demonstrações contábeis completas do período.",
         CONTEUDO_W, size=10.5, leading=15,
@@ -1787,10 +1808,8 @@ def pagina_fechamento(c, dados, pagina: int, total_paginas: int):
         txt(c, x, y + 16, nome, font="bold", size=10.5, color=NAVY)
         txt(c, x, y + 32, cargo, font="regular", size=9.5, color=GREY_TEXT)
     y += 52
-    txt(c, MARGEM, y, "Documento gerado a partir do BP e DRE do sistema contábil — sujeito a validação e "
-                       "assinatura da contabilidade.", font="italic", size=8, color=GREY_TEXT)
 
-    y += 40
+    y += 12
     rect(c, MARGEM, y, MARGEM + CONTEUDO_W, y + 90, fill=GREY_BG, stroke=BORDER_LIGHT, width=0.75, radius=6)
     logo_path = _logo_dados(d)
     if logo_path and os.path.exists(logo_path):

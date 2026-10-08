@@ -310,13 +310,13 @@ def test_anexo_multi_periodo_nada_depois_do_total_geral():
             {"grupo": "TOTAL", "conta": "TOTAL DO ATIVO", "valor": 10.0 + extra},
         ]
         if extra:
-            base.insert(1, {"grupo": "ATIVO NAO CIRCULANTE", "conta": "IMOVEIS", "valor": extra})
+            base.insert(1, {"grupo": "ATIVO NAO CIRCULANTE", "conta": "ALUGUEIS A RECEBER", "valor": extra})
         return base
     linhas = drc._montar_anexo_multi_periodo([_bp(0.0), _bp(5.0)], "ATIVO")
     assert [l[1] for l in linhas] == [
-        "Ativo Não Circulante", "Imobilizado", "Imóveis", "Total Ativo Não Circulante", "TOTAL DO ATIVO",
+        "Ativo Não Circulante", "Imobilizado", "Alugueis a Receber", "Total Ativo Não Circulante", "TOTAL DO ATIVO",
     ]
-    assert linhas[2] == ("conta", "Imóveis", 0.0, 5.0)
+    assert linhas[2] == ("conta", "Alugueis a Receber", 0.0, 5.0)
     print("OK: _montar_anexo_multi_periodo — nenhuma linha depois do total geral")
 
 

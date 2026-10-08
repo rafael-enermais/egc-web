@@ -98,6 +98,20 @@ _PALAVRAS_MINUSCULAS = {"a", "as", "o", "os", "de", "da", "do", "das", "dos", "e
 # proprio BP_TARGETS) cai no fallback _label_conta (Title Case sem acento)
 # em vez de quebrar.
 _LABEL_ACENTUADO = {
+    "PARCELAMENTOS": "Parcelamento",
+    "MUTUOS A RECEBER": "Mútuos a Receber",
+    "ADIANTAMENTOS A FUNCIONARIOS": "Adiantamentos a Funcionários",
+    "REALIZAVEL A LONGO PRAZO": "Realizável a Longo Prazo",
+    "PARTICIPACOES EM SOCIEDADES": "Participações em Sociedades Coligadas/Controladas",
+    "EQUIVALENCIA PATRIMONIAL": "Equivalência Patrimonial de Coligadas/Controladas",
+    "OUTROS INVESTIMENTOS": "Outros Investimentos",
+    "CONTA CAPITAL": "Conta Capital",
+    "IMOBILIZADO EM ANDAMENTO": "Imobilizado em Andamento",
+    "FORNECEDORES NACIONAIS": "Fornecedores Nacionais",
+    "PROVISOES": "Provisões",
+    "MUTUOS A PAGAR": "Mútuos a Pagar",
+    "LUCROS OU PREJUIZOS ACUMULADOS": "Lucros ou Prejuízos Acumulados",
+    "LUCRO DO EXERCICIO": "Lucro/Prejuízo do Exercício",
     "DISPONIVEL": "Disponível",
     "DEPOSITOS BANCARIOS A VISTA": "Depósitos Bancários à Vista",
     "APLICACOES DE LIQUIDEZ IMEDIATA": "Aplicações de Liquidez Imediata",
@@ -179,13 +193,21 @@ _HIERARQUIA_BP = {
     "DISPONIVEL": ["DEPOSITOS BANCARIOS A VISTA", "APLICACOES DE LIQUIDEZ IMEDIATA"],
     "CLIENTES": ["DUPLICATAS A RECEBER"],
     "INSTITUICOES FINANCEIRAS": ["EMPRESTIMOS", "FINANCIAMENTOS"],
+    # v0.48.1 (pedido do Rafael: anexo com TITULO + todos os SUBTITULOS que o compoem). Cada pai abaixo foi
+    # conferido contra a arvore do BP SPED (Energia e Construtora 2T26): soma dos filhos == valor do pai.
     "OUTROS CREDITOS": [
-        "MUTUO ENTRE EMPRESAS", "TITULOS A RECEBER",
-        "TRIBUTOS A RECUPERAR", "ADIANTAMENTOS A TERCEIROS",
+        "MUTUO ENTRE EMPRESAS", "TITULOS A RECEBER", "MUTUOS A RECEBER",
+        "ADIANTAMENTOS A TERCEIROS", "ADIANTAMENTOS A FUNCIONARIOS", "TRIBUTOS A RECUPERAR",
     ],
-    "OBRIGACOES TRIBUTARIAS": ["IMPOSTOS E CONTRIBUICOES A RECOLHER", "TRIBUTOS RETIDOS A RECOLHER"],
-    "OBRIGACOES TRABALHISTAS": ["OBRIGACOES COM O PESSOAL", "OBRIGACOES PREVIDENCIARIAS"],
-    "OUTRAS OBRIGACOES": ["ADIANTAMENTOS DE CLIENTES", "CONTAS A PAGAR"],
+    "REALIZAVEL A LONGO PRAZO": ["APLICACOES FINANCEIRAS"],
+    "INVESTIMENTOS": ["PARTICIPACOES EM SOCIEDADES", "EQUIVALENCIA PATRIMONIAL", "OUTROS INVESTIMENTOS", "CONTA CAPITAL"],
+    "IMOBILIZADO": ["IMOVEIS", "BENS EM OPERACAO", "IMOBILIZADO EM ANDAMENTO", "DEPRECIACAO ACUMULADA"],
+    "FORNECEDORES": ["FORNECEDORES NACIONAIS"],
+    "OBRIGACOES TRIBUTARIAS": ["IMPOSTOS E CONTRIBUICOES A RECOLHER", "TRIBUTOS RETIDOS A RECOLHER", "PARCELAMENTOS"],
+    "OBRIGACOES TRABALHISTAS": ["OBRIGACOES COM O PESSOAL", "OBRIGACOES PREVIDENCIARIAS", "PROVISOES"],
+    "OUTRAS OBRIGACOES": ["ADIANTAMENTOS DE CLIENTES", "MUTUOS A PAGAR", "CONTAS A PAGAR"],
+    "CAPITAL SOCIAL": ["CAPITAL SUBSCRITO", "CAPITAL A INTEGRALIZAR"],
+    "LUCROS OU PREJUIZOS ACUMULADOS": ["LUCROS/PREJUIZOS ACUMULADOS", "LUCRO DO EXERCICIO"],
 }
 
 
@@ -288,14 +310,16 @@ def _montar_anexo(bp_periodo: list, lado: str, incluir_subconta: bool = True) ->
                        key=lambda r: (_prioridade_conta_bp(r["conta"]), r["conta"]))
         mapa_itens = {r["conta"]: r for r in itens}
         filhos_usados = set()
-        for filhos in _HIERARQUIA_BP.values():
+        for pai, filhos in _HIERARQUIA_BP.items():
+            if pai not in mapa_itens:
+                continue  # v0.48.1: so' esconde o filho se o pai existe (periodo antigo sem o pai nao perde a linha)
             for f in filhos:
                 if f in mapa_itens:
                     filhos_usados.add(f)
 
         linhas.append(("grupo", grupo_label))
         if grupo_bd == "PASSIVO NAO CIRCULANTE":
-            bloco_pnc = _montar_bloco_pnc(rows, itens, filhos_usados, totalizador_nome, grupo_label)
+            bloco_pnc = _montar_bloco_pnc(rows, itens, filhos_usados, totalizador_nome, grupo_label, incluir_subconta)
             if bloco_pnc:
                 linhas.extend(bloco_pnc)
                 continue
@@ -306,10 +330,13 @@ def _montar_anexo(bp_periodo: list, lado: str, incluir_subconta: bool = True) ->
             linhas.append(("conta", _label_conta(nome), float(r["valor"])))
             if not incluir_subconta:
                 continue
+            filhos_linhas = []
             for filho_nome in _HIERARQUIA_BP.get(nome, []):
                 filho_row = mapa_itens.get(filho_nome)
                 if filho_row is not None:
-                    linhas.append(("subconta", _label_conta(filho_nome), float(filho_row["valor"])))
+                    filhos_linhas.append(("subconta", _label_conta(filho_nome), float(filho_row["valor"])))
+            linhas.extend(filhos_linhas)
+            _linha_demais_contas(linhas, float(r["valor"]), filhos_linhas, "subconta")
         total_row = next((r for r in rows if r["conta"] == totalizador_nome), None)
         if total_row is not None:
             linhas.append(("subtotal", f"Total {grupo_label}", float(total_row["valor"])))
@@ -319,18 +346,36 @@ def _montar_anexo(bp_periodo: list, lado: str, incluir_subconta: bool = True) ->
     return linhas
 
 
-def _montar_bloco_pnc(rows: list, itens: list, filhos_usados: set, totalizador_nome: str, grupo_label: str) -> list:
+def _linha_demais_contas(linhas: list, valor_pai: float, filhos_linhas: list, tipo: str) -> None:
+    """v0.48.1: se os subtitulos mostrados nao fecham com o titulo (algum subtitulo que o parser ainda nao le, ou
+    periodo importado antes desta versao), mostra a diferenca como "Demais contas" -- numero DERIVADO (titulo menos o
+    que esta' mostrado), nunca inventado; some sozinho quando o periodo e' reimportado e tudo fecha."""
+    if not filhos_linhas:
+        return
+    diff = round(valor_pai - sum(f[2] for f in filhos_linhas), 2)
+    if abs(diff) >= 0.5:
+        linhas.append((tipo, "Demais contas", diff))
+
+
+def _montar_bloco_pnc(rows: list, itens: list, filhos_usados: set, totalizador_nome: str, grupo_label: str,
+                      incluir_subconta: bool = True) -> list:
     """v0.47.4 (Rafael, relatorio da Energia 12/2025): o Passivo Nao Circulante saia como uma linha
     unica "Obrigacoes a Longo Prazo". No balanco ele e' a soma de Instituicoes Financeiras + Outras
     Obrigacoes (+ o que mais houver no bloco), entao o anexo passa a mostrar: titulo em negrito
     "Passivo Nao Circulante" com o total e, abaixo, as contas que o compoem (subconta, na ordem do
     balanco). Nao ha subtotal separado -- o titulo ja e' o total. [] = sem total conhecido
-    (volta ao desenho padrao, nunca inventa um valor)."""
+    (volta ao desenho padrao, nunca inventa um valor).
+
+    v0.48.1: cada componente mostra tambem os seus subtitulos (3o nivel de recuo, "subconta2"): Instituicoes
+    Financeiras -> Emprestimos/Financiamentos; Obrigacoes Tributarias -> Parcelamento (igual ao balanco, onde as
+    duas linhas repetem o valor); Outras Obrigacoes -> Contas a Pagar/Mutuos a Pagar. Com
+    `incluir_subconta=False` (Evolucao, pouco espaco) so' o Parcelamento aparece (pedido do Rafael)."""
     total_row = next((r for r in rows if r["conta"] == totalizador_nome), None)
     olp_row = next((r for r in itens if r["conta"] == "OBRIGACOES A LONGO PRAZO"), None)
     ref = total_row or olp_row  # OLP = mesmo valor do total no SPED (dado antigo sem o total gravado)
     if ref is None:
         return []
+    mapa = {r["conta"]: r for r in itens}
     componentes = [
         r for r in itens
         if r["conta"] != "OBRIGACOES A LONGO PRAZO" and r["conta"] not in filhos_usados
@@ -339,7 +384,17 @@ def _montar_bloco_pnc(rows: list, itens: list, filhos_usados: set, totalizador_n
     if not componentes and total_row is not None:
         return []  # nada pra detalhar (ex.: sem Passivo Nao Circulante): desenho padrao de sempre
     bloco = [("conta", grupo_label, float(ref["valor"]))]
-    bloco.extend(("subconta", _label_conta(r["conta"]), float(r["valor"])) for r in componentes)
+    for r in componentes:
+        bloco.append(("subconta", _label_conta(r["conta"]), float(r["valor"])))
+        filhos_linhas = []
+        for filho in _HIERARQUIA_BP.get(r["conta"], []):
+            fr = mapa.get(filho)
+            if fr is not None and (incluir_subconta or filho == "PARCELAMENTOS"):
+                filhos_linhas.append(("subconta2", _label_conta(filho), float(fr["valor"])))
+        bloco.extend(filhos_linhas)
+        if incluir_subconta:
+            _linha_demais_contas(bloco, float(r["valor"]), filhos_linhas, "subconta2")
+    _linha_demais_contas(bloco, float(ref["valor"]), [l for l in bloco if l[0] == "subconta"], "subconta")
     return bloco
 
 
@@ -863,6 +918,8 @@ def montar_dados_relatorio(
     receita_bruta = dre_map.get("RECEITA OPERACIONAL BRUTA", 0.0) + dre_map.get("RECEITAS OPERACIONAIS DIVERSAS", 0.0)
     deducoes_receita = abs(dre_map.get("DEDUCOES DA RECEITA BRUTA", 0.0))
     deducoes_pct_bruta = (deducoes_receita / receita_bruta) if receita_bruta else 0.0
+    tem_impostos_vendas = any(k in dre_map for k in ("ISS", "PIS", "COFINS"))
+    iss_valor, pis_valor, cofins_valor = (abs(dre_map.get(k, 0.0)) for k in ("ISS", "PIS", "COFINS"))
     receita_liquida = dre_map.get("RECEITA OPERACIONAL LIQUIDA", 0.0)
     custo_servicos = abs(dre_map.get("CUSTO DOS PRODUTOS/SERVICOS", 0.0))
     custo_pct_liquida = (custo_servicos / receita_liquida) if receita_liquida else 0.0
@@ -957,7 +1014,8 @@ def montar_dados_relatorio(
         periodo_extenso_texto=(periodo_extenso or "").strip() or periodo_extenso_padrao(periodo, granularidade),
         data_posicao=periodo.strftime("%d/%m/%Y"),
         data_geracao=data_geracao,
-        receita_bruta=receita_bruta, deducoes_receita=deducoes_receita, deducoes_pct_bruta=deducoes_pct_bruta,
+        receita_bruta=receita_bruta, deducoes_receita=deducoes_receita,
+        iss=iss_valor, pis=pis_valor, cofins=cofins_valor, tem_impostos_vendas=tem_impostos_vendas, deducoes_pct_bruta=deducoes_pct_bruta,
         receita_liquida=receita_liquida, custo_servicos=custo_servicos, custo_pct_liquida=custo_pct_liquida,
         lucro_bruto=lucro_bruto, margem_bruta=margem_bruta,
         despesas_operacionais=despesas_operacionais, despesas_administrativas=despesas_administrativas,
@@ -1106,7 +1164,10 @@ def _montar_anexo_multi_periodo(bp_por_periodo: list, lado: str) -> list:
             elif tipo == "conta":
                 atual["contas"].setdefault(label, [0.0] * n)[i] = float(linha[2])
                 conta_atual = label
+            elif tipo == "subconta2":
+                atual.setdefault("filhos2", {}).setdefault(sub_atual, {}).setdefault(label, [0.0] * n)[i] = float(linha[2])
             elif tipo == "subconta":
+                sub_atual = label
                 # so' o detalhe do Passivo Nao Circulante chega aqui (incluir_subconta=False corta o
                 # resto) -- fica aninhado sob a conta-titulo, igual ao anexo de 1 periodo.
                 atual.setdefault("filhos", {}).setdefault(conta_atual, {}).setdefault(label, [0.0] * n)[i] = float(linha[2])
@@ -1128,6 +1189,8 @@ def _montar_anexo_multi_periodo(bp_por_periodo: list, lado: str) -> list:
             filhos = sec.get("filhos", {}).get(label, {})
             for f_label in sorted(filhos, key=lambda lb: (_prioridade_conta_bp(lb), *_chave_ordem_label(lb))):
                 linhas.append(("subconta", f_label, *filhos[f_label]))
+                for f2_label, f2_vals in sec.get("filhos2", {}).get(f_label, {}).items():
+                    linhas.append(("subconta2", f2_label, *f2_vals))
         if sec["subtotal"] is not None:
             linhas.append(("subtotal", sec["subtotal"][0], *sec["subtotal"][1]))
     if total_geral is not None:
@@ -1147,7 +1210,7 @@ _ORDEM_BP = [
     "OUTROS CREDITOS", "MUTUO ENTRE EMPRESAS", "TITULOS A RECEBER", "ADIANTAMENTOS A TERCEIROS",
     "TRIBUTOS A RECUPERAR", "DESPESAS PAGAS ANTECIPADAMENTE",
     # Ativo Nao Circulante (Realizavel a Longo Prazo -> Investimentos -> Imobilizado)
-    "APLICACOES FINANCEIRAS", "INVESTIMENTOS", "IMOBILIZADO", "IMOVEIS", "BENS EM OPERACAO",
+    "REALIZAVEL A LONGO PRAZO", "APLICACOES FINANCEIRAS", "INVESTIMENTOS", "IMOBILIZADO", "IMOVEIS", "BENS EM OPERACAO",
     "DEPRECIACAO ACUMULADA",
     # Passivo (Circulante e Nao Circulante)
     "INSTITUICOES FINANCEIRAS", "EMPRESTIMOS", "FINANCIAMENTOS", "FORNECEDORES",
@@ -1156,7 +1219,7 @@ _ORDEM_BP = [
     "OUTRAS OBRIGACOES", "ADIANTAMENTOS DE CLIENTES", "CONTAS A PAGAR",
     "OBRIGACOES A LONGO PRAZO", "RECEITAS DIFERIDAS",
     # Patrimonio Liquido
-    "CAPITAL SOCIAL", "CAPITAL SUBSCRITO", "CAPITAL A INTEGRALIZAR", "LUCROS/PREJUIZOS ACUMULADOS",
+    "CAPITAL SOCIAL", "CAPITAL SUBSCRITO", "CAPITAL A INTEGRALIZAR", "LUCROS OU PREJUIZOS ACUMULADOS", "LUCROS/PREJUIZOS ACUMULADOS",
 ]
 _RANK_BP = {nome: i for i, nome in enumerate(_ORDEM_BP)}
 
