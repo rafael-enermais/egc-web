@@ -105,6 +105,56 @@ def tabelas_existem(conn) -> bool:
         return bool(cur.fetchone()[0])
 
 
+# ----------------------------------------------------------------------------- chave geral (v0.48.2)
+# "Desativar" o EBITDA Ajustado nos relatorios (pedido do Rafael: a contabilidade ainda esta decidindo o criterio).
+# A chave e' GLOBAL e fica gravada no banco. PADRAO = DESATIVADO: sem a tabela, sem a linha ou com qualquer erro de
+# banco, os relatorios saem SEM a pagina "EBITDA Ajustado". So' liga quando alguem liga de proposito na tela
+# "Nao Recorrentes". Desligar nao apaga nada (itens, confirmacoes e historico continuam guardados).
+CONFIG_CHAVE_EBITDA_AJUSTADO = "ebitda_ajustado_ativo"
+
+
+def config_existe(conn) -> bool:
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('egc.nao_recorrente_config') IS NOT NULL")
+            return bool(cur.fetchone()[0])
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
+def ebitda_ajustado_ativo(conn) -> bool:
+    """True so' se a chave foi LIGADA de proposito. Qualquer problema (tabela ausente, erro) = False."""
+    try:
+        if not config_existe(conn):
+            return False
+        with conn.cursor() as cur:
+            cur.execute("SELECT valor FROM egc.nao_recorrente_config WHERE chave = %s", (CONFIG_CHAVE_EBITDA_AJUSTADO,))
+            row = cur.fetchone()
+        return bool(row) and str(row[0]).strip().lower() == "ligado"
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
+def definir_ebitda_ajustado_ativo(conn, ativo: bool, usuario: Optional[str] = None) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO egc.nao_recorrente_config (chave, valor, atualizado_por, atualizado_em) "
+            "VALUES (%s, %s, %s, now()) "
+            "ON CONFLICT (chave) DO UPDATE SET valor = EXCLUDED.valor, atualizado_por = EXCLUDED.atualizado_por, "
+            "atualizado_em = now()",
+            (CONFIG_CHAVE_EBITDA_AJUSTADO, "ligado" if ativo else "desligado", usuario),
+        )
+    conn.commit()
+
+
 # ----------------------------------------------------------------------------- leitura
 def listar_itens(conn, empresa: str, periodo: date, gran: str, incluir_removidos: bool = False) -> list[dict]:
     sql = (f"SELECT {', '.join(_COLUNAS)} FROM egc.nao_recorrente "
