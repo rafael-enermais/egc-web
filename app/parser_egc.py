@@ -209,7 +209,10 @@ def extract_last_value(line: str):
 def clean_desc(raw: str) -> str:
     """Remove valores, prefixos (-)(=) e lixo de uma string de descrição."""
     s = BR_NUM.sub("", raw).strip()
-    s = re.sub(r"[\(\)R\$\s,\.]+$", "", s).strip()
+    # v0.48.1: antes o "R" solto do final era removido junto com o "R$" -- "RECEBER" virava "RECEBE", "PAGAR" virava
+    # "PAGA" e as contas terminadas em R (Duplicatas a Receber, Tributos a Recuperar, Contas/Mutuos a Pagar...) nao
+    # casavam com o alias. Agora so' sai o "R$" (e pontuacao/espaco) do final.
+    s = re.sub(r"(?:\s+R\$|R\$)?[\(\)\$\s,\.]*$", "", s).strip()
     s = re.sub(r"^[\s\(\)\+\-=\/]+", "", s).strip()
     return s
 
@@ -232,12 +235,21 @@ BP_TARGETS = [
     ("ATIVO CIRCULANTE",     "TITULOS A RECEBER",               ["TITULOS A RECEBER"]),
     ("ATIVO CIRCULANTE",     "TRIBUTOS A RECUPERAR",            ["TRIBUTOS A RECUPERAR"]),
     ("ATIVO CIRCULANTE",     "ADIANTAMENTOS A TERCEIROS",       ["ADIANTAMENTOS A TERCEIROS"]),
+    # v0.48.1: subtitulos do anexo (titulo + subtitulos que o compoem)
+    ("ATIVO CIRCULANTE",     "MUTUOS A RECEBER",                ["=MUTUOS A RECEBER"]),
+    ("ATIVO CIRCULANTE",     "ADIANTAMENTOS A FUNCIONARIOS",    ["=ADIANTAMENTOS A FUNCIONARIOS"]),
     # FIX_20260721_1600 (bug 8): conta ausente, identificada no diagnostico
     # contra o RELATORIO_MODELO.pdf (SMG 2023) — R$ 10.715,64 nao aparecia.
     ("ATIVO CIRCULANTE",     "DESPESAS PAGAS ANTECIPADAMENTE",  ["DESPESAS PAGAS ANTECIPADAMENTE","DESPESAS DO EXERCICIO SEGUINTE",
                                                                   "DESPESAS DO EXERCICIO A APROPRIAR","DESPESAS ANTECIPADAS"]),
     ("ATIVO NAO CIRCULANTE", "TOTAL NAO CIRCULANTE ATIVO",      ["NAO CIRCULANTE"]),
     ("ATIVO NAO CIRCULANTE", "INVESTIMENTOS",                   ["INVESTIMENTOS"]),
+    ("ATIVO NAO CIRCULANTE", "REALIZAVEL A LONGO PRAZO",        ["=REALIZAVEL A LONGO PRAZO"]),
+    ("ATIVO NAO CIRCULANTE", "PARTICIPACOES EM SOCIEDADES",     ["PARTIC. EM SOCIEDADES COLIGADAS/CONTROLADAS","PARTICIPACOES EM SOCIEDADES","PARTIC. EM SOCIEDADES"]),
+    ("ATIVO NAO CIRCULANTE", "EQUIVALENCIA PATRIMONIAL",        ["EQUIV. PATRIMONIAL DE COLIGADAS/CONTROLADAS","EQUIVALENCIA PATRIMONIAL"]),
+    ("ATIVO NAO CIRCULANTE", "OUTROS INVESTIMENTOS",            ["=OUTROS INVESTIMENTOS"]),
+    ("ATIVO NAO CIRCULANTE", "CONTA CAPITAL",                   ["=CONTA CAPITAL"]),
+    ("ATIVO NAO CIRCULANTE", "IMOBILIZADO EM ANDAMENTO",        ["=IMOBILIZADO EM ANDAMENTO"]),
     ("ATIVO NAO CIRCULANTE", "IMOBILIZADO",                     ["IMOBILIZADO"]),
     ("ATIVO NAO CIRCULANTE", "IMOVEIS",                         ["IMOVEIS"]),
     ("ATIVO NAO CIRCULANTE", "APLICACOES FINANCEIRAS",          ["APLICACOES FINANCEIRAS"]),
@@ -250,6 +262,7 @@ BP_TARGETS = [
     ("PASSIVO CIRCULANTE",   "EMPRESTIMOS",                     ["EMPRESTIMOS"]),
     ("PASSIVO CIRCULANTE",   "FINANCIAMENTOS",                  ["FINANCIAMENTOS","FINANCIAMENTOS SISTEMA FINANCEIRO NACIONAL"]),
     ("PASSIVO CIRCULANTE",   "FORNECEDORES",                    ["FORNECEDORES"]),
+    ("PASSIVO CIRCULANTE",   "FORNECEDORES NACIONAIS",          ["=FORNECEDORES NACIONAIS"]),
     ("PASSIVO CIRCULANTE",   "OBRIGACOES TRIBUTARIAS",          ["OBRIGACOES TRIBUTARIAS"]),
     ("PASSIVO CIRCULANTE",   "IMPOSTOS E CONTRIBUICOES A RECOLHER", ["IMPOSTOS E CONTRIBUICOES A RECOLHER",
                                                                       "IMPOSTOS E CONTRIBUICOES",
@@ -264,6 +277,8 @@ BP_TARGETS = [
                                                                  "PRIVIDENCIARIAS",
                                                                  "OBRIGACOES PRIVIDENCIARIAS"]),
     ("PASSIVO CIRCULANTE",   "CONTAS A PAGAR",                 ["CONTAS A PAGAR"]),
+    ("PASSIVO CIRCULANTE",   "PROVISOES",                      ["=PROVISOES"]),
+    ("PASSIVO CIRCULANTE",   "MUTUOS A PAGAR",                 ["=MUTUOS A PAGAR"]),
     ("PASSIVO CIRCULANTE",   "OUTRAS OBRIGACOES",              ["OUTRAS OBRIGACOES"]),
     ("PASSIVO CIRCULANTE",   "ADIANTAMENTOS DE CLIENTES",      ["ADIANTAMENTOS DE CLIENTES","ADIANTAMENTO DE CLIENTES"]),
     ("PASSIVO NAO CIRCULANTE","TOTAL NAO CIRCULANTE PASSIVO",  ["NAO CIRCULANTE"]),
@@ -280,12 +295,16 @@ BP_TARGETS = [
     ("PASSIVO NAO CIRCULANTE","EMPRESTIMOS NCIRC",              ["EMPRESTIMOS"]),
     ("PASSIVO NAO CIRCULANTE","FINANCIAMENTOS NCIRC",           ["FINANCIAMENTOS","FINANCIAMENTOS SISTEMA FINANCEIRO NACIONAL"]),
     ("PASSIVO NAO CIRCULANTE","OBRIGACOES TRIBUTARIAS NCIRC",   ["OBRIGACOES TRIBUTARIAS"]),
+    ("PASSIVO NAO CIRCULANTE","PARCELAMENTOS NCIRC",           ["PARCELAMENTOS"]),
     ("PASSIVO NAO CIRCULANTE","OUTRAS OBRIGACOES NCIRC",        ["OUTRAS OBRIGACOES"]),
     ("PASSIVO NAO CIRCULANTE","CONTAS A PAGAR NCIRC",           ["CONTAS A PAGAR"]),
+    ("PASSIVO NAO CIRCULANTE","MUTUOS A PAGAR NCIRC",           ["=MUTUOS A PAGAR"]),
     ("PATRIMONIO LIQUIDO",   "TOTAL PATRIMONIO LIQUIDO",       ["PATRIMONIO LIQUIDO","PATRIMOMIO LIQUIDO"]),
     ("PATRIMONIO LIQUIDO",   "CAPITAL SOCIAL",                 ["CAPITAL SOCIAL"]),
     ("PATRIMONIO LIQUIDO",   "CAPITAL SUBSCRITO",              ["CAPITAL SUBSCRITO"]),
     ("PATRIMONIO LIQUIDO",   "CAPITAL A INTEGRALIZAR",         ["CAPITAL A INTEGRALIZAR","A INTEGRALIZAR"]),
+    ("PATRIMONIO LIQUIDO",   "LUCROS OU PREJUIZOS ACUMULADOS", ["=LUCROS OU PREJUIZOS ACUMULADOS"]),
+    ("PATRIMONIO LIQUIDO",   "LUCRO DO EXERCICIO",             ["=LUCRO DO EXERCICIO"]),
     ("PATRIMONIO LIQUIDO",   "LUCROS/PREJUIZOS ACUMULADOS",    ["LUCROS/PREJUIZOS ACUMULADOS","LUCROS ACUMULADOS","PREJUIZOS ACUMULADOS"]),
     ("TOTAL",                "TOTAL DO PASSIVO",               ["TOTAL DO PASSIVO","TOTAL DO PASSIVO E PATRIMONIO", "PASSIVO"]),
 ]
@@ -294,6 +313,9 @@ DRE_TARGETS = [
     ("RECEITAS",  "RECEITA OPERACIONAL BRUTA",       ["RECEITA OPERACIONAL BRUTA"]),
     ("RECEITAS",  "RECEITAS OPERACIONAIS DIVERSAS",  ["RECEITAS OPERACIONAIS DIVERSAS"]),
     ("DEDUCOES",  "DEDUCOES DA RECEITA BRUTA",       ["DEDUCOES DA RECEITA BRUTA"]),
+    ("DEDUCOES",  "ISS",                              ["ISS"]),
+    ("DEDUCOES",  "PIS",                              ["PIS"]),
+    ("DEDUCOES",  "COFINS",                           ["COFINS"]),
     ("RESULTADO", "RECEITA OPERACIONAL LIQUIDA",     ["RECEITA OPERACIONAL LIQUIDA"]),
     ("CUSTOS",    "CUSTO DOS PRODUTOS/SERVICOS",     ["CUSTO DOS PRODUTOS","CUSTO DOS SERVICOS",
                                                       "CUSTO DOS PRODUTOS/MERCADORIAS"]),
@@ -354,6 +376,8 @@ DRE_TARGETS = [
 _ATIVO_NAMES = {
     "TOTAL CIRCULANTE ATIVO","DISPONIVEL","DEPOSITOS BANCARIOS A VISTA",
     "APLICACOES DE LIQUIDEZ IMEDIATA","CLIENTES","DUPLICATAS A RECEBER",
+    "MUTUOS A RECEBER","ADIANTAMENTOS A FUNCIONARIOS","REALIZAVEL A LONGO PRAZO","PARTICIPACOES EM SOCIEDADES",
+    "EQUIVALENCIA PATRIMONIAL","OUTROS INVESTIMENTOS","CONTA CAPITAL","IMOBILIZADO EM ANDAMENTO",
     "OUTROS CREDITOS","MUTUO ENTRE EMPRESAS","TITULOS A RECEBER",
     "TRIBUTOS A RECUPERAR","ADIANTAMENTOS A TERCEIROS","DESPESAS PAGAS ANTECIPADAMENTE",
     "TOTAL NAO CIRCULANTE ATIVO","INVESTIMENTOS","IMOBILIZADO","IMOVEIS",
@@ -364,7 +388,7 @@ _PASSIVO_NAMES = {
     "FORNECEDORES","OBRIGACOES TRIBUTARIAS","IMPOSTOS E CONTRIBUICOES A RECOLHER",
     "TRIBUTOS RETIDOS A RECOLHER","OBRIGACOES TRABALHISTAS","OBRIGACOES COM O PESSOAL",
     "OBRIGACOES PREVIDENCIARIAS","CONTAS A PAGAR","OUTRAS OBRIGACOES",
-    "ADIANTAMENTOS DE CLIENTES","TOTAL NAO CIRCULANTE PASSIVO","OBRIGACOES A LONGO PRAZO",
+    "ADIANTAMENTOS DE CLIENTES","FORNECEDORES NACIONAIS","PROVISOES","MUTUOS A PAGAR","TOTAL NAO CIRCULANTE PASSIVO","OBRIGACOES A LONGO PRAZO",
     "RECEITAS DIFERIDAS","TOTAL DO PASSIVO",
 }
 # FIX_20260721_1600 (bug 9): contas que só podem vir do bloco PASSIVO
@@ -372,16 +396,27 @@ _PASSIVO_NAMES = {
 # Circulante — ver BP_TARGETS acima e parse_duplo()).
 _PASSIVO_CIRC_ONLY_NAMES = {
     "INSTITUICOES FINANCEIRAS", "EMPRESTIMOS", "FINANCIAMENTOS",
-    "OBRIGACOES TRIBUTARIAS", "OUTRAS OBRIGACOES", "CONTAS A PAGAR",
+    "OBRIGACOES TRIBUTARIAS", "OUTRAS OBRIGACOES", "CONTAS A PAGAR", "MUTUOS A PAGAR",
 }
 # Contraparte: só podem vir do bloco PASSIVO NAO CIRCULANTE.
 _PASSIVO_NCIRC_ONLY_NAMES = {
+    "PARCELAMENTOS NCIRC",
     "INSTITUICOES FINANCEIRAS NCIRC", "EMPRESTIMOS NCIRC", "FINANCIAMENTOS NCIRC",
-    "OBRIGACOES TRIBUTARIAS NCIRC", "OUTRAS OBRIGACOES NCIRC", "CONTAS A PAGAR NCIRC",
+    "OBRIGACOES TRIBUTARIAS NCIRC", "OUTRAS OBRIGACOES NCIRC", "CONTAS A PAGAR NCIRC", "MUTUOS A PAGAR NCIRC",
 }
 _PL_NAMES = {
     "TOTAL PATRIMONIO LIQUIDO","CAPITAL SOCIAL","CAPITAL SUBSCRITO",
-    "CAPITAL A INTEGRALIZAR","LUCROS/PREJUIZOS ACUMULADOS",
+    "CAPITAL A INTEGRALIZAR","LUCROS/PREJUIZOS ACUMULADOS","LUCROS OU PREJUIZOS ACUMULADOS","LUCRO DO EXERCICIO",
+}
+
+
+# v0.48.1: subtitulos do BP que passaram a ser gravados (anexo "titulo + subtitulos"). Quando o TEXTO e o DUPLO
+# divergem num destes nomes, vale o TEXTO (ver processar_pdf).
+_NOMES_SUBTITULOS_V0481 = {
+    "MUTUOS A RECEBER", "ADIANTAMENTOS A FUNCIONARIOS", "REALIZAVEL A LONGO PRAZO", "PARTICIPACOES EM SOCIEDADES",
+    "EQUIVALENCIA PATRIMONIAL", "OUTROS INVESTIMENTOS", "CONTA CAPITAL", "IMOBILIZADO EM ANDAMENTO",
+    "FORNECEDORES NACIONAIS", "PROVISOES", "MUTUOS A PAGAR", "LUCROS OU PREJUIZOS ACUMULADOS", "LUCRO DO EXERCICIO",
+    "PARCELAMENTOS", "OUTROS CREDITOS",
 }
 
 
@@ -398,10 +433,13 @@ CNPJ_EMPRESA = {
 
 def match_target(desc_n: str, aliases: list) -> bool:
     for alias in aliases:
-        a = norm(alias)
+        # v0.48.1: alias com "=" na frente so' casa o texto EXATO (sem prefixo) -- usado nos subtitulos novos do BP,
+        # pra uma conta analitica de nome parecido (ex.: "Conta Capital - Cresol") nao ser lida como o subtitulo.
+        exato = alias.startswith("=")
+        a = norm(alias[1:] if exato else alias)
         if desc_n == a:
             return True
-        if len(a) >= 8 and desc_n.startswith(a):
+        if not exato and len(a) >= 8 and desc_n.startswith(a):
             return True
     return False
 
@@ -533,6 +571,13 @@ def process_candidates(candidates, targets, tipo, origem):
 
         # Atualizar contexto
         context = update_context(desc_n, context)
+
+        # v0.48.1: "Fornecedores Nacionais" (subtitulo de Fornecedores) so' e' gravado quando o titulo
+        # "Fornecedores" ja foi lido numa linha propria -- se ele for a UNICA linha, continua valendo como
+        # "Fornecedores" (comportamento de sempre; nada muda nos balancos antigos/consolidado).
+        if tipo == "BP" and desc_n == "FORNECEDORES NACIONAIS" and "FORNECEDORES" in found:
+            found.setdefault("FORNECEDORES NACIONAIS", val)
+            continue
 
         # Substituir contexto pelo bloco quando informado explicitamente
         # FIX_20260721_1600: incluir PASSIVO_CIRC/PASSIVO_NCIRC como blocos
@@ -756,6 +801,11 @@ def parse_texto(pdf_path: Path, tipo: str, origem: str) -> list:
             elif re.match(r"^PATRIMO[NM]IO LIQUIDO", line_n):
                 context = "PATRIMONIO"
                 bloco = "PATRIMONIO"
+            elif context.startswith("PASSIVO") and re.match(r"^(NAO )?CIRCULANTE\b", line_n):
+                # v0.48.1: separa Passivo Circulante x Nao Circulante no modo TEXTO (como o parse_duplo ja faz) --
+                # sem isso a 2a ocorrencia de "Obrigacoes Tributarias" etc. (Nao Circulante) era descartada.
+                context = "PASSIVO_NCIRC" if line_n.startswith("NAO ") else "PASSIVO_CIRC"
+                bloco = context
             else:
                 bloco = context
 
@@ -1068,6 +1118,15 @@ def processar_pdf(pdf_path: Path):
                     n_add = 0
                     for r in rows_fallback:
                         chave = (r[0], r[1])
+                        if chave in nomes_ok and r[1] in _NOMES_SUBTITULOS_V0481:
+                            # v0.48.1: no DUPLO a linha do subtitulo pode ter se perdido e a conta analitica de mesmo
+                            # nome (ex.: "Imobilizado em andamento") ter sido lida no lugar -- o TEXTO enxerga as 2.
+                            for i_r, r_old in enumerate(rows):
+                                if (r_old[0], r_old[1]) == chave and r_old[2] != r[2]:
+                                    rows[i_r] = r
+                                    log.append(["AVISO", pdf_path.name, "BP",
+                                                f"{r[1]}: valor do DUPLO ({r_old[2]}) trocado pelo do TEXTO ({r[2]})"])
+                            continue
                         if chave not in nomes_ok:
                             rows.append(r)
                             nomes_ok.add(chave)

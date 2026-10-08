@@ -70,9 +70,12 @@ def test_passivo_nao_circulante_mostra_titulo_e_composicao():
     i = linhas.index(("grupo", "Passivo Não Circulante"))
     assert linhas[i + 1] == ("conta", "Passivo Não Circulante", 12_717_981.09)
     assert linhas[i + 2] == ("subconta", "Instituições Financeiras", 4_044_085.31)
-    assert linhas[i + 3] == ("subconta", "Outras Obrigações", 8_673_895.78)
+    # v0.48.1: cada componente mostra os seus subtitulos (3o nivel) -- aqui Emprestimos + "Demais contas" (derivada)
+    assert linhas[i + 3] == ("subconta2", "Empréstimos", 3_467_873.59)
+    assert linhas[i + 4] == ("subconta2", "Demais contas", 576_211.72)
+    assert linhas[i + 5] == ("subconta", "Outras Obrigações", 8_673_895.78)
     # sem subtotal repetido nem a antiga linha "Obrigacoes a Longo Prazo"
-    assert linhas[i + 4][0] == "grupo" and linhas[i + 4][1] == "Patrimônio Líquido"
+    assert linhas[i + 6][0] == "grupo" and linhas[i + 6][1] == "Patrimônio Líquido"
     assert "Obrigações a Longo Prazo" not in _rotulos(linhas, ("conta", "subconta"))
 
 
@@ -126,9 +129,9 @@ def test_fornecedor_sem_quadro_de_divida_sem_descritivos_e_sem_textos_removidos(
     todo = "\n".join(paginas)
     assert "CALLOUT_DIVIDA" not in todo
     assert "COMP_RECEITA" not in todo and "COMP_DESPESAS" not in todo
-    assert "ENDIVIDAMENTO GERAL" not in todo.upper().replace("(EXIGÍVEL/ATIVO TOTAL)", "")  # KPI removido
+    assert "ENDIVIDAMENTO GERAL" in todo.upper()  # v0.48.1: o KPI passou a aparecer em todas as variantes
     assert "submetido" not in todo and "Relatório gerado pelo" not in todo
-    assert "()" not in todo and "referência (exercício de 2025)" in todo
+    assert "()" not in todo and "gerados a partir" not in todo  # v0.48.1: frase sobre o SPED removida
     assert "driver" not in todo
     # destaques: nome + CNPJ (sem o "—" solto)
     assert "Enermais Energia Ltda · CNPJ 47.040.664/0001-48" in paginas[1]
@@ -161,4 +164,4 @@ def test_comparativo_fechamento_sem_auditoria_e_sem_linha_do_sistema():
         with pdfplumber.open(caminho) as pdf:
             todo = "\n".join((p.extract_text() or "") for p in pdf.pages)
     assert "submetido" not in todo and "Relatório gerado pelo" not in todo
-    assert "uso interno da administração" in todo
+    assert "uso interno da" in todo.replace("\n", " ") and "administração e da contabilidade" in todo.replace("\n", " ")

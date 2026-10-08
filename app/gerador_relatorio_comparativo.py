@@ -108,7 +108,7 @@ def pagina_capa_comparativa(c, dados, pagina: int, total_paginas: int):
         image(c, marca_path, 435, 630, 552, 812, mask="auto", preserve_ratio=True)
     logo_path = _logo_dados(d)
     if logo_path and os.path.exists(logo_path):
-        image(c, logo_path, MARGEM, 130, MARGEM + 260, 210, mask="auto", preserve_ratio=True)
+        image(c, logo_path, MARGEM, 96, MARGEM + 340, 200, mask="auto", preserve_ratio=True)
     c.setStrokeColor(A.HexColor(ORANGE))
     c.setLineWidth(3)
     c.line(MARGEM, Y(268), MARGEM + 46, Y(268))
@@ -752,8 +752,8 @@ def pagina_fechamento_comparativa(c, dados, pagina: int, total_paginas: int):
     y = paragrafo(
         c, MARGEM, 130,
         f"Os valores apresentados comparam o Balanço Patrimonial e a Demonstração do Resultado do Exercício "
-        f"de cada período do intervalo {d['periodo_range_label']}, gerados a partir do SPED contábil de cada "
-        f"período. Este documento é de uso interno da administração e da contabilidade do Grupo Enermais.",
+        f"de cada período do intervalo {d['periodo_range_label']}. Este documento é de uso interno da "
+        f"administração e da contabilidade do Grupo Enermais.",
         CONTEUDO_W, size=10.5, leading=15,
     ) + 12
     y = paragrafo(
@@ -774,10 +774,8 @@ def pagina_fechamento_comparativa(c, dados, pagina: int, total_paginas: int):
         txt(c, x, y + 16, nome, font="bold", size=10.5, color=NAVY)
         txt(c, x, y + 32, cargo, font="regular", size=9.5, color=GREY_TEXT)
     y += 52
-    txt(c, MARGEM, y, "Documento gerado a partir do BP e DRE do sistema contábil — sujeito a validação e "
-                       "assinatura da contabilidade.", font="italic", size=8, color=GREY_TEXT)
 
-    y += 40
+    y += 12
     rect(c, MARGEM, y, MARGEM + CONTEUDO_W, y + 90, fill=GREY_BG, stroke=BORDER_LIGHT, width=0.75, radius=6)
     import os
     logo_path = _logo_dados(d)
