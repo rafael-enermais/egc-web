@@ -46,7 +46,7 @@ ROTULOS_IGNORADAS = {
     "fornecedor_nome": "Fornecedor", "fornecedor_cnpj": "CNPJ do fornecedor", "tipo_doc": "Tipo (Receita)",
     "natureza": "Natureza da operação", "motivo": "Motivo de ter ficado fora",
 }
-COLUNAS_MOEDA = ["Valor (manifesto)", "Valor (Sienge)"]
+COLUNAS_MOEDA = ["Valor (manifesto)", "Valor (Sienge)", "Valor (escrituração)"]
 COLUNAS_DATA = ["Emissão"]
 COLUNAS_INTERNAS = ["registro_id", "origem"]
 
@@ -61,6 +61,32 @@ ROTULO_STATUS = {
     "SIENGE_SEM_MANIFESTO": "Sienge sem manifesto",
 }
 ORDEM_STATUS = list(ROTULO_STATUS)
+
+# v0.49.0 -- NFS (nota de servico): escrituracao da contabilidade x Sienge. Status/colunas PROPRIOS: a aba "NFS" nunca mistura
+# com as abas de NFE, e ROTULO_STATUS/ORDEM_STATUS (usados na conferencia de NFE) ficam exatamente como eram.
+ROTULO_STATUS_NFS = {
+    "LANCADA": "Lançadas",
+    "LANCADA_OUTRA_EMPRESA": "Lançadas em outra empresa",
+    "VALOR_DIVERGENTE": "Valor divergente",
+    "NUMERO_DIVERGENTE": "Número divergente",
+    "NAO_ENCONTRADA": "Não encontradas no Sienge",
+    "SIENGE_SEM_ESCRITURACAO": "Sienge sem escrituração",
+}
+ORDEM_STATUS_NFS = list(ROTULO_STATUS_NFS)
+ROTULOS_NFS = {
+    "periodo": "Período",
+    "numero_nota": "Nº da nota",
+    "sienge_bill_id": "Título Sienge",
+    "sienge_documento": "Documento no Sienge",
+    "status": "Status",
+    "data_emissao": "Emissão",
+    "valor": "Valor (escrituração)",
+    "fornecedor_nome": "Fornecedor",
+    "fornecedor_cnpj": "CNPJ/CPF do fornecedor",
+    "confianca": "Critério do match",
+    "sienge_valor": "Valor (Sienge)",
+    "observacao": "Observação",
+}
 
 
 def contar_por_status(tabela: pd.DataFrame) -> dict:
@@ -145,6 +171,12 @@ def preparar_tabela(tabela: pd.DataFrame) -> pd.DataFrame:
     return tabela[cols].rename(columns=ROTULOS).copy()
 
 
+def preparar_tabela_nfs(tabela: pd.DataFrame) -> pd.DataFrame:
+    """Mesma ideia de preparar_tabela, com as colunas e rotulos da NFS (ROTULOS_NFS)."""
+    cols = [c for c in ROTULOS_NFS if c in tabela.columns]
+    return tabela[cols].rename(columns=ROTULOS_NFS).copy()
+
+
 def preparar_ignoradas(ignoradas: pd.DataFrame) -> pd.DataFrame:
     """Notas fora da conferencia com rotulos de exibicao (colunas internas descartadas)."""
     cols = [c for c in ROTULOS_IGNORADAS if c in ignoradas.columns]
@@ -167,13 +199,16 @@ COR_STATUS = {          # preenchimento suave por situacao (a leitura da planilh
     "NUMERO_DIVERGENTE": "FFF1D6",
     "NAO_ENCONTRADA": "FADCDC",
     "SIENGE_SEM_MANIFESTO": "DDE3F5",
+    "SIENGE_SEM_ESCRITURACAO": "DDE3F5",
 }
 ROTULO_ACOMPANHAMENTO = {"PENDENTE": "Pendente", "ENVIADO_SUPRIMENTOS": "Enviado ao Suprimentos",
                          "RESOLVIDO": "Resolvido", "DESCARTADO": "Descartado"}
 ROTULO_CRITERIO = {"CHAVE": "Chave de acesso", "NUMERO_CNPJ_VALOR": "Nº + CNPJ + valor",
-                   "NUMERO_CNPJ": "Nº + CNPJ (valor diferente)", "CNPJ_VALOR": "CNPJ + valor (nº diferente)"}
+                   "NUMERO_CNPJ": "Nº + CNPJ (valor diferente)", "CNPJ_VALOR": "CNPJ + valor (nº diferente)",
+                   "CNPJ_NUMERO_VALOR": "CNPJ + nº + valor", "CNPJ_NUMERO": "CNPJ + nº (valor diferente)",
+                   "CNPJ_VALOR_DATA": "CNPJ + valor + data (nº diferente)"}
 LARGURA_COLUNA = {"Período": 10, "Nº da nota": 14, "CFOP": 8, "Título Sienge": 12, "Documento no Sienge": 20,
-                  "Status": 26, "Emissão": 12, "Valor (manifesto)": 17, "Fornecedor": 52, "CNPJ do fornecedor": 20,
+                  "Status": 26, "Emissão": 12, "Valor (manifesto)": 17, "Valor (escrituração)": 19, "Fornecedor": 52, "CNPJ do fornecedor": 20, "CNPJ/CPF do fornecedor": 22,
                   "Critério do match": 26, "Valor (Sienge)": 17, "Observação": 60, "Anotação": 40, "Acompanhamento": 22,
                   "Atualizado em": 17}
 LINHA_CABECALHO = 5     # linhas 1-3: logo + titulo, 4: respiro, 5: cabecalho da tabela
@@ -296,13 +331,14 @@ def _escrever_aba(wb_writer, nome: str, df: pd.DataFrame, titulo: str, subtitulo
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce").dt.date
     if "Status" in df.columns:
-        df["Status"] = df["Status"].map(lambda c: ROTULO_STATUS.get(c, c))
+        df["Status"] = df["Status"].map(lambda c: {**ROTULO_STATUS, **ROTULO_STATUS_NFS}.get(c, c))
     if "Acompanhamento" in df.columns:
         df["Acompanhamento"] = df["Acompanhamento"].map(lambda c: _humanizar(c, ROTULO_ACOMPANHAMENTO))
     if "Critério do match" in df.columns:
         df["Critério do match"] = df["Critério do match"].map(lambda c: _humanizar(c, ROTULO_CRITERIO))
-    if "CNPJ do fornecedor" in df.columns:
-        df["CNPJ do fornecedor"] = df["CNPJ do fornecedor"].map(_cnpj_formatado)
+    for _col_cnpj in ("CNPJ do fornecedor", "CNPJ/CPF do fornecedor"):
+        if _col_cnpj in df.columns:
+            df[_col_cnpj] = df[_col_cnpj].map(_cnpj_formatado)
 
     df.to_excel(wb_writer, index=False, sheet_name=nome, startrow=LINHA_CABECALHO - 1)
     ws = wb_writer.sheets[nome]
@@ -381,6 +417,7 @@ def _aba_resumo(wb, empresa_nome: str, empresa_codigo: Optional[str], periodo: s
     ws.row_dimensions[r].height = 24
     borda = Border(bottom=Side(style="thin", color=CINZA_BORDA))
     codigos_por_rotulo = {v: k for k, v in ROTULO_STATUS.items()}
+    codigos_por_rotulo.update({f"NFS — {v}": k for k, v in ROTULO_STATUS_NFS.items()})
     destaques = {"Notas no manifesto", "Lançadas no Sienge", "Taxa de conciliação", "Total de pendências (aba Pendências)"}
     for item, valor in linhas:
         r += 1
@@ -394,7 +431,7 @@ def _aba_resumo(wb, empresa_nome: str, empresa_codigo: Optional[str], periodo: s
             c.border = borda
         a.alignment = Alignment(vertical="center", indent=1)
         b.alignment = Alignment(horizontal="right", vertical="center")
-        if isinstance(valor, float) and item == "Taxa de conciliação":
+        if isinstance(valor, float) and item.startswith("Taxa de conciliação"):
             b.number_format = "0.0%"
         elif isinstance(valor, (int, float)):
             b.number_format = "#,##0"
@@ -463,6 +500,7 @@ def gerar_xlsx_conferencia(
     tabela: pd.DataFrame, empresa_nome: str, periodo_referencia: str,
     arquivo_manifesto: Optional[str] = None, gerado_em: Optional[str] = None,
     ignoradas: Optional[pd.DataFrame] = None, empresa_codigo: Optional[str] = None,
+    nfs: Optional[dict] = None,
 ) -> bytes:
     """
     Planilha completa da conferencia, no padrao visual Enermais (logo e cores da empresa).
@@ -470,6 +508,8 @@ def gerar_xlsx_conferencia(
     registro_id/origem). Abas: Resumo, Resumo por período (so' com 2+ periodos), Conferência completa
     (todas as notas do manifesto + titulos do Sienge sem nota), Pendências (tudo que nao e' LANCADA),
     Sienge sem nota e Ignoradas. `periodo_referencia` e' o rotulo do conjunto (ex.: "01/2026 a 08/2026").
+    v0.49.0: `nfs` ({"tabela": df da conferencia NFS, "resumo": resumo_nfs, "arquivos": [nomes], "periodos": rotulo}) acrescenta a aba
+    "NFS" (e um bloco no Resumo); as demais abas ficam exatamente como eram. None/vazio = planilha identica a anterior.
     """
     from openpyxl import Workbook
     orfaos = tabela[tabela["origem"] == "SIENGE_ORFAO"] if "origem" in tabela.columns else tabela.iloc[0:0]
@@ -494,6 +534,18 @@ def gerar_xlsx_conferencia(
         por_motivo = ignoradas["motivo"].value_counts().to_dict()
         resumo_linhas += [("Notas do arquivo que ficaram FORA da conferência (aba Ignoradas)", len(ignoradas))] + [
             (f"  · {m}", int(n)) for m, n in sorted(por_motivo.items())]
+    nfs_tab = nfs.get("tabela") if nfs else None
+    if nfs_tab is not None and len(nfs_tab):
+        rn = nfs.get("resumo") or {}
+        resumo_linhas += [
+            ("NFS (notas de serviço) — escrituração × Sienge", None),
+            ("Arquivos da escrituração", ", ".join(nfs.get("arquivos") or []) or "—"),
+            ("Notas de serviço na escrituração", rn.get("total", 0)),
+            ("NFS lançadas no Sienge", rn.get("lancadas", 0)),
+            ("Taxa de conciliação (NFS)", rn.get("taxa")),
+            ("Títulos NFS do Sienge sem nota na escrituração", rn.get("sienge_sem_escrituracao", 0)),
+            ("Total de pendências NFS (aba NFS)", rn.get("pendencias", 0)),
+        ] + [(f"  · NFS — {ROTULO_STATUS_NFS.get(st, st)}", n) for st, n in (rn.get("por_status") or {}).items()]
 
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
@@ -508,17 +560,26 @@ def gerar_xlsx_conferencia(
                       empresa_codigo, _status_de(pend))
         _escrever_aba(writer, "Sienge sem nota", preparar_tabela(orfaos), "Títulos do Sienge sem nota no manifesto", sub,
                       empresa_codigo, _status_de(orfaos))
+        if nfs_tab is not None and len(nfs_tab):
+            _escrever_aba(writer, "NFS", preparar_tabela_nfs(nfs_tab), "NFS — escrituração × Sienge",
+                          f"{empresa_nome} · {nfs.get('periodos') or periodo_referencia}", empresa_codigo, _status_de(nfs_tab))
         if ignoradas is not None and len(ignoradas):
             _escrever_aba(writer, "Ignoradas", preparar_ignoradas(ignoradas), "Notas fora da conferência", sub, empresa_codigo)
     return buf.getvalue()
 
 
 def gerar_xlsx_pendencias(tabela: pd.DataFrame, empresa_nome: str, periodo_referencia: str,
-                          empresa_codigo: Optional[str] = None) -> bytes:
-    """Planilha so' das pendencias (a que vai para o Suprimentos), no mesmo padrao visual."""
+                          empresa_codigo: Optional[str] = None, nfs: Optional[dict] = None) -> bytes:
+    """Planilha so' das pendencias (a que vai para o Suprimentos), no mesmo padrao visual.
+    v0.49.0: com `nfs`, acrescenta a aba "Pendências NFS" (so' o que nao esta' lancado)."""
     pend = tabela[tabela["status"] != "LANCADA"]
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         _escrever_aba(writer, "Pendências", preparar_tabela(pend), "Pendências a tratar",
                       f"{empresa_nome} · {periodo_referencia}", empresa_codigo, _status_de(pend))
+        nfs_tab = nfs.get("tabela") if nfs else None
+        if nfs_tab is not None and len(nfs_tab):
+            pend_nfs = nfs_tab[nfs_tab["status"] != "LANCADA"]
+            _escrever_aba(writer, "Pendências NFS", preparar_tabela_nfs(pend_nfs), "Pendências NFS a tratar",
+                          f"{empresa_nome} · {nfs.get('periodos') or periodo_referencia}", empresa_codigo, _status_de(pend_nfs))
     return buf.getvalue()

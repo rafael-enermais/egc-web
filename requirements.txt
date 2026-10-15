@@ -15,3 +15,5 @@ requests==2.34.2
 # pyarrow 25 tem falha conhecida (segfault) -- o Streamlit Cloud ja' trocava sozinho pela 24; fixado pra nao depender disso.
 pyarrow==24.0.0
 numpy==2.5.3
+# xlrd: leitura das planilhas .xls da escrituracao (NFS, v0.49.0) -- o pandas nao le .xls sem ele.
+xlrd==2.0.2
