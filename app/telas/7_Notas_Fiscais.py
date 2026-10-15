@@ -129,17 +129,28 @@ def _manter(chave: str) -> None:
 
 JANELA_ATUALIZAR_DIAS = 365   # "ano sempre atualizado": mesma janela do sync diário (ingest-sienge.yml)
 
-if _ultima_sync:
-    st.caption(f"🔄 Última sincronização: {formatacao.hora_br(_ultima_sync)}. O Sienge é copiado sozinho todo dia às 04h "
-               "(ano inteiro) e as conferências são refeitas na sequência -- use o botão só se precisar do dado de agora. "
-               "O botão copia o ano inteiro e leva cerca de 2 minutos: não feche a página enquanto roda.")
-else:
-    st.error(
-        "Ainda não há nenhuma sincronização registrada com o Sienge. "
-        "Clique em \"Atualizar agora\" abaixo -- o passo 2 (subir manifesto) só libera depois da "
-        "primeira sincronização, pra não gerar \"não encontrada\" em massa por falta de dado, "
-        "não por nota realmente pendente."
-    )
+# v0.48.3: a frase "Última sincronização" fica num espaço reservado (st.empty) e e' redesenhada DEPOIS do botao
+# "Atualizar agora". Antes ela era escrita acima do botao, com o valor lido antes do clique -- entao, apos atualizar,
+# a tela mostrava a data antiga ate a pagina ser recarregada (achado do Rafael 15/10/2026).
+_slot_sync = st.empty()
+
+
+def _mostrar_sync(ultima) -> None:
+    with _slot_sync.container():
+        if ultima:
+            st.caption(f"🔄 Última sincronização: {formatacao.hora_br(ultima)}. O Sienge é copiado sozinho todo dia às 04h "
+                       "(ano inteiro) e as conferências são refeitas na sequência -- use o botão só se precisar do dado de agora. "
+                       "O botão copia o ano inteiro e leva cerca de 2 minutos: não feche a página enquanto roda.")
+        else:
+            st.error(
+                "Ainda não há nenhuma sincronização registrada com o Sienge. "
+                "Clique em \"Atualizar agora\" abaixo -- o passo 2 (subir manifesto) só libera depois da "
+                "primeira sincronização, pra não gerar \"não encontrada\" em massa por falta de dado, "
+                "não por nota realmente pendente."
+            )
+
+
+_mostrar_sync(_ultima_sync)
 
 
 def _total_pendencias_vigentes() -> dict:
@@ -196,6 +207,7 @@ if st.button("🔄 Atualizar agora", key="nf_btn_sync",
         _log_info(f"Atualizar agora: {n_bills} títulos, {n_cred} credores ({_ini} a {_fim}); "
                   f"{len(_mudaram)} período(s) com pendência alterada")
     _ultima_sync = nf_sienge.ultima_sincronizacao(conn)
+    _mostrar_sync(_ultima_sync)
 
 # ───────────── Empresa de cada devedor do Sienge (confere lançamento na empresa certa) ─────────────
 with st.expander("🏢 Empresa de cada devedor do Sienge — confere se a nota foi lançada na empresa certa",
