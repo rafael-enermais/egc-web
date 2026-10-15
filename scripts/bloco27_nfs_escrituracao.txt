@@ -1,0 +1,76 @@
+-- EGC-WEB v0.49.0 | BLOCO 27 -- rodar UMA vez no Supabase (SQL Editor), ANTES de usar a secao de NFS.
+-- Aditivo e idempotente (pode rodar de novo sem estragar nada). Nao apaga nem altera nenhum dado existente.
+-- =====================================================================
+-- BLOCO 27 — v0.49.0: NFS (notas de SERVICO) — escrituracao da contabilidade x Sienge.
+--  * egc.nfs_bills_sync   : titulos do Sienge de tipo NFS (a sincronizacao passa a guardar tambem esse tipo, em tabela SEPARADA
+--                           da de NFE/NF -- assim a conferencia atual de NFE/NF nao muda em nada).
+--  * egc.nfs_import       : 1 linha por arquivo enviado (empresa + mes). Reenviar o mes substitui; "arquivar" nao apaga.
+--  * egc.nfs_escrituracao : as notas de servico lidas da planilha (so' NFSE/NFS/NFS-E; o resto da planilha fica de fora).
+-- A conferencia NFS e' calculada na hora (sempre com o Sienge mais recente), sem gravar resultado.
+-- Sem este bloco o app segue normal: a secao de NFS avisa que o bloco 27 falta e a conferencia de NFE/NF funciona igual.
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS egc.nfs_bills_sync (
+  bill_id                     bigint PRIMARY KEY,
+  debtor_id                   integer,
+  creditor_id                 integer,
+  document_identification_id  text,
+  document_number             text,
+  issue_date                  date,
+  total_invoice_amount        numeric(14,2),
+  access_key_number           text,
+  status                      text,
+  sincronizado_em             timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_nfs_bills_sync_creditor ON egc.nfs_bills_sync (creditor_id);
+CREATE INDEX IF NOT EXISTS idx_nfs_bills_sync_debtor   ON egc.nfs_bills_sync (debtor_id, issue_date);
+
+CREATE TABLE IF NOT EXISTS egc.nfs_import (
+  id                  uuid PRIMARY KEY,
+  empresa_codigo      text NOT NULL,
+  periodo_referencia  text NOT NULL,
+  arquivo_nome        text,
+  total_linhas        integer NOT NULL DEFAULT 0,
+  total_nfs           integer NOT NULL DEFAULT 0,
+  enviado_por         text,
+  enviado_em          timestamptz NOT NULL DEFAULT now(),
+  arquivado_em        timestamptz,
+  arquivado_por       text,
+  arquivado_motivo    text
+);
+CREATE INDEX IF NOT EXISTS idx_nfs_import_empresa ON egc.nfs_import (empresa_codigo, periodo_referencia);
+
+CREATE TABLE IF NOT EXISTS egc.nfs_escrituracao (
+  id                 bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  import_id          uuid NOT NULL REFERENCES egc.nfs_import(id),
+  empresa_codigo     text NOT NULL,
+  numero_nota        text NOT NULL,
+  numero_normalizado text NOT NULL,
+  cnpj               text,
+  cnpj_normalizado   text NOT NULL,
+  fornecedor_nome    text,
+  data_emissao       date,
+  data_escrituracao  date,
+  valor              numeric(14,2) NOT NULL,
+  especie            text,
+  descricao          text,
+  linha_origem       integer
+);
+CREATE INDEX IF NOT EXISTS idx_nfs_escrituracao_import ON egc.nfs_escrituracao (import_id);
+CREATE INDEX IF NOT EXISTS idx_nfs_escrituracao_chave  ON egc.nfs_escrituracao (empresa_codigo, cnpj_normalizado, numero_normalizado);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON egc.nfs_bills_sync, egc.nfs_import, egc.nfs_escrituracao TO egc_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA egc TO egc_app;
+ALTER TABLE egc.nfs_bills_sync   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE egc.nfs_import       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE egc.nfs_escrituracao ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS egc_app_full_access ON egc.nfs_bills_sync;
+CREATE POLICY egc_app_full_access ON egc.nfs_bills_sync FOR ALL TO egc_app USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS egc_app_full_access ON egc.nfs_import;
+CREATE POLICY egc_app_full_access ON egc.nfs_import FOR ALL TO egc_app USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS egc_app_full_access ON egc.nfs_escrituracao;
+CREATE POLICY egc_app_full_access ON egc.nfs_escrituracao FOR ALL TO egc_app USING (true) WITH CHECK (true);
+-- Fim do bloco 27. Rodar so' este bloco no SQL Editor do Supabase.
+
+-- Conferencia (deve listar as 3 tabelas):
+SELECT table_name FROM information_schema.tables
+WHERE table_schema = 'egc' AND table_name IN ('nfs_bills_sync', 'nfs_import', 'nfs_escrituracao') ORDER BY 1;

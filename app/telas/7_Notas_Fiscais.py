@@ -28,6 +28,7 @@ Pendências têm lastro: mudar o status (Enviado ao Suprimentos / Resolvido
 com quem/quando mudou -- histórico completo fica em nf_import_historico.
 """
 import io
+import re
 import sys
 import uuid
 import datetime as _dt
@@ -43,6 +44,7 @@ import db  # noqa: E402
 import nf_parser  # noqa: E402
 import nf_sienge  # noqa: E402
 import nf_export  # noqa: E402
+import nfs_escrituracao  # noqa: E402
 import formatacao  # noqa: E402
 
 NOME_POR_COD = {cod: nome for cod, nome, _cnpj in EMPRESAS_NF}
@@ -106,6 +108,51 @@ def _ao_subir_arquivo():
     if info.get("empresa"):
         codigos = [c for c, _n, _c in EMPRESAS_NF]
         st.session_state["nf_empresa_sel"] = codigos.index(info["empresa"])
+
+
+# ─────────────────── NFS (v0.49.0): helpers da escrituração das notas de serviço ───────────────────
+def _ao_subir_nfs():
+    """on_change do uploader de NFS: le a planilha UMA vez e guarda o resultado (a tela roda de novo a cada clique)."""
+    f = st.session_state.get("nfs_upload")
+    if f is None:
+        st.session_state["nfs_upload_info"] = None
+        return
+    info = nfs_escrituracao.analisar_planilha(f.getvalue(), f.name)
+    info["arquivo"] = f.name
+    st.session_state["nfs_upload_info"] = info
+    st.session_state["nfs_periodo_ref"] = info.get("periodo") or ""
+
+
+def _nfs_conferencia(emp, periodos=None):
+    """Conferência NFS da empresa (None = sem bloco 27 / sem envio / erro). Nunca derruba a tela: o fluxo de NF-e segue igual."""
+    if not emp:
+        return None
+    try:
+        if not nfs_escrituracao.tem_bloco27(conn):
+            return None
+        tab = nfs_escrituracao.conferir(conn, emp, list(periodos) if periodos else None, NOME_POR_COD)
+        return tab if tab is not None and not tab.empty else None
+    except Exception as exc:
+        _log_erro("Falha ao conferir NFS", detalhe=str(exc), empresa_codigo=emp)
+        return None
+
+
+def _nfs_pacote(emp, periodos=None):
+    """Dados da aba "NFS" das planilhas de resultado ({"tabela","resumo","arquivos","periodos"}) ou None."""
+    tab = _nfs_conferencia(emp, periodos)
+    if tab is None:
+        return None
+    esc = tab[tab["origem"] == "ESCRITURACAO"]
+    pers = nf_export.periodos_ordenados(list(pd.unique(esc["periodo"].dropna())))
+    try:
+        arqs = []
+        for e in nfs_escrituracao.listar_envios(conn, emp):
+            if e["periodo_referencia"] in pers and e.get("arquivo_nome") and e["arquivo_nome"] not in arqs:
+                arqs.append(e["arquivo_nome"])
+    except Exception:
+        arqs = []
+    return {"tabela": tab, "resumo": nfs_escrituracao.resumo_nfs(tab), "arquivos": arqs,
+            "periodos": nf_export.rotulo_periodos(pers) if pers else ""}
 
 
 # ─────────────────────────── 1. Atualizar do Sienge ───────────────────────────
@@ -430,6 +477,75 @@ if arquivo is not None and st.button("▶️ Enviar e conferir", key="nf_btn_rod
                 "de Entrada (devolução/retorno). A lista está no resultado abaixo e na aba \"Ignoradas\" da planilha.")
 
 st.divider()
+st.subheader("2b. Subir a escrituração das notas de serviço (NFS) — planilha da contabilidade (.xls/.xlsx)")
+st.caption("Arquivo à parte do manifesto da Receita: aqui entra a planilha de **escrituração (ENTRADAS)** que a contabilidade "
+           "exporta, uma por mês. O app pega só as notas de serviço (NFSE/NFS) e confere contra os títulos NFS do Sienge. "
+           "**Não mexe em nada da conferência de NF-e acima.** O resultado vai numa aba \"NFS\" das mesmas planilhas do passo 4. "
+           "Subir o mesmo mês de novo substitui o anterior (o antigo fica guardado).")
+_nfs_ok = nfs_escrituracao.tem_bloco27(conn)
+if not _nfs_ok:
+    st.info("A conferência de NFS ainda não está habilitada neste banco: falta rodar o BLOCO 27 do schema.sql no Supabase "
+            "(arquivo scripts/bloco27_nfs_escrituracao.txt). Rodando uma vez, esta parte passa a funcionar.")
+else:
+    arq_nfs = st.file_uploader("Planilha de escrituração (NFS)", type=["xls", "xlsx"], key="nfs_upload",
+                               disabled=not _sync_liberado, on_change=_ao_subir_nfs)
+    _info_nfs = st.session_state.get("nfs_upload_info") if arq_nfs is not None else None
+    if _info_nfs and _info_nfs.get("arquivo") != arq_nfs.name:
+        _info_nfs = None
+    _nfs_emp_idx = st.selectbox("Empresa da escrituração", range(len(EMPRESAS_NF)), format_func=lambda i: nomes_emp[i],
+                                key="nfs_empresa_sel",
+                                help="A planilha da contabilidade não traz a empresa -- escolha a de quem é o arquivo.") \
+        if arq_nfs is not None else 0
+    _nfs_cod, _nfs_nome, _nfs_cnpj = EMPRESAS_NF[_nfs_emp_idx]
+    _nfs_periodo = ""
+    if arq_nfs is not None:
+        _nfs_periodo = st.text_input("Período de referência (ex.: 08/2026)", key="nfs_periodo_ref", disabled=not _sync_liberado)
+    _nfs_pronto = False
+    if _info_nfs and _info_nfs.get("erro"):
+        st.warning(f"Não consegui usar a planilha: {_info_nfs['erro']}")
+    elif _info_nfs:
+        _esp = ", ".join(f"{k}: {v}" for k, v in sorted(_info_nfs["por_especie"].items(), key=lambda kv: -kv[1]))
+        st.caption(f"📄 {_info_nfs['total_linhas']} linha(s) na planilha ({_esp}). "
+                   f"**{len(_info_nfs['df'])} nota(s) de serviço** serão conferidas; as demais espécies ficam de fora.")
+        if _info_nfs.get("periodo") and _nfs_periodo == _info_nfs["periodo"]:
+            st.caption("💡 Período sugerido pela data de escrituração mais frequente -- confira antes de rodar.")
+        if len(_info_nfs.get("periodos") or {}) > 1:
+            st.warning("As datas de escrituração do arquivo cobrem mais de um mês ("
+                       + ", ".join(f"{m}: {n}" for m, n in _info_nfs["periodos"].items())
+                       + "). Tudo será gravado no período informado acima.")
+        if _info_nfs.get("repetidas"):
+            st.caption(f"ℹ️ {_info_nfs['repetidas']} linha(s) repetida(s) (mesmo CNPJ, número e valor) -- ficam todas na planilha "
+                       "e todas casam com o mesmo título do Sienge (a observação avisa).")
+        if _info_nfs.get("sem_valor"):
+            st.caption(f"⚠️ {_info_nfs['sem_valor']} nota(s) de serviço sem CNPJ, número ou valor válido ficaram de fora.")
+        _nfs_pronto = True
+    if arq_nfs is not None and st.button("▶️ Enviar e conferir NFS", key="nfs_btn_rodar",
+                                         disabled=not (_sync_liberado and _nfs_pronto)):
+        _per = _nfs_periodo.strip()
+        if not re.match(r"^(0[1-9]|1[0-2])/\d{4}$", _per):
+            st.warning("Informe o período no formato MM/AAAA (ex.: 08/2026) antes de rodar.")
+            st.stop()
+        _ja = [e for e in nfs_escrituracao.listar_envios(conn, _nfs_cod) if e["periodo_referencia"] == _per]
+        try:
+            with st.spinner(f"Gravando {len(_info_nfs['df'])} NFS e conferindo {_nfs_nome} contra o Sienge..."):
+                nfs_escrituracao.gravar_envio(conn, _nfs_cod, _per, arq_nfs.name, _info_nfs["df"],
+                                              _info_nfs["total_linhas"], usuario)
+                _tab_nfs = nfs_escrituracao.conferir(conn, _nfs_cod, [_per], NOME_POR_COD)
+        except Exception as exc:
+            st.error(f"Falha ao gravar/conferir as NFS: {exc}")
+            _log_erro("Falha ao gravar/conferir escrituração NFS", detalhe=str(exc), empresa_codigo=_nfs_cod)
+            st.stop()
+        _rn = nfs_escrituracao.resumo_nfs(_tab_nfs)
+        _msg = (f"NFS {_per}: {_rn['total']} nota(s) · {_rn['lancadas']} lançada(s) · {_rn['pendencias']} pendência(s)"
+                + (f" · substituiu o arquivo anterior ({_ja[0].get('arquivo_nome') or 'sem nome'})" if _ja else ""))
+        _log_info(f"Conferência NFS rodada: {_rn['total']} notas, {_rn['lancadas']} lançadas, {_rn['pendencias']} pendências ({_per})",
+                  _nfs_cod)
+        st.session_state["nfs_det_empresa"] = _nfs_cod
+        st.session_state.pop(f"nfs_det_periodos_{_nfs_cod}", None)
+        flash("ok", _msg + ".")
+        st.rerun()
+
+st.divider()
 
 # ─────────────────────────── 3. Situação por empresa e período ────────────────
 st.subheader("3. Situação por empresa e período")
@@ -584,7 +700,8 @@ else:
         # contadora ve, pra nao acrescentar coluna tecnica sem sentido pra ela.
         tabela_fmt = nf_export.preparar_tabela(tabela_filtrada)
         for col in nf_export.COLUNAS_MOEDA:
-            tabela_fmt[col] = tabela_fmt[col].apply(formatacao.moeda_br)
+            if col in tabela_fmt.columns:      # v0.49.0: COLUNAS_MOEDA ganhou a coluna das NFS (nao existe na tabela de NF-e)
+                tabela_fmt[col] = tabela_fmt[col].apply(formatacao.moeda_br)
         if "Título Sienge" in tabela_fmt.columns:
             tabela_fmt["Título Sienge"] = tabela_fmt["Título Sienge"].apply(
                 lambda v: "" if pd.isna(v) else str(int(v)))
@@ -613,19 +730,24 @@ else:
         except Exception as exc:
             _ign_rodada = pd.DataFrame()
             _log_erro("Falha ao listar notas ignoradas", detalhe=str(exc), empresa_codigo=emp_det)
+        _nfs_pack = None
         try:
             _arquivos = []
             for _v in vig_sel:
                 if _v.get("arquivo_nome") and _v["arquivo_nome"] not in _arquivos:
                     _arquivos.append(_v["arquivo_nome"])
+            # v0.49.0: se a empresa tem escrituração de NFS nos mesmos meses, a planilha ganha a aba "NFS"
+            # (e o bloco no Resumo). Sem NFS enviada, a planilha sai exatamente como antes.
+            _nfs_pack = _nfs_pacote(emp_det, _pers_sel)
             xlsx_completo = nf_export.gerar_xlsx_conferencia(
                 tabela, nome_det, _rotulo_pers, ", ".join(_arquivos) or None, formatacao.agora_br(),
-                ignoradas=_ign_rodada, empresa_codigo=emp_det,
+                ignoradas=_ign_rodada, empresa_codigo=emp_det, nfs=_nfs_pack,
             )
         except Exception as exc:
             xlsx_completo = None
             st.warning(f"Não consegui montar a planilha completa: {exc}")
             _log_erro("Falha ao montar xlsx completo de NF", detalhe=str(exc), empresa_codigo=emp_det)
+        _nfs_pend = bool(_nfs_pack) and bool((_nfs_pack["tabela"]["status"] != "LANCADA").any())
         d1, d2 = st.columns(2)
         if xlsx_completo:
             d1.download_button(
@@ -635,9 +757,9 @@ else:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="nf_download_completo", type="primary",
             )
-        if not pendencias_df.empty:
+        if not pendencias_df.empty or _nfs_pend:
             try:
-                xlsx_pend = nf_export.gerar_xlsx_pendencias(tabela, nome_det, _rotulo_pers, emp_det)
+                xlsx_pend = nf_export.gerar_xlsx_pendencias(tabela, nome_det, _rotulo_pers, emp_det, nfs=_nfs_pack)
             except Exception as exc:
                 xlsx_pend = None
                 st.warning(f"Não consegui montar a planilha de pendências: {exc}")
@@ -769,6 +891,140 @@ else:
                             flash("ok", f"Anotação removida da nota {_linha_a['numero_nota']}.")
                             _log_info(f"Anotação removida da nota {_linha_a['numero_nota']} ({_linha_a['periodo']})", emp_det)
                             st.rerun()
+
+st.divider()
+st.subheader("4b. Notas de serviço (NFS) — escrituração × Sienge")
+if not nfs_escrituracao.tem_bloco27(conn):
+    st.caption("Disponível depois de rodar o BLOCO 27 no Supabase (veja o passo 2b).")
+else:
+    try:
+        _envios_nfs = nfs_escrituracao.listar_envios(conn)
+    except Exception as exc:
+        _envios_nfs = []
+        st.warning(f"Não foi possível listar os envios de NFS: {exc}")
+        _log_erro("Falha ao listar envios de NFS", detalhe=str(exc))
+    if not _envios_nfs:
+        st.caption("Nenhuma escrituração de NFS enviada ainda. Suba a planilha da contabilidade no passo 2b.")
+    else:
+        st.caption("Uma linha por empresa e mês (último arquivo enviado). O resultado acompanha o Sienge: quando uma NFS é "
+                   "lançada lá, passa para lançada sozinha. A aba \"NFS\" também sai nas planilhas do passo 4.")
+        st.dataframe(pd.DataFrame([{
+            "Empresa": NOME_POR_COD.get(e["empresa_codigo"], e["empresa_codigo"]),
+            "Período": e["periodo_referencia"], "NFS na escrituração": e["total_nfs"], "Arquivo": e.get("arquivo_nome") or "",
+            "Enviado em": formatacao.hora_br(e["enviado_em"]), "Enviado por": e.get("enviado_por") or "",
+        } for e in sorted(_envios_nfs, key=lambda e: (e["empresa_codigo"], nf_export._chave_periodo(e["periodo_referencia"])))]),
+            hide_index=True, width="stretch")
+
+        _emps_nfs = []
+        for e in _envios_nfs:
+            if e["empresa_codigo"] not in _emps_nfs:
+                _emps_nfs.append(e["empresa_codigo"])
+        if st.session_state.get("nfs_det_empresa") not in _emps_nfs:
+            st.session_state["nfs_det_empresa"] = _emps_nfs[0]
+        _emp_nfs = st.selectbox("Ver NFS de", _emps_nfs, key="nfs_det_empresa", format_func=lambda c: NOME_POR_COD.get(c, c))
+        _pers_nfs = nf_export.periodos_ordenados([e["periodo_referencia"] for e in _envios_nfs if e["empresa_codigo"] == _emp_nfs])
+        _ck_p, _ck_v = f"nfs_det_periodos_{_emp_nfs}", f"_nfs_pers_vistos_{_emp_nfs}"
+        if _ck_p not in st.session_state or st.session_state.get(_ck_v) != _pers_nfs:
+            st.session_state[_ck_p] = list(_pers_nfs)
+            st.session_state[_ck_v] = list(_pers_nfs)
+        _sel_nfs = st.multiselect("Períodos de NFS no detalhe", _pers_nfs, key=_ck_p)
+        _nome_nfs = NOME_POR_COD.get(_emp_nfs, _emp_nfs)
+        if not _sel_nfs:
+            st.caption("Escolha ao menos um período.")
+        else:
+            _tab_nfs = _nfs_conferencia(_emp_nfs, _sel_nfs)
+            if _tab_nfs is None:
+                st.caption("Sem notas neste período (ou não foi possível conferir -- veja o log no fim da página).")
+            else:
+                _rn = nfs_escrituracao.resumo_nfs(_tab_nfs)
+                try:
+                    _mapa_deb = nf_sienge.carregar_mapa_debtor_manual(conn)
+                except Exception:
+                    _mapa_deb = {}
+                if _emp_nfs not in set(_mapa_deb.values()):
+                    st.info(f"O Sienge ainda não tem devedor confirmado para {_nome_nfs} (quadro \"Empresa de cada devedor\", no passo 3). "
+                            "Sem isso não dá para apontar títulos NFS do Sienge sem escrituração nem NFS lançadas em outra empresa.")
+                n1, n2, n3 = st.columns(3)
+                n1.metric("NFS na escrituração", _rn["total"])
+                n2.metric("Taxa de conciliação", formatacao.pct_br(_rn["taxa"]))
+                n3.metric("Pendências a tratar", _rn["pendencias"],
+                          help="NFS da escrituração com problema + títulos NFS do Sienge sem nota na escrituração.")
+                st.caption("Por situação")
+                _kpis_n = [(c, nf_export.ROTULO_STATUS_NFS.get(c, c)) for c in nf_export.ORDEM_STATUS_NFS]
+                for col, (cod_st, rot) in zip(st.columns(len(_kpis_n)), _kpis_n):
+                    col.metric(rot, _rn["por_status"].get(cod_st, 0))
+                _st_nfs = [x for x in nf_export.ORDEM_STATUS_NFS if x in set(_tab_nfs["status"])]
+                _f_nfs = st.multiselect("Filtrar por situação (NFS)", options=_st_nfs, default=_st_nfs, key="nfs_filtro_status",
+                                        format_func=lambda x: f"{nf_export.ROTULO_STATUS_NFS.get(x, x)} ({_rn['por_status'].get(x, 0)})")
+                _tf = _tab_nfs[_tab_nfs["status"].isin(_f_nfs)] if _f_nfs else _tab_nfs
+                st.caption(f"Mostrando {len(_tf)} de {len(_tab_nfs)} linha(s).")
+                _fmt = nf_export.preparar_tabela_nfs(_tf)
+                for _c in nf_export.COLUNAS_MOEDA:
+                    if _c in _fmt.columns:
+                        _fmt[_c] = _fmt[_c].apply(lambda v: "" if pd.isna(v) else formatacao.moeda_br(v))
+                for _c in ("Emissão", "Escrituração"):
+                    if _c in _fmt.columns:
+                        _fmt[_c] = _fmt[_c].apply(lambda v: "" if pd.isna(v) else pd.Timestamp(v).strftime("%d/%m/%Y"))
+                if "Título Sienge" in _fmt.columns:
+                    _fmt["Título Sienge"] = _fmt["Título Sienge"].apply(lambda v: "" if pd.isna(v) else str(int(v)))
+                st.dataframe(_fmt.astype(object).where(_fmt.notna(), ""), hide_index=True, width="stretch")
+                try:
+                    _pack_n = _nfs_pacote(_emp_nfs, _sel_nfs)
+                    _vazio = pd.DataFrame({"status": pd.Series(dtype=object), "origem": pd.Series(dtype=object)})
+                    _xn = nf_export.gerar_xlsx_conferencia(
+                        _vazio, _nome_nfs, _pack_n["periodos"], None, formatacao.agora_br(), empresa_codigo=_emp_nfs, nfs=_pack_n)
+                    st.download_button("⬇️ Baixar só a conferência de NFS", data=_xn,
+                                       file_name=f"conferencia_nfs_{_emp_nfs}_{nf_export.sufixo_arquivo(_sel_nfs)}.xlsx",
+                                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                       key="nfs_download")
+                except Exception as exc:
+                    st.warning(f"Não consegui montar a planilha de NFS: {exc}")
+                    _log_erro("Falha ao montar xlsx de NFS", detalhe=str(exc), empresa_codigo=_emp_nfs)
+
+        with st.expander("🗃️ Arquivar ou restaurar um envio de NFS", expanded=_aberto("nfs_exp_arq")):
+            st.caption("**Nada é apagado.** Arquivar tira o envio das conferências e das planilhas; pode ser restaurado depois "
+                       "(desde que o mês não tenha outro envio vigente).")
+            try:
+                _todos_nfs = nfs_escrituracao.listar_envios(conn, incluir_arquivados=True)
+            except Exception as exc:
+                _todos_nfs = []
+                st.warning(f"Não foi possível listar: {exc}")
+            _at = [e for e in _todos_nfs if not e["arquivado_em"]]
+            _ar = [e for e in _todos_nfs if e["arquivado_em"]]
+            _pe = {e["id"]: e for e in _todos_nfs}
+            _rot_n = lambda i: (f"{NOME_POR_COD.get(_pe[i]['empresa_codigo'], _pe[i]['empresa_codigo'])} · "
+                                f"{_pe[i]['periodo_referencia']} · {_pe[i].get('arquivo_nome') or 'sem nome'} · "
+                                f"enviado {formatacao.hora_br(_pe[i]['enviado_em'])}")
+            if _at:
+                _ia = st.selectbox("Envio a arquivar", [e["id"] for e in _at], key="nfs_arq_sel", format_func=_rot_n,
+                                   on_change=_manter, args=("nfs_exp_arq",))
+                _mot = st.text_input("Motivo (opcional)", key=f"nfs_arq_motivo_{_ia}", on_change=_manter, args=("nfs_exp_arq",))
+                _okn = st.checkbox("Confirmo: arquivar este envio (nada é apagado)", key=f"nfs_arq_ok_{_ia}",
+                                   on_change=_manter, args=("nfs_exp_arq",))
+                if st.button("🗃️ Arquivar envio de NFS", key="nfs_btn_arquivar", disabled=not _okn,
+                             on_click=_manter, args=("nfs_exp_arq",)):
+                    try:
+                        nfs_escrituracao.arquivar_envio(conn, _ia, usuario, _mot or None)
+                    except Exception as exc:
+                        st.error(f"Não consegui arquivar: {exc}")
+                        _log_erro("Falha ao arquivar envio de NFS", detalhe=str(exc))
+                    else:
+                        _log_info(f"Envio de NFS arquivado: {_rot_n(_ia)}", _pe[_ia]["empresa_codigo"])
+                        flash("ok", "Envio de NFS arquivado. Nada foi apagado.")
+                        st.rerun()
+            if _ar:
+                st.markdown("**Restaurar um envio arquivado**")
+                _ir = st.selectbox("Envio a restaurar", [e["id"] for e in _ar], key="nfs_res_sel", format_func=_rot_n,
+                                   on_change=_manter, args=("nfs_exp_arq",))
+                if st.button("♻️ Restaurar envio de NFS", key="nfs_btn_restaurar", on_click=_manter, args=("nfs_exp_arq",)):
+                    try:
+                        nfs_escrituracao.restaurar_envio(conn, _ir, usuario)
+                    except Exception as exc:
+                        st.error(f"Não consegui restaurar: {exc}")
+                    else:
+                        _log_info(f"Envio de NFS restaurado: {_rot_n(_ir)}", _pe[_ir]["empresa_codigo"])
+                        flash("ok", "Envio de NFS restaurado.")
+                        st.rerun()
 
 st.divider()
 

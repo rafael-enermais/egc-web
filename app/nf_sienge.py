@@ -60,6 +60,15 @@ def eh_nota_fiscal(tipo_documento) -> bool:
     ficam de fora do snapshot -- um PPC e a NFE que o substituiu eram o
     MESMO lancamento visto 2x no Sienge."""
     return (tipo_documento or "").strip().upper() in _CODIGOS_NOTA_FISCAL
+
+
+def eh_nota_servico(tipo_documento) -> bool:
+    """v0.49.0: True se o documentIdentificationId e' NFS (nota de servico; a API devolve 'NFS ' com padding).
+    Confirmado em 15/10/2026 pelo diagnostico da API: 2.770 titulos NFS em jan-ago/2026. NAO entra em
+    eh_nota_fiscal (a conferencia de NFE/NF nao muda)."""
+    return (tipo_documento or "").strip().upper() == "NFS"
+
+
 TOLERANCIA_VALOR = 0.01  # 1 centavo
 LIMITE_PAGINA = 200      # teto documentado da API REST do Sienge
 PROXIMIDADE_VALOR_IGNORADA = 0.05  # nota ignorada com valor ate' 5% diferente conta como "par provavel"
@@ -113,6 +122,12 @@ def sincronizar_bills(conn, base_url: str, usuario: str, senha: str,
     total = 0
     offset = 0
     terminou = False
+    # v0.49.0: titulos de tipo NFS (nota de servico) vao para egc.nfs_bills_sync (bloco 27), tabela SEPARADA --
+    # a conferencia de NFE/NF segue lendo so' egc.nf_bills_sync. Sem o bloco 27 nada muda (so' nao grava NFS).
+    try:
+        _grava_nfs = _tabela_existe(conn, "egc.nfs_bills_sync") is True
+    except Exception:
+        _grava_nfs = False
     with conn.cursor() as cur:
         while offset < LIMITE_PAGINA * max_paginas:
             params = {
@@ -141,6 +156,39 @@ def sincronizar_bills(conn, base_url: str, usuario: str, senha: str,
                 )
                 for b in registros if eh_nota_fiscal(b.get("documentIdentificationId"))
             ]
+            if _grava_nfs:
+                linhas_nfs = [
+                    (
+                        b.get("id"), b.get("debtorId"), b.get("creditorId"),
+                        b.get("documentIdentificationId"), b.get("documentNumber"),
+                        b.get("issueDate"), b.get("totalInvoiceAmount"),
+                        b.get("accessKeyNumber"), b.get("status"),
+                    )
+                    for b in registros if eh_nota_servico(b.get("documentIdentificationId"))
+                ]
+                if linhas_nfs:
+                    execute_values(
+                        cur,
+                        """
+                        INSERT INTO egc.nfs_bills_sync
+                            (bill_id, debtor_id, creditor_id, document_identification_id,
+                             document_number, issue_date, total_invoice_amount,
+                             access_key_number, status, sincronizado_em)
+                        VALUES %s
+                        ON CONFLICT (bill_id) DO UPDATE SET
+                            debtor_id = EXCLUDED.debtor_id,
+                            creditor_id = EXCLUDED.creditor_id,
+                            document_identification_id = EXCLUDED.document_identification_id,
+                            document_number = EXCLUDED.document_number,
+                            issue_date = EXCLUDED.issue_date,
+                            total_invoice_amount = EXCLUDED.total_invoice_amount,
+                            access_key_number = EXCLUDED.access_key_number,
+                            status = EXCLUDED.status,
+                            sincronizado_em = now()
+                        """,
+                        linhas_nfs,
+                        template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, now())",
+                    )
             if not linhas:
                 if len(registros) < LIMITE_PAGINA:
                     terminou = True
