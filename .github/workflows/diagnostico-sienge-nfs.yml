@@ -1,0 +1,37 @@
+# Diagnostico SOMENTE LEITURA do Sienge para a conferencia de NFS (acionado a mao: Actions > Run workflow).
+# Nao escreve no Supabase. Publica o resultado numa branch separada (diagnostico-sienge), fora da main.
+name: Diagnostico Sienge NFS (so leitura)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - run: pip install requests
+      - name: Rodar diagnostico
+        env:
+          SIENGE_BASE_URL: ${{ secrets.SIENGE_BASE_URL }}
+          SIENGE_USER: ${{ secrets.SIENGE_USER }}
+          SIENGE_PASSWORD: ${{ secrets.SIENGE_PASSWORD }}
+        run: python scripts/diagnostico_sienge_nfs.py
+      - name: Publicar resultado na branch diagnostico-sienge
+        run: |
+          cp diag_out/sienge_nfs_diag.json /tmp/
+          git config user.name "github-actions"
+          git config user.email "actions@users.noreply.github.com"
+          git checkout --orphan diagnostico-sienge
+          git rm -rf --quiet .
+          cp /tmp/sienge_nfs_diag.json .
+          git add sienge_nfs_diag.json
+          git commit -q -m "diagnostico Sienge NFS"
+          git push -f origin diagnostico-sienge
