@@ -26,7 +26,7 @@ jobs:
       - name: Configurar Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.14'   # igual ao Streamlit Cloud; requirements.txt tem numpy 2.5.3, que nao existe p/ 3.11 (v0.48.3)
 
       - name: Instalar dependencias
         run: pip install -r requirements.txt
