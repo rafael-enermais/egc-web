@@ -120,3 +120,32 @@ def test_valores_grandes_e_negativos_nao_quebram_o_pdf():
     pdf = gen.gerar_pdf_creditos(_dados(s))
     p = _texto(pdf)
     assert len(p) == 5 and "-R$" in p[4]
+
+
+def _texto_pdf(d):
+    r = pypdf.PdfReader(io.BytesIO(gen.gerar_pdf_creditos(d)))
+    return "\n".join(p.extract_text() for p in r.pages)
+
+
+def test_pdf_avisa_quando_nao_ha_detalhamento_e_quando_fecha():
+    d = _dados(detalhamento={"estado": "ausente"})
+    assert "Detalhamento da contadora: não enviado para este mês" in " ".join(_texto_pdf(d).split())
+    d = _dados(detalhamento={"estado": "fecha", "n_linhas": 627, "n_pendentes": 0, "arquivo": "x.xlsx"})
+    assert "conferido com o SPED" in _texto_pdf(d) and "627" in _texto_pdf(d)
+    d = _dados(detalhamento={"estado": "pendencias", "n_linhas": 627, "n_pendentes": 195, "tipo_sped": "Retificadora"})
+    assert "195 de 627 linhas" in " ".join(_texto_pdf(d).split())
+    assert "Detalhamento da contadora" not in _texto_pdf(_dados())                                # sem informacao: nada no PDF (retrocompativel)
+
+
+def test_opcoes_ui_tira_duplicata_e_encurta_rotulo():
+    from datetime import datetime
+    arq_o = "PISCOFINS_20260701_20260731_47040664000148_Original_20260825102110_2D02.txt"
+    arq_r = "PISCOFINS_20260701_20260731_47040664000148_Retificadora_20260929152505_94F0.txt"
+    mk = lambda chave, tipo, arq, ap: {"chave": chave, "tipo": "HISTORICO" if chave.startswith("HIST") else "ENVIO", "sped_tipo": tipo, "arquivo": arq,
+                                        "enviado_em": datetime(2026, 10, 16, 18, 0), "apontada": ap}
+    fs = [mk("HIST_ORIGINAL", "Original", arq_o, False), mk("HIST_APONTADO", "Retificadora", arq_r, True), mk("ENV:a", "Original", arq_o, False), mk("ENV:b", "Retificadora", arq_r, True)]
+    ops = cdb.opcoes_ui(fs)
+    assert [r for _f, r in ops] == ["Original · 25/08/2026", "Retificadora · 29/09/2026 · apontada"]
+    assert [f["chave"] for f, _r in ops] == ["HIST_ORIGINAL", "HIST_APONTADO"]
+    ops2 = cdb.opcoes_ui(fs, manter={"ENV:b"})                                                    # a oficial marcada nao pode sumir da lista
+    assert "ENV:b" in [f["chave"] for f, _r in ops2] and len(ops2) == 2

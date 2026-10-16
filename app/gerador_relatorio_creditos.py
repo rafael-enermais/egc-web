@@ -240,6 +240,9 @@ def pagina_resumo(c, dados, pagina: int):
         else "Conferência: este mês ainda não foi marcado como conferido."
     blocos = [(f"Fonte: {dados['fonte_rotulo'] or 'não informada'}", "regular", NAVY), (f"Situação: {situ}.", "regular", g.NEG_TEXT if dados["modo"] == "simulada" else NAVY),
               (conf, "regular", NAVY)]
+    if dados.get("detalhamento_texto"):
+        atencao = (dados.get("detalhamento") or {}).get("estado") in ("ausente", "pendencias")
+        blocos.append((dados["detalhamento_texto"], "regular", g.NEG_TEXT if atencao else NAVY))
     if dados["nota"]:
         blocos.append((f"Nota da contadora: {dados['nota']}", "italic", NAVY))
     larg = CONTEUDO_W - 28
