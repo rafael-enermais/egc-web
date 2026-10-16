@@ -39,7 +39,11 @@ sidebar_contexto(usuario)
 
 st.title("Créditos PIS/COFINS")
 st.caption("Controle do crédito e do débito de PIS/COFINS a partir do SPED (EFD-Contribuições), conferido com o Detalhamento da contadora.")
-mostrar_flash()
+# Recipiente SEMPRE presente (mesmo sem mensagem): o aviso aparece/some dentro dele sem empurrar os elementos de baixo.
+# Sem isso, quando o aviso sumia no rerun seguinte, o Streamlit recriava as abas e a tela voltava para "Enviar arquivos"
+# (e o expander de envios fechava) a cada clique na Conferência/Dashboard (v0.50.1).
+with st.container():
+    mostrar_flash()
 
 conn = get_conn()
 if not cdb.tem_bloco28(conn):
@@ -98,13 +102,15 @@ def _vigente(tipo: str, comp: str):
 
 
 with tab_envio:
-    n_up = st.session_state.get("cred_up_n", 0)
+    # um contador POR campo de envio: gravar um arquivo nao pode limpar o outro que ainda esta' esperando confirmacao
+    n_up_s = st.session_state.get("cred_up_n_sped", 0)
+    n_up_d = st.session_state.get("cred_up_n_det", 0)
     col_s, col_d = st.columns(2)
 
     with col_s:
         st.subheader("1. SPED do mês")
         st.caption("Arquivo .txt da EFD-Contribuições (o original já com os apontamentos).")
-        up_s = st.file_uploader("SPED EFD-Contribuições (.txt)", type=["txt"], key=f"cred_up_sped_{n_up}")
+        up_s = st.file_uploader("SPED EFD-Contribuições (.txt)", type=["txt"], key=f"cred_up_sped_{n_up_s}")
         if up_s is not None:
             r = _ler_sped(up_s.getvalue(), up_s.name)
             cab = r["cabecalho"]
@@ -137,7 +143,7 @@ with tab_envio:
                         try:
                             cdb.gravar_sped(conn, emp, r, up_s.name, usuario)
                             flash("ok", f"SPED de {cab['competencia']} gravado.")
-                            st.session_state["cred_up_n"] = n_up + 1
+                            st.session_state["cred_up_n_sped"] = n_up_s + 1
                             st.rerun()
                         except Exception as exc:
                             st.error(f"Não consegui gravar o SPED: {exc}")
@@ -145,7 +151,7 @@ with tab_envio:
     with col_d:
         st.subheader("2. Detalhamento da contadora")
         st.caption("Planilha .xlsx \"Detalhamento de Débito e Crédito PIS e COFINS\" do mês.")
-        up_d = st.file_uploader("Detalhamento (.xlsx)", type=["xlsx"], key=f"cred_up_det_{n_up}")
+        up_d = st.file_uploader("Detalhamento (.xlsx)", type=["xlsx"], key=f"cred_up_det_{n_up_d}")
         if up_d is not None:
             d = _ler_det(up_d.getvalue(), up_d.name)
             if d["erro"]:
@@ -172,7 +178,7 @@ with tab_envio:
                         try:
                             cdb.gravar_detalhamento(conn, emp, d, up_d.name, usuario, competencia=comp_det)
                             flash("ok", f"Detalhamento de {comp_det} gravado.")
-                            st.session_state["cred_up_n"] = n_up + 1
+                            st.session_state["cred_up_n_det"] = n_up_d + 1
                             st.rerun()
                         except Exception as exc:
                             st.error(f"Não consegui gravar o Detalhamento: {exc}")
@@ -189,12 +195,15 @@ with tab_envio:
             opcoes = {f"{e['tipo']} · {e['competencia']} · {e['arquivo_nome']} ({'arquivado' if e['arquivado_em'] else 'vigente'})": e for e in envios}
             escolha = st.selectbox("Escolha um envio", list(opcoes), key="cred_sel_envio")
             e = opcoes[escolha]
-            ok = st.checkbox("Confirmo: é isso mesmo (nada é apagado)", key="cred_ok_envio")
+            # a confirmação vale para UMA ação: contador na chave zera o "Confirmo" depois de arquivar/restaurar
+            n_ok = st.session_state.get("cred_ok_n", 0)
+            ok = st.checkbox("Confirmo: é isso mesmo (nada é apagado)", key=f"cred_ok_envio_{n_ok}")
             if e["arquivado_em"]:
                 if st.button("♻️ Restaurar envio", key="cred_btn_rest", disabled=not ok):
                     try:
                         cdb.restaurar_envio(conn, e["tipo"], e["id"], usuario)
                         flash("ok", "Envio restaurado.")
+                        st.session_state["cred_ok_n"] = n_ok + 1
                         st.rerun()
                     except ValueError as exc:
                         st.error(str(exc))
@@ -202,6 +211,7 @@ with tab_envio:
                 if st.button("🗃️ Arquivar envio", key="cred_btn_arq", disabled=not ok):
                     cdb.arquivar_envio(conn, e["tipo"], e["id"], usuario)
                     flash("ok", "Envio arquivado.")
+                    st.session_state["cred_ok_n"] = n_ok + 1
                     st.rerun()
 
 
@@ -400,12 +410,15 @@ with tab_conf:
 
 # ═════════════════════════════ 3. DASHBOARD ═════════════════════════════
 with tab_dash:
-    serie = gr.preparar_serie(cdb.serie_mensal(conn, emp))
-    if serie.empty:
+    serie_bruta = cdb.serie_mensal(conn, emp)
+    if serie_bruta is None or serie_bruta.empty:
         st.info("O dashboard aparece quando houver o histórico (jan–jul) carregado ou o primeiro SPED enviado.")
     else:
         trib = st.radio("Tributo", ["total", "pis", "cofins"], horizontal=True, key="cred_trib",
                         format_func={"total": "PIS + COFINS", "pis": "PIS", "cofins": "COFINS"}.get)
+        # o tributo escolhido vale para os KPIs, os graficos e a tabela (a receita e' base de calculo: nao depende do tributo)
+        serie = gr.preparar_serie(serie_bruta, trib)
+        st.caption("Mostrando: **" + {"total": "PIS + COFINS", "pis": "somente PIS", "cofins": "somente COFINS"}[trib] + "**.")
         ult = serie.iloc[-1]
         com_orig = serie[serie["dif_total"].notna()]
         k = st.columns(4)

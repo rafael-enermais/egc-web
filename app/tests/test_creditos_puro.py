@@ -258,6 +258,39 @@ def test_preparar_serie_diferencas_e_acumulados():
     assert d["cred_acum"].iloc[-1] == 1660.0 and d.loc[0, "usado_total"] == 550.0
 
 
+def test_preparar_serie_segue_o_tributo():
+    """O seletor PIS / COFINS / PIS+COFINS precisa mexer nos KPIs (colunas *_total), nao so' em alguns graficos."""
+    tot, pis, cof = (gr.preparar_serie(_serie(), t) for t in ("total", "pis", "cofins"))
+    assert list(pis["cred_total"]) == [100.0, 90.0, 120.0] and list(cof["cred_total"]) == [450.0, 400.0, 500.0]
+    for col in ("cred_total", "orig_total", "dif_total", "deb_nc_total", "deb_cum_total", "usado_total", "ret_total", "recolher_total", "saldo_total"):
+        for i in range(len(tot)):
+            a, b, c = tot.loc[i, col], pis.loc[i, col], cof.loc[i, col]
+            if pd.isna(a):
+                assert pd.isna(b) and pd.isna(c)
+            else:
+                assert abs(a - (b + c)) < 1e-9, (col, i)
+    assert pis.loc[0, "dif_total"] == 20.0 and cof.loc[0, "dif_total"] == 80.0 and pis.loc[1, "dif_acum"] == 15.0
+    assert pis.loc[0, "deb_nc_total"] == 300.0 and cof.loc[0, "recolher_total"] == 900.0
+
+
+def test_uploaders_do_creditos_tem_contadores_independentes():
+    """Gravar o SPED nao pode limpar o Detalhamento que ainda espera confirmacao (e vice-versa)."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parents[1] / "telas" / "10_Creditos_PIS_COFINS.py").read_text(encoding="utf-8")
+    assert "cred_up_n_sped" in src and "cred_up_n_det" in src and 'get("cred_up_n"' not in src
+    assert 'key=f"cred_up_sped_{n_up_s}"' in src and 'key=f"cred_up_det_{n_up_d}"' in src
+
+
+def test_aviso_fica_em_recipiente_fixo_e_confirmacao_zera():
+    """Achado ao vivo (v0.50.0): o aviso no topo empurrava as abas; ao sumir, a tela voltava para 'Enviar arquivos'.
+    O aviso tem de ficar dentro de um st.container() sempre presente; e o 'Confirmo' de arquivar/restaurar vale para uma ação só."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parents[1] / "telas" / "10_Creditos_PIS_COFINS.py").read_text(encoding="utf-8")
+    assert "with st.container():\n    mostrar_flash()" in src
+    assert "\nmostrar_flash()" not in src
+    assert 'key=f"cred_ok_envio_{n_ok}"' in src and src.count('st.session_state["cred_ok_n"] = n_ok + 1') == 2
+
+
 @pytest.mark.parametrize("dark", [False, True])
 @pytest.mark.parametrize("trib", ["total", "pis", "cofins"])
 def test_todos_os_graficos_montam(dark, trib):
