@@ -51,15 +51,20 @@ def _n(v) -> float | None:
     return None if v is None or pd.isna(v) else float(v)
 
 
-def preparar_serie(serie: pd.DataFrame) -> pd.DataFrame:
-    """Acrescenta as colunas somadas (PIS+COFINS), o rotulo do mes e as diferencas/acumulados. Nao altera a original."""
+def preparar_serie(serie: pd.DataFrame, tributo: str = "total") -> pd.DataFrame:
+    """Acrescenta as colunas '*_total', o rotulo do mes e as diferencas/acumulados. Nao altera a original.
+    tributo = 'total' (PIS+COFINS) | 'pis' | 'cofins': define o que as colunas '*_total' (KPIs e graficos) passam a mostrar."""
     if serie is None or serie.empty:
         return pd.DataFrame()
     d = serie.copy().reset_index(drop=True)
+
+    def comb(a, b):
+        return a if tributo == "pis" else b if tributo == "cofins" else a + b
+
     d["rotulo"] = d["competencia"].map(rotulo_comp)
-    d["cred_total"] = d["cred_pis"] + d["cred_cofins"]
+    d["cred_total"] = comb(d["cred_pis"], d["cred_cofins"])
     tem = d["tem_original"].astype(bool)
-    d["orig_total"] = [(_n(a) or 0.0) + (_n(b) or 0.0) if t else None for a, b, t in zip(d["orig_pis"], d["orig_cofins"], tem)]
+    d["orig_total"] = [(comb(_n(a) or 0.0, _n(b) or 0.0)) if t else None for a, b, t in zip(d["orig_pis"], d["orig_cofins"], tem)]
     d["dif_total"] = [(c - o) if t and o is not None else None for c, o, t in zip(d["cred_total"], d["orig_total"], tem)]
     acum, soma = [], 0.0
     for v in d["dif_total"]:
@@ -70,12 +75,12 @@ def preparar_serie(serie: pd.DataFrame) -> pd.DataFrame:
             acum.append(None)
     d["dif_acum"] = acum
     d["cred_acum"] = d["cred_total"].cumsum()
-    d["deb_nc_total"] = d["deb_nc_pis"] + d["deb_nc_cofins"]
-    d["deb_cum_total"] = d["deb_cum_pis"] + d["deb_cum_cofins"]
-    d["usado_total"] = d["usado_pis"] + d["usado_cofins"] + d["anterior_pis"] + d["anterior_cofins"]
-    d["ret_total"] = d["ret_pis"] + d["ret_cofins"]
-    d["recolher_total"] = d["recolher_pis"] + d["recolher_cofins"]
-    d["saldo_total"] = d["saldo_pis"] + d["saldo_cofins"]
+    d["deb_nc_total"] = comb(d["deb_nc_pis"], d["deb_nc_cofins"])
+    d["deb_cum_total"] = comb(d["deb_cum_pis"], d["deb_cum_cofins"])
+    d["usado_total"] = comb(d["usado_pis"] + d["anterior_pis"], d["usado_cofins"] + d["anterior_cofins"])
+    d["ret_total"] = comb(d["ret_pis"], d["ret_cofins"])
+    d["recolher_total"] = comb(d["recolher_pis"], d["recolher_cofins"])
+    d["saldo_total"] = comb(d["saldo_pis"], d["saldo_cofins"])
     return d
 
 
