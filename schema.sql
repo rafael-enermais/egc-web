@@ -1079,3 +1079,159 @@ CREATE POLICY egc_app_full_access ON egc.nfs_import FOR ALL TO egc_app USING (tr
 DROP POLICY IF EXISTS egc_app_full_access ON egc.nfs_escrituracao;
 CREATE POLICY egc_app_full_access ON egc.nfs_escrituracao FOR ALL TO egc_app USING (true) WITH CHECK (true);
 -- Fim do bloco 27. Rodar so' este bloco no SQL Editor do Supabase.
+
+-- =====================================================================
+-- BLOCO 28 — v0.50.0: CREDITOS PIS/COFINS (SPED EFD-Contribuicoes x Detalhamento da contadora) + historico.
+--  * egc.cred_sped_envio    : 1 linha por SPED enviado (empresa + competencia). Reenviar o mes ARQUIVA o anterior (nao apaga).
+--                             Guarda o resumo da apuracao (Bloco M) e o detalhe da apuracao em JSON.
+--  * egc.cred_sped_linha    : creditos linha a linha (A170, C170, C191/C195, C501, D101, F120, F130).
+--  * egc.cred_sped_receita  : documentos de venda com PIS/COFINS (base do debito).
+--  * egc.cred_det_envio     : 1 linha por Detalhamento da contadora enviado (empresa + competencia). Mesmo esquema de arquivar.
+--  * egc.cred_det_linha     : linhas das abas por categoria do Detalhamento.
+--  * egc.cred_ajuste        : EDICOES da contadora sobre a conferencia (valor original x valor novo). Independe do envio: sobrevive a reenvio.
+--  * egc.cred_ajuste_log    : trilha de auditoria das edicoes (quem, quando, antes, depois). Nunca e' apagada.
+--  * egc.cred_historico     : carga FIXA jan-jul/2026 (SPED original x apontado). Nao vem de upload.
+-- Aditivo e idempotente (pode rodar de novo). Nao apaga nem altera nenhum dado existente.
+-- Sem este bloco o app segue normal: a pagina "Creditos PIS/COFINS" avisa que o bloco 28 falta.
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS egc.cred_sped_envio (
+  id                 uuid PRIMARY KEY,
+  empresa_codigo     text NOT NULL,
+  competencia        text NOT NULL,            -- 'MM/AAAA'
+  sped_tipo          text,                      -- Original / Retificadora
+  arquivo_nome       text,
+  sha256             text,
+  cnpj               text,
+  num_rec_anterior   text,
+  enviado_arquivo_em timestamptz,               -- data de envio a Receita (lida do nome do arquivo)
+  resumo             jsonb NOT NULL DEFAULT '{}'::jsonb,
+  apuracao           jsonb NOT NULL DEFAULT '{}'::jsonb,
+  por_categoria      jsonb NOT NULL DEFAULT '{}'::jsonb,
+  por_natureza       jsonb NOT NULL DEFAULT '{}'::jsonb,
+  enviado_por        text,
+  enviado_em         timestamptz NOT NULL DEFAULT now(),
+  arquivado_em       timestamptz,
+  arquivado_por      text,
+  arquivado_motivo   text
+);
+CREATE INDEX IF NOT EXISTS idx_cred_sped_envio ON egc.cred_sped_envio (empresa_codigo, competencia);
+
+CREATE TABLE IF NOT EXISTS egc.cred_sped_linha (
+  id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  envio_id    uuid NOT NULL REFERENCES egc.cred_sped_envio(id),
+  registro    text, categoria text, cnpj text, fornecedor text, numero text, data date, item text, descricao text,
+  cfop        text, nat_bc text, cst_pis text,
+  base_pis    numeric(16,2), aliq_pis numeric(8,4), pis numeric(16,2),
+  cst_cofins  text, base_cofins numeric(16,2), aliq_cofins numeric(8,4), cofins numeric(16,2),
+  cod_cta     text, chave text
+);
+CREATE INDEX IF NOT EXISTS idx_cred_sped_linha_envio ON egc.cred_sped_linha (envio_id);
+
+CREATE TABLE IF NOT EXISTS egc.cred_sped_receita (
+  id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  envio_id    uuid NOT NULL REFERENCES egc.cred_sped_envio(id),
+  registro    text, cnpj text, cliente text, numero text, data date, valor numeric(16,2),
+  cst_pis     text, base_pis numeric(16,2), aliq_pis numeric(8,4), pis numeric(16,2),
+  cst_cofins  text, base_cofins numeric(16,2), aliq_cofins numeric(8,4), cofins numeric(16,2)
+);
+CREATE INDEX IF NOT EXISTS idx_cred_sped_receita_envio ON egc.cred_sped_receita (envio_id);
+
+CREATE TABLE IF NOT EXISTS egc.cred_det_envio (
+  id               uuid PRIMARY KEY,
+  empresa_codigo   text NOT NULL,
+  competencia      text NOT NULL,
+  arquivo_nome     text,
+  sha256           text,
+  total_linhas     integer NOT NULL DEFAULT 0,
+  resumo           jsonb NOT NULL DEFAULT '[]'::jsonb,
+  debitos          jsonb NOT NULL DEFAULT '[]'::jsonb,
+  reconciliacao    jsonb NOT NULL DEFAULT '[]'::jsonb,
+  enviado_por      text,
+  enviado_em       timestamptz NOT NULL DEFAULT now(),
+  arquivado_em     timestamptz,
+  arquivado_por    text,
+  arquivado_motivo text
+);
+CREATE INDEX IF NOT EXISTS idx_cred_det_envio ON egc.cred_det_envio (empresa_codigo, competencia);
+
+CREATE TABLE IF NOT EXISTS egc.cred_det_linha (
+  id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  envio_id    uuid NOT NULL REFERENCES egc.cred_det_envio(id),
+  categoria   text, cnpj text, fornecedor text, numero text, especie text, data_emissao date, natureza text, produto text, descricao text,
+  valor_total numeric(16,2), base numeric(16,2), cst_pis text, aliq_pis numeric(8,4), pis numeric(16,2),
+  cst_cofins  text, aliq_cofins numeric(8,4), cofins numeric(16,2), tipo_credito text, linha_origem integer
+);
+CREATE INDEX IF NOT EXISTS idx_cred_det_linha_envio ON egc.cred_det_linha (envio_id);
+
+CREATE TABLE IF NOT EXISTS egc.cred_ajuste (
+  id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  empresa_codigo text NOT NULL,
+  competencia    text NOT NULL,
+  aba            text NOT NULL,                 -- linhas | debitos
+  chave          text NOT NULL,
+  campo          text NOT NULL,                 -- coluna editada ('__excluir__' = linha removida)
+  valor_original text,
+  valor_novo     text,
+  editado_por    text,
+  editado_em     timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (empresa_codigo, competencia, aba, chave, campo)
+);
+CREATE TABLE IF NOT EXISTS egc.cred_ajuste_log (
+  id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  empresa_codigo text NOT NULL,
+  competencia    text NOT NULL,
+  aba            text NOT NULL,
+  chave          text NOT NULL,
+  campo          text NOT NULL,
+  acao           text NOT NULL,                 -- editar | restaurar
+  valor_antes    text,
+  valor_depois   text,
+  usuario        text,
+  em             timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_cred_ajuste_log ON egc.cred_ajuste_log (empresa_codigo, competencia);
+
+CREATE TABLE IF NOT EXISTS egc.cred_historico (
+  id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  empresa_codigo text NOT NULL,
+  competencia    text NOT NULL,
+  versao         text NOT NULL,                 -- ORIGINAL | APONTADO
+  sped_tipo      text,
+  enviado_arquivo_em timestamptz,
+  arquivo_nome   text,
+  resumo         jsonb NOT NULL DEFAULT '{}'::jsonb,
+  por_categoria  jsonb NOT NULL DEFAULT '{}'::jsonb,
+  por_natureza   jsonb NOT NULL DEFAULT '{}'::jsonb,
+  dif_fornecedores jsonb NOT NULL DEFAULT '[]'::jsonb,
+  criado_em      timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (empresa_codigo, competencia, versao)
+);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON egc.cred_sped_envio, egc.cred_sped_linha, egc.cred_sped_receita, egc.cred_det_envio,
+  egc.cred_det_linha, egc.cred_ajuste, egc.cred_ajuste_log, egc.cred_historico TO egc_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA egc TO egc_app;
+ALTER TABLE egc.cred_sped_envio    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE egc.cred_sped_linha    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE egc.cred_sped_receita  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE egc.cred_det_envio     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE egc.cred_det_linha     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE egc.cred_ajuste        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE egc.cred_ajuste_log    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE egc.cred_historico     ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS egc_app_full_access ON egc.cred_sped_envio;
+CREATE POLICY egc_app_full_access ON egc.cred_sped_envio    FOR ALL TO egc_app USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS egc_app_full_access ON egc.cred_sped_linha;
+CREATE POLICY egc_app_full_access ON egc.cred_sped_linha    FOR ALL TO egc_app USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS egc_app_full_access ON egc.cred_sped_receita;
+CREATE POLICY egc_app_full_access ON egc.cred_sped_receita  FOR ALL TO egc_app USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS egc_app_full_access ON egc.cred_det_envio;
+CREATE POLICY egc_app_full_access ON egc.cred_det_envio     FOR ALL TO egc_app USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS egc_app_full_access ON egc.cred_det_linha;
+CREATE POLICY egc_app_full_access ON egc.cred_det_linha     FOR ALL TO egc_app USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS egc_app_full_access ON egc.cred_ajuste;
+CREATE POLICY egc_app_full_access ON egc.cred_ajuste        FOR ALL TO egc_app USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS egc_app_full_access ON egc.cred_ajuste_log;
+CREATE POLICY egc_app_full_access ON egc.cred_ajuste_log    FOR ALL TO egc_app USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS egc_app_full_access ON egc.cred_historico;
+CREATE POLICY egc_app_full_access ON egc.cred_historico     FOR ALL TO egc_app USING (true) WITH CHECK (true);
+-- Fim do bloco 28. Rodar so' este bloco no SQL Editor do Supabase.
