@@ -1251,3 +1251,45 @@ ALTER TABLE egc.cred_ajuste DROP CONSTRAINT IF EXISTS cred_ajuste_empresa_codigo
 CREATE UNIQUE INDEX IF NOT EXISTS ux_cred_ajuste_versao ON egc.cred_ajuste (empresa_codigo, competencia, aba, chave, campo, envio_ref);
 CREATE INDEX IF NOT EXISTS idx_cred_ajuste_log_ref ON egc.cred_ajuste_log (empresa_codigo, competencia, envio_ref);
 -- Fim do bloco 29. Rodar so' este bloco no SQL Editor do Supabase.
+
+-- ====== BLOCO 30 (v0.52.0) ======
+-- BLOCO 30 — v0.52.0: CONTROLE DO MES (fonte OFICIAL, "conferido" e nota da contadora) no dashboard de Creditos PIS/COFINS.
+--  * egc.cred_mes: uma linha por empresa+mes com a escolha da contadora. Tudo e' OPCIONAL e SO' ORGANIZA: nada trava nem bloqueia o uso do app.
+--      fonte_oficial : NULL = regra padrao (a versao apontada); 'HIST_APONTADO' | 'HIST_ORIGINAL' = carga fixa jan-jul; 'ENV:<id do SPED>' = um SPED enviado.
+--      conferido     : a contadora marcou o mes como conferido (so' um aviso visual; nao impede editar, trocar versao nem gerar PDF).
+--      nota          : observacao livre do mes.
+--  * egc.cred_mes_log: trilha (quem, quando, antes/depois) de cada mudanca nessas escolhas.
+-- Aditivo e idempotente (pode rodar de novo). Nao altera nem apaga nenhuma tabela/dado existente.
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS egc.cred_mes (
+  empresa_codigo text NOT NULL,
+  competencia    text NOT NULL,
+  fonte_oficial  text,
+  conferido      boolean NOT NULL DEFAULT false,
+  conferido_por  text,
+  conferido_em   timestamptz,
+  nota           text NOT NULL DEFAULT '',
+  atualizado_por text,
+  atualizado_em  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (empresa_codigo, competencia)
+);
+CREATE TABLE IF NOT EXISTS egc.cred_mes_log (
+  id             bigserial PRIMARY KEY,
+  empresa_codigo text NOT NULL,
+  competencia    text NOT NULL,
+  campo          text NOT NULL,
+  valor_antes    text,
+  valor_depois   text,
+  usuario        text,
+  em             timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_cred_mes_log_mes ON egc.cred_mes_log (empresa_codigo, competencia);
+GRANT SELECT, INSERT, UPDATE, DELETE ON egc.cred_mes, egc.cred_mes_log TO egc_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA egc TO egc_app;
+ALTER TABLE egc.cred_mes     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE egc.cred_mes_log ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS egc_app_full_access ON egc.cred_mes;
+CREATE POLICY egc_app_full_access ON egc.cred_mes     FOR ALL TO egc_app USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS egc_app_full_access ON egc.cred_mes_log;
+CREATE POLICY egc_app_full_access ON egc.cred_mes_log FOR ALL TO egc_app USING (true) WITH CHECK (true);
+-- Fim do bloco 30. Rodar so' este bloco no SQL Editor do Supabase.

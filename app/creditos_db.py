@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-EGC | Creditos PIS/COFINS -- banco (blocos 28 e 29 do schema.sql).  (v0.51.0, 16/10/2026)
+EGC | Creditos PIS/COFINS -- banco (blocos 28, 29 e 30 do schema.sql).  (v0.52.0, 16/10/2026)
 
 Cada upload (SPED ou Detalhamento) e' uma VERSAO do mes (empresa+competencia) e NUNCA e' apagada nem some da tela. Uma versao por mes e'
 a APONTADA (a que vale para dashboard e conferencia padrao); as demais ficam guardadas como "outras versoes" e podem ser conferidas,
 comparadas e promovidas a apontada. (Tecnicamente: arquivado_em IS NULL = apontada; preenchido = outra versao.)
 As edicoes da contadora (cred_ajuste) ficam presas a versao do SPED em que foram feitas (envio_ref) e tem trilha (cred_ajuste_log).
 O historico jan-jul (cred_historico) e' carga fixa; o dashboard junta historico + versoes apontadas.
+(v0.52.0) Cada mes pode ter varias FONTES (SPED enviados + carga fixa); o dashboard usa a "oficial" escolhida pela contadora (cred_mes,
+bloco 30) ou, se ela nao escolheu, a regra padrao (a apontada). Tudo e' sugestao/organizacao: nada trava.
 """
 from __future__ import annotations
 
@@ -483,58 +485,176 @@ def carregar_historico(conn, empresa_codigo: str) -> list:
         return sorted((dict(zip(cols, r)) for r in cur.fetchall()), key=lambda d: (_chave_comp(d["competencia"]), d["versao"]))
 
 
-def serie_mensal(conn, empresa_codigo: str) -> pd.DataFrame:
-    """Uma linha por competencia para o dashboard. `origem` = ENVIO (SPED vigente no app) ou HISTORICO (carga fixa jan-jul; vence o envio do mesmo mes).
-    Colunas: competencia, origem, tem_original, e (apontado) / (original) para credito, debito, a recolher, retencao..."""
-    hist = carregar_historico(conn, empresa_codigo)
+# ---- (v0.52.0) FONTES de cada mes: o que o dashboard pode usar ------------------------------------------------------------------
+HIST_APONTADO, HIST_ORIGINAL = "HIST_APONTADO", "HIST_ORIGINAL"
+
+
+def fontes_por_mes(conn, empresa_codigo: str) -> dict:
+    """{competencia: [fonte, ...]} com TODAS as fontes de numeros do mes: o historico (carga fixa jan-jul: ORIGINAL e APONTADO) e cada SPED enviado no app.
+    fonte = {chave, tipo ('HISTORICO'|'ENVIO'), rotulo, curto, sped_tipo, arquivo, enviado_em, enviado_por, apontada, resumo, por_categoria, por_natureza,
+    dif_fornecedores, envio_id}. chave = 'HIST_APONTADO' | 'HIST_ORIGINAL' | 'ENV:<id>'. A regra padrao (fonte_padrao) e' a mesma de antes da v0.52."""
+    fontes: dict = {}
+    for h in carregar_historico(conn, empresa_codigo):
+        ap = h["versao"] == "APONTADO"
+        f = {"chave": HIST_APONTADO if ap else HIST_ORIGINAL, "tipo": "HISTORICO", "sped_tipo": h.get("sped_tipo"), "arquivo": h.get("arquivo_nome"),
+             "enviado_em": h.get("enviado_arquivo_em"), "enviado_por": "carga fixa", "apontada": ap, "resumo": h.get("resumo") or {},
+             "por_categoria": h.get("por_categoria") or {}, "por_natureza": h.get("por_natureza") or {},
+             "dif_fornecedores": h.get("dif_fornecedores") or [], "envio_id": None,
+             "rotulo": ("Carga fixa jan–jul · apontada (última retificadora)" if ap else "Carga fixa jan–jul · SPED original")
+                       + (f" · {h.get('arquivo_nome')}" if h.get("arquivo_nome") else ""),
+             "curto": "Histórico apontado" if ap else "Histórico original"}
+        fontes.setdefault(h["competencia"], []).append(f)
     with conn.cursor() as cur:
-        cur.execute("SELECT competencia, sped_tipo, resumo, por_categoria, por_natureza, arquivado_em, enviado_em, id FROM egc.cred_sped_envio "
-                    "WHERE empresa_codigo = %s ORDER BY enviado_em, id", (empresa_codigo,))
-        todos = cur.fetchall()
-    envios = {r[0]: r for r in todos if r[5] is None}                      # versao APONTADA do mes
-    originais: dict = {}                                                     # 1o SPED "Original" enviado no app (se nao for a propria apontada)
-    for r in todos:
-        if str(r[1] or "").strip().lower() == "original" and r[0] not in originais:
-            originais[r[0]] = r
-    for c, o in list(originais.items()):
-        if c in envios and envios[c][7] == o[7]:
-            del originais[c]
-    por: dict = {}
-    for h in hist:
-        d = por.setdefault(h["competencia"], {})
-        d[h["versao"]] = h
-    comps = sorted(set(por) | set(envios), key=_chave_comp)
+        cur.execute("SELECT competencia, sped_tipo, resumo, por_categoria, por_natureza, arquivado_em, enviado_em, id, arquivo_nome, enviado_por "
+                    "FROM egc.cred_sped_envio WHERE empresa_codigo = %s ORDER BY enviado_em, id", (empresa_codigo,))
+        rows = cur.fetchall()
+    n_por: dict = {}
+    for comp, st_, resumo, cat, nat, arq_em, em, eid, arq, por in rows:
+        n_por[comp] = n_por.get(comp, 0) + 1
+        n = n_por[comp]
+        ap = arq_em is None
+        nome = str(st_).strip() if st_ else "SPED"
+        fontes.setdefault(comp, []).append({
+            "chave": f"ENV:{eid}", "tipo": "ENVIO", "sped_tipo": st_, "arquivo": arq, "enviado_em": em, "enviado_por": por, "apontada": ap,
+            "resumo": resumo or {}, "por_categoria": cat or {}, "por_natureza": nat or {}, "dif_fornecedores": [], "envio_id": str(eid),
+            "rotulo": f"SPED {n}ª · {nome} · {arq} · enviado em {_hora(em)}" + (" · APONTADA" if ap else ""),
+            "curto": f"SPED {n}ª ({nome.lower()})" + (" · apontada" if ap else "")})
+    for comp in fontes:
+        fontes[comp].sort(key=lambda f: (0 if f["chave"] == HIST_ORIGINAL else 1 if f["chave"] == HIST_APONTADO else 2, str(f["enviado_em"] or ""), f["chave"]))
+    return fontes
+
+
+def fonte_padrao(fontes_mes: list) -> Optional[dict]:
+    """Regra padrao (igual a de antes da v0.52): o APONTADO do historico (carga fixa) vence; sem ele, o SPED apontado no app."""
+    for f in fontes_mes:
+        if f["chave"] == HIST_APONTADO:
+            return f
+    for f in fontes_mes:
+        if f["tipo"] == "ENVIO" and f["apontada"]:
+            return f
+    return None
+
+
+# ---- (v0.52.0) CONTROLE DO MES (bloco 30): oficial, conferido, nota -- so' organiza, nada trava -------------------------------------
+def tem_bloco30(conn) -> bool:
+    try:
+        return all(nf_sienge._tabela_existe(conn, f"egc.{t}") is True for t in ("cred_mes", "cred_mes_log"))
+    except Exception:
+        return False
+
+
+def carregar_mes(conn, empresa_codigo: str) -> dict:
+    """{competencia: {fonte_oficial, conferido, conferido_por, conferido_em, nota, atualizado_por, atualizado_em}} (vazio se o bloco 30 nao foi rodado)."""
+    if not tem_bloco30(conn):
+        return {}
+    with conn.cursor() as cur:
+        cur.execute("SELECT competencia, fonte_oficial, conferido, conferido_por, conferido_em, nota, atualizado_por, atualizado_em "
+                    "FROM egc.cred_mes WHERE empresa_codigo = %s", (empresa_codigo,))
+        cols = ["fonte_oficial", "conferido", "conferido_por", "conferido_em", "nota", "atualizado_por", "atualizado_em"]
+        return {r[0]: dict(zip(cols, r[1:])) for r in cur.fetchall()}
+
+
+_NAO_MUDAR = object()
+
+
+def salvar_mes(conn, empresa_codigo: str, competencia: str, usuario: str, fonte_oficial=_NAO_MUDAR, conferido=_NAO_MUDAR, nota=_NAO_MUDAR) -> int:
+    """Grava so' o que foi informado (fonte_oficial=None volta para a regra padrao). Cada mudanca vai para a trilha. Devolve quantos campos mudaram."""
+    atual = carregar_mes(conn, empresa_codigo).get(competencia) or {"fonte_oficial": None, "conferido": False, "nota": ""}
+    novos = {}
+    if fonte_oficial is not _NAO_MUDAR and (fonte_oficial or None) != (atual["fonte_oficial"] or None):
+        novos["fonte_oficial"] = fonte_oficial or None
+    if conferido is not _NAO_MUDAR and bool(conferido) != bool(atual["conferido"]):
+        novos["conferido"] = bool(conferido)
+    if nota is not _NAO_MUDAR and (nota or "") != (atual["nota"] or ""):
+        novos["nota"] = nota or ""
+    if not novos:
+        return 0
+    with _transacao(conn):
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO egc.cred_mes (empresa_codigo, competencia, atualizado_por) VALUES (%s,%s,%s) "
+                        "ON CONFLICT (empresa_codigo, competencia) DO NOTHING", (empresa_codigo, competencia, usuario))
+            for campo, valor in novos.items():
+                cur.execute(f"UPDATE egc.cred_mes SET {campo} = %s, atualizado_por = %s, atualizado_em = now() WHERE empresa_codigo = %s AND competencia = %s",
+                            (valor, usuario, empresa_codigo, competencia))
+                if campo == "conferido":
+                    cur.execute("UPDATE egc.cred_mes SET conferido_por = %s, conferido_em = CASE WHEN %s THEN now() ELSE NULL END "
+                                "WHERE empresa_codigo = %s AND competencia = %s", (usuario if valor else None, bool(valor), empresa_codigo, competencia))
+                cur.execute("INSERT INTO egc.cred_mes_log (empresa_codigo, competencia, campo, valor_antes, valor_depois, usuario) VALUES (%s,%s,%s,%s,%s,%s)",
+                            (empresa_codigo, competencia, campo, None if atual.get(campo) is None else str(atual.get(campo)),
+                             None if valor is None else str(valor), usuario))
+    return len(novos)
+
+
+def log_mes(conn, empresa_codigo: str, competencia: str, limite: int = 50) -> pd.DataFrame:
+    if not tem_bloco30(conn):
+        return pd.DataFrame(columns=["em", "usuario", "campo", "valor_antes", "valor_depois"])
+    with conn.cursor() as cur:
+        cur.execute("SELECT em, usuario, campo, valor_antes, valor_depois FROM egc.cred_mes_log WHERE empresa_codigo = %s AND competencia = %s "
+                    "ORDER BY id DESC LIMIT %s", (empresa_codigo, competencia, limite))
+        return pd.DataFrame(cur.fetchall(), columns=["em", "usuario", "campo", "valor_antes", "valor_depois"])
+
+
+def det_por_categoria(conn, envio_id: Optional[str]) -> dict:
+    """{categoria: {'pis', 'cofins'}} somando as linhas de uma versao do Detalhamento (mesmo formato do por_categoria do SPED)."""
+    if not envio_id:
+        return {}
+    with conn.cursor() as cur:
+        cur.execute("SELECT categoria, COALESCE(SUM(pis),0)::float8, COALESCE(SUM(cofins),0)::float8 FROM egc.cred_det_linha WHERE envio_id = %s "
+                    "GROUP BY categoria", (envio_id,))
+        return {c: {"pis": p, "cofins": f} for c, p, f in cur.fetchall()}
+
+
+# ---- SERIE MENSAL (dashboard) --------------------------------------------------------------------------------------------------------
+def _linha_serie(c: str, fonte: Optional[dict], orig_f: Optional[dict], modo: str, qtd: int, ctrl: dict) -> dict:
+    ap = (fonte or {}).get("resumo") or {}
+    orig = (orig_f or {}).get("resumo") or {}
+    tem = bool(orig)
+    return {
+        "competencia": c, "origem": "ENVIO" if fonte and fonte["tipo"] == "ENVIO" else "HISTORICO", "tem_original": tem,
+        "sped_tipo": (fonte or {}).get("sped_tipo"), "fonte": (fonte or {}).get("chave"), "fonte_rotulo": (fonte or {}).get("rotulo", ""),
+        "modo": modo, "qtd_fontes": qtd, "conferido": bool(ctrl.get("conferido")), "nota": ctrl.get("nota") or "",
+        "cred_pis": _f(ap.get("credito_pis")), "cred_cofins": _f(ap.get("credito_cofins")),
+        "orig_pis": _f(orig.get("credito_pis")) if tem else None, "orig_cofins": _f(orig.get("credito_cofins")) if tem else None,
+        "deb_nc_pis": _f(ap.get("debito_nc_pis")), "deb_nc_cofins": _f(ap.get("debito_nc_cofins")),
+        "deb_cum_pis": _f(ap.get("debito_cum_pis")), "deb_cum_cofins": _f(ap.get("debito_cum_cofins")),
+        "orig_deb_nc_pis": _f(orig.get("debito_nc_pis")) if tem else None, "orig_deb_cum_pis": _f(orig.get("debito_cum_pis")) if tem else None,
+        "orig_deb_nc_cofins": _f(orig.get("debito_nc_cofins")) if tem else None, "orig_deb_cum_cofins": _f(orig.get("debito_cum_cofins")) if tem else None,
+        "usado_pis": _f(ap.get("credito_usado_pis")), "usado_cofins": _f(ap.get("credito_usado_cofins")),
+        "anterior_pis": _f(ap.get("credito_anterior_pis")), "anterior_cofins": _f(ap.get("credito_anterior_cofins")),
+        "saldo_pis": _f(ap.get("saldo_pis")), "saldo_cofins": _f(ap.get("saldo_cofins")),
+        "ret_pis": _f(ap.get("retencao_nc_pis")), "ret_cofins": _f(ap.get("retencao_nc_cofins")),
+        "recolher_pis": _f(ap.get("a_recolher_pis")), "recolher_cofins": _f(ap.get("a_recolher_cofins")),
+        "receita_nc": _f(ap.get("receita_nc")), "receita_cum": _f(ap.get("receita_cum")),
+        "por_categoria": (fonte or {}).get("por_categoria") or {}, "por_natureza": (fonte or {}).get("por_natureza") or {},
+        "orig_por_categoria": (orig_f or {}).get("por_categoria") or {}, "dif_fornecedores": (fonte or {}).get("dif_fornecedores") or [],
+    }
+
+
+def serie_mensal(conn, empresa_codigo: str, escolhas: Optional[dict] = None, usar_oficial: bool = True, fontes: Optional[dict] = None,
+                 controle: Optional[dict] = None) -> pd.DataFrame:
+    """Uma linha por competencia para o dashboard. Qual FONTE vale em cada mes: (1) `escolhas` = {competencia: chave} (SIMULACAO, nao grava nada);
+    (2) a OFICIAL marcada pela contadora (cred_mes, se `usar_oficial`); (3) a regra padrao (historico APONTADO jan-jul; depois o SPED apontado).
+    `origem` = ENVIO | HISTORICO; `modo` = 'simulada' | 'oficial' | 'padrao'. O "original" (para o comparativo original x apontado) e' o ORIGINAL do historico
+    ou o 1o SPED "Original" enviado no app (se nao for a propria fonte usada). `fontes`/`controle` podem ser passados para nao reler o banco."""
+    fontes = fontes if fontes is not None else fontes_por_mes(conn, empresa_codigo)
+    ctrl = controle if controle is not None else (carregar_mes(conn, empresa_codigo) if usar_oficial else {})
+    escolhas = escolhas or {}
     linhas = []
-    for c in comps:
-        h = por.get(c, {})
-        # carga fixa jan-jul: o mes que tem APONTADO no historico vale por ele (o envio desse mes serve so' para conferir com o Detalhamento)
-        env = None if h.get("APONTADO") else envios.get(c)
-        ap = env[2] if env else (h.get("APONTADO") or {}).get("resumo")
-        cat = env[3] if env else (h.get("APONTADO") or {}).get("por_categoria", {})
-        nat = env[4] if env else (h.get("APONTADO") or {}).get("por_natureza", {})
-        orig_env = None if h.get("ORIGINAL") else originais.get(c)
-        orig = (h.get("ORIGINAL") or {}).get("resumo") or (orig_env[2] if orig_env else None)
-        if not ap and not orig:
+    for c in sorted(fontes, key=_chave_comp):
+        lista = fontes[c]
+        por_chave = {f["chave"]: f for f in lista}
+        padrao = fonte_padrao(lista)
+        of = por_chave.get((ctrl.get(c) or {}).get("fonte_oficial")) if usar_oficial else None
+        sim = por_chave.get(escolhas.get(c))
+        fonte, modo = (sim, "simulada") if sim else (of, "oficial") if of else (padrao, "padrao")
+        if sim is not None and sim is (of or padrao):
+            fonte, modo = sim, ("oficial" if of else "padrao")
+        orig_f = por_chave.get(HIST_ORIGINAL)
+        if orig_f is None:
+            orig_f = next((f for f in lista if f["tipo"] == "ENVIO" and str(f["sped_tipo"] or "").strip().lower() == "original"), None)
+        if orig_f is not None and fonte is not None and orig_f["chave"] == fonte["chave"]:
+            orig_f = None
+        if not (fonte and fonte["resumo"]) and not (orig_f and orig_f["resumo"]):
             continue
-        ap = ap or {}
-        orig = orig or {}
-        linhas.append({
-            "competencia": c, "origem": "ENVIO" if env else "HISTORICO", "tem_original": bool(orig),
-            "sped_tipo": env[1] if env else (h.get("APONTADO") or {}).get("sped_tipo"),
-            "cred_pis": _f(ap.get("credito_pis")), "cred_cofins": _f(ap.get("credito_cofins")),
-            "orig_pis": _f(orig.get("credito_pis")) if orig else None, "orig_cofins": _f(orig.get("credito_cofins")) if orig else None,
-            "deb_nc_pis": _f(ap.get("debito_nc_pis")), "deb_nc_cofins": _f(ap.get("debito_nc_cofins")),
-            "deb_cum_pis": _f(ap.get("debito_cum_pis")), "deb_cum_cofins": _f(ap.get("debito_cum_cofins")),
-            "orig_deb_nc_pis": _f(orig.get("debito_nc_pis")) if orig else None, "orig_deb_cum_pis": _f(orig.get("debito_cum_pis")) if orig else None,
-            "orig_deb_nc_cofins": _f(orig.get("debito_nc_cofins")) if orig else None, "orig_deb_cum_cofins": _f(orig.get("debito_cum_cofins")) if orig else None,
-            "usado_pis": _f(ap.get("credito_usado_pis")), "usado_cofins": _f(ap.get("credito_usado_cofins")),
-            "anterior_pis": _f(ap.get("credito_anterior_pis")), "anterior_cofins": _f(ap.get("credito_anterior_cofins")),
-            "saldo_pis": _f(ap.get("saldo_pis")), "saldo_cofins": _f(ap.get("saldo_cofins")),
-            "ret_pis": _f(ap.get("retencao_nc_pis")), "ret_cofins": _f(ap.get("retencao_nc_cofins")),
-            "recolher_pis": _f(ap.get("a_recolher_pis")), "recolher_cofins": _f(ap.get("a_recolher_cofins")),
-            "receita_nc": _f(ap.get("receita_nc")), "receita_cum": _f(ap.get("receita_cum")),
-            "por_categoria": cat or {}, "por_natureza": nat or {},
-            "orig_por_categoria": (h.get("ORIGINAL") or {}).get("por_categoria", {}) or (orig_env[3] if orig_env else {}) or {},
-            "dif_fornecedores": (h.get("APONTADO") or {}).get("dif_fornecedores", []),
-        })
+        linhas.append(_linha_serie(c, fonte if fonte and fonte["resumo"] else None, orig_f if orig_f and orig_f["resumo"] else None, modo, len(lista), ctrl.get(c) or {}))
     return pd.DataFrame(linhas)

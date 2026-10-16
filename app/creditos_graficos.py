@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-EGC | Creditos PIS/COFINS -- graficos do dashboard (plotly).  (v0.50.0, 16/10/2026)
+EGC | Creditos PIS/COFINS -- graficos do dashboard (plotly).  (v0.52.0, 16/10/2026)
 
 Funcoes puras: recebem a serie mensal (creditos_db.serie_mensal) ou tabelas ja calculadas e devolvem `plotly` Figure -- sem Streamlit e sem banco.
 Mesmas regras da Visao Grupo (skill dataviz): 1 eixo por grafico (PIS+COFINS somados em R$; nunca eixo duplo), cor = identidade da serie
@@ -128,14 +128,14 @@ def _vazio(texto: str, dark: bool) -> go.Figure:
 # ─────────────────────────────────────────────
 #  CREDITO
 # ─────────────────────────────────────────────
-def fig_credito_mensal(d: pd.DataFrame, dark: bool, tributo: str = "total") -> go.Figure:
+def fig_credito_mensal(d: pd.DataFrame, dark: bool, tributo: str = "total", nome_apontado: str = "Crédito apontado") -> go.Figure:
     """Barras = credito apontado (o que esta' no SPED vigente); linha = credito do SPED original (so' jan-jul, carga fixa)."""
     if d.empty:
         return _vazio("Sem dados de crédito ainda.", dark)
     x = d["rotulo"].tolist()
     ap, orig = _tributo(d, tributo, "cred"), _tributo(d, tributo, "orig")
     fig = go.Figure()
-    _barras(fig, x, ap, "Crédito apontado", _cor(0, dark), len(x) <= 10)
+    _barras(fig, x, ap, nome_apontado, _cor(0, dark), len(x) <= 10)
     if any(v is not None and not pd.isna(v) for v in orig):
         fig.add_scatter(x=x, y=[_n(v) for v in orig], name="Crédito no SPED original", mode="lines+markers",
                         line=dict(color=_cor(1, dark), width=2), marker=dict(size=8, color=_cor(1, dark)), connectgaps=False,
@@ -349,3 +349,60 @@ def fig_status_conferencia(resumo: pd.DataFrame, dark: bool) -> go.Figure:
     fig.update_yaxes(zeroline=False, showgrid=False)
     _folga_x(fig, r["linhas"].tolist())
     return _base(fig, dark, altura=max(200, 44 * len(r) + 50), legenda=False)
+
+
+# ─────────────────────────────────────────────
+#  (v0.52.0) PONTE, COMPOSICAO E COMPARATIVOS
+# ─────────────────────────────────────────────
+def fig_ponte(ponte: dict, dark: bool, nome_inicio: str = "Oficial / padrão", nome_fim: str = "Simulação") -> go.Figure:
+    """Ponte (waterfall): total do periodo na versao oficial/padrao -> efeito de cada mes que mudou -> total da simulacao.
+    Sobe = azul; desce = laranja (negativo sempre laranja e com '-'); extremos = cinza-azulado neutro."""
+    itens = ponte.get("itens") or []
+    if not itens:
+        return _vazio("A simulação não muda nenhum mês em relação à oficial/padrão.", dark)
+    x = [nome_inicio] + [r for r, _ in itens] + [nome_fim]
+    y = [ponte["inicio"]] + [v for _r, v in itens] + [ponte["fim"]]
+    medidas = ["absolute"] + ["relative"] * len(itens) + ["total"]
+    texto = [formatacao.moeda_curta(ponte["inicio"])] + [formatacao.moeda_curta(v) if v < 0 else "+" + formatacao.moeda_curta(v) for _r, v in itens] + [formatacao.moeda_curta(ponte["fim"])]
+    cd = [formatacao.moeda_br(ponte["inicio"])] + [formatacao.moeda_br(v, forcar_sinal=True) for _r, v in itens] + [formatacao.moeda_br(ponte["fim"])]
+    fig = go.Figure(go.Waterfall(x=x, y=y, measure=medidas, text=texto, textposition="outside", cliponaxis=False, customdata=cd,
+                                 hovertemplate="<b>%{x}</b><br>%{customdata}<extra></extra>",
+                                 increasing=dict(marker=dict(color=_cor(0, dark))), decreasing=dict(marker=dict(color=_cor(1, dark))),
+                                 totals=dict(marker=dict(color=_CINZA["dark" if dark else "light"])),
+                                 connector=dict(line=dict(color=COR_REF["dark" if dark else "light"], width=1))))
+    tv, tt = _ticks_moeda([ponte["inicio"], ponte["fim"]] + [ponte["inicio"] + sum(v for _r, v in itens[:k + 1]) for k in range(len(itens))])
+    fig.update_yaxes(tickvals=tv, ticktext=tt)
+    return _base(fig, dark, altura=340, legenda=False)
+
+
+def fig_composicao(comp: pd.DataFrame, dark: bool) -> go.Figure:
+    """Credito por categoria no mes com o % do total no rotulo (comp = creditos_analise.composicao)."""
+    if comp is None or comp.empty:
+        return _vazio("Sem créditos neste mês.", dark)
+    c = comp.sort_values("valor")
+    fig = go.Figure(go.Bar(x=c["valor"].tolist(), y=c["categoria"].tolist(), orientation="h", marker_color=[cor_categoria(k, dark) for k in c["categoria"]],
+                           text=[f"{formatacao.moeda_curta(v)} · {formatacao.pct_br(p, casas=0)}" for v, p in zip(c["valor"], c["pct"])],
+                           textposition="outside", cliponaxis=False,
+                           customdata=[f"{formatacao.moeda_br(v)} ({formatacao.pct_br(p)})" for v, p in zip(c["valor"], c["pct"])],
+                           hovertemplate="<b>%{y}</b><br>%{customdata}<extra></extra>"))
+    fig.update_xaxes(showticklabels=False, showgrid=False)
+    fig.update_yaxes(zeroline=False, showgrid=False)
+    _folga_x(fig, c["valor"].tolist())
+    return _base(fig, dark, altura=max(220, 44 * len(c) + 60), legenda=False)
+
+
+def fig_comparacao_categorias(df: pd.DataFrame, dark: bool, nome_a: str, nome_b: str) -> go.Figure:
+    """Credito por categoria em duas versoes lado a lado. df = colunas item, a, b (creditos_analise.comparar_fontes, grupo 'Categoria')."""
+    if df is None or df.empty:
+        return _vazio("Sem créditos por categoria para comparar.", dark)
+    d = df.sort_values("a")
+    fig = go.Figure()
+    for nome, col, cor in ((nome_a, "a", _cor(0, dark)), (nome_b, "b", _cor(1, dark))):
+        fig.add_bar(x=d[col].tolist(), y=d["item"].tolist(), orientation="h", name=nome, marker_color=cor, marker_line_width=0,
+                    text=[formatacao.moeda_curta(v) for v in d[col]], textposition="outside", cliponaxis=False,
+                    customdata=[formatacao.moeda_br(v) for v in d[col]], hovertemplate=f"<b>{nome}</b><br>%{{y}}: %{{customdata}}<extra></extra>")
+    fig.update_layout(barmode="group")
+    fig.update_xaxes(showticklabels=False, showgrid=False)
+    fig.update_yaxes(zeroline=False, showgrid=False)
+    _folga_x(fig, list(d["a"]) + list(d["b"]))
+    return _base(fig, dark, altura=max(260, 70 * len(d) + 60))
