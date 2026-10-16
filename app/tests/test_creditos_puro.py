@@ -288,7 +288,16 @@ def test_aviso_fica_em_recipiente_fixo_e_confirmacao_zera():
     src = (pathlib.Path(__file__).resolve().parents[1] / "telas" / "10_Creditos_PIS_COFINS.py").read_text(encoding="utf-8")
     assert "with st.container():\n    mostrar_flash()" in src
     assert "\nmostrar_flash()" not in src
-    assert 'key=f"cred_ok_envio_{n_ok}"' in src and src.count('st.session_state["cred_ok_n"] = n_ok + 1') == 2
+    assert 'key=f"cred_ok_envio_{n_ok}"' in src and src.count('st.session_state["cred_ok_n"] = n_ok + 1') == 1
+
+
+def test_versoes_do_mes_na_tela():
+    """v0.51.0: nada de 'arquivar' na tela -- toda versao fica visivel, uma e' a apontada, as edicoes ficam presas a versao."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parents[1] / "telas" / "10_Creditos_PIS_COFINS.py").read_text(encoding="utf-8")
+    assert "cdb.tem_bloco29(conn)" in src and "definir_apontada" in src and "apontar=apontar" in src and "apontar=apontar_d" in src
+    assert "arquivar_envio" not in src and "restaurar_envio" not in src and "ref=_REF[0]" in src
+    assert "_escolher(v_sped" in src and "_escolher(v_det" in src
 
 
 @pytest.mark.parametrize("dark", [False, True])

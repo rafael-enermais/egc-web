@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v0.50.0 -- Creditos PIS/COFINS no Postgres de verdade (bloco 28): envios com arquivar/restaurar, ajustes com trilha, historico e serie mensal."""
+"""v0.50.0/v0.51.0 -- Creditos PIS/COFINS no Postgres de verdade (blocos 28 e 29): versoes por mes, ajustes com trilha presos a versao, historico e serie mensal."""
 import sys
 from pathlib import Path
 
@@ -67,7 +67,7 @@ def test_reenviar_arquiva_o_anterior_e_nada_e_apagado(conn):
 def test_arquivar_e_restaurar_envio(conn):
     a = _sped(conn)
     cdb.arquivar_envio(conn, "SPED", a, "t", "teste")
-    assert cdb.carregar_sped(conn, "ENERGIA", "07/2026") is None and cdb.competencias(conn, "ENERGIA") == []
+    assert cdb.carregar_sped(conn, "ENERGIA", "07/2026") is None and cdb.competencias(conn, "ENERGIA") == ["07/2026"]   # v0.51: o mes segue visivel
     b = _sped(conn)
     with pytest.raises(ValueError):
         cdb.restaurar_envio(conn, "SPED", a, "t")            # mes ja' tem outro vigente
@@ -144,3 +144,92 @@ def test_envio_com_nan_e_vazio_nao_quebra_json(conn):
     s["creditos"].loc[0, "fornecedor"] = float("nan")
     cdb.gravar_sped(conn, "ENERGIA", s, nome, "t")
     assert len(cdb.carregar_sped(conn, "ENERGIA", "07/2026")["creditos"]) == 5
+
+
+# ───────────── v0.51.0: versoes por mes ─────────────
+def test_bloco29_existe(conn):
+    assert cdb.tem_bloco29(conn)
+
+
+def test_versoes_do_mes_ficam_todas_e_uma_e_a_apontada(conn):
+    a = _sped(conn)                                         # Original
+    b = _sped(conn, ajuste_servico=5.0, tipo="1")           # Retificadora (apontada por padrao)
+    v = cdb.listar_versoes(conn, "SPED", "ENERGIA", "07/2026")
+    assert [x["id"] for x in v] == [a, b] and [x["n"] for x in v] == [1, 2]
+    assert [x["apontada"] for x in v] == [False, True]
+    assert v[0]["sped_tipo"] == "Original" and v[1]["sped_tipo"] == "Retificadora" and "APONTADA" in v[1]["rotulo"] and "APONTADA" not in v[0]["rotulo"]
+    assert cdb.carregar_sped(conn, "ENERGIA", "07/2026")["envio_id"] == b and cdb.carregar_sped(conn, "ENERGIA", "07/2026", envio_id=a)["envio_id"] == a
+    assert cdb.carregar_sped(conn, "ENERGIA", "07/2026", envio_id=a)["apontada"] is False
+    assert cdb.carregar_sped(conn, "ENERGIA", "07/2026", envio_id=a)["resumo"]["credito_pis"] == 127.05      # a versao antiga continua inteira
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM egc.cred_sped_envio"); assert cur.fetchone()[0] == 2
+
+
+def test_gravar_sem_apontar_guarda_e_nao_troca_a_apontada(conn):
+    a = _sped(conn, ajuste_servico=5.0, tipo="1")
+    b = _sped(conn)                                          # antigo, so' para historico
+    # reenvio com apontar=False
+    cont, nome = sped_sintetico(competencia="07/2026")
+    c = cdb.gravar_sped(conn, "ENERGIA", sc.ler_sped(cont, nome), nome + ".bak", "t", apontar=False)
+    v = {x["id"]: x["apontada"] for x in cdb.listar_versoes(conn, "SPED", "ENERGIA", "07/2026")}
+    assert v == {a: False, b: True, c: False}                # b foi a ultima apontada (a anterior a ela foi guardada)
+    # mes sem apontada: o primeiro sempre vira apontada mesmo com apontar=False
+    d = cdb.gravar_sped(conn, "ENERGIA", sc.ler_sped(*sped_sintetico(competencia="09/2026")), "x.txt", "t", apontar=False)
+    assert cdb.carregar_sped(conn, "ENERGIA", "09/2026")["envio_id"] == d
+
+
+def test_definir_apontada_troca_sem_apagar(conn):
+    a = _sped(conn)
+    b = _sped(conn, ajuste_servico=5.0, tipo="1")
+    assert cdb.definir_apontada(conn, "SPED", a, "ana") is True
+    assert cdb.carregar_sped(conn, "ENERGIA", "07/2026")["envio_id"] == a
+    assert cdb.definir_apontada(conn, "SPED", a, "ana") is False          # ja' era
+    assert {x["id"]: x["apontada"] for x in cdb.listar_versoes(conn, "SPED", "ENERGIA", "07/2026")} == {a: True, b: False}
+    with pytest.raises(ValueError):
+        cdb.definir_apontada(conn, "SPED", "00000000-0000-0000-0000-000000000000", "t")
+
+
+def test_detalhamento_tem_versoes_e_sha_em_qualquer_versao(conn):
+    d1 = _det(conn)
+    d2 = _det(conn, ajuste_servico=3.0) if "ajuste_servico" in detalhamento_sintetico.__code__.co_varnames else _det(conn)
+    cont, nome = detalhamento_sintetico(competencia="07/2026")
+    achou = cdb.envio_com_sha(conn, "DETALHAMENTO", "ENERGIA", "07/2026", cdet.ler_detalhamento(cont, nome)["sha256"])
+    assert achou is not None and achou["n"] in (1, 2)
+    assert len(cdb.listar_versoes(conn, "DETALHAMENTO", "ENERGIA", "07/2026")) == 2 and d1 != d2
+    assert cdb.envio_com_sha(conn, "DETALHAMENTO", "ENERGIA", "07/2026", "naoexiste") is None
+
+
+def test_edicoes_ficam_presas_a_versao(conn):
+    a = _sped(conn)
+    b = _sped(conn, ajuste_servico=5.0, tipo="1")
+    m = [{"chave": "k", "campo": "pis_det", "valor_original": "1", "valor_novo": "2"}]
+    cdb.salvar_ajustes(conn, "ENERGIA", "07/2026", "linhas", m, "ana", ref=a)
+    assert len(cdb.carregar_ajustes(conn, "ENERGIA", "07/2026", ref=a)) == 1
+    assert cdb.carregar_ajustes(conn, "ENERGIA", "07/2026", ref=b) == []                   # a retificadora nao herda a edicao do original
+    cdb.salvar_ajustes(conn, "ENERGIA", "07/2026", "linhas", [{**m[0], "valor_novo": "9"}], "bia", ref=b)   # mesma linha/campo em outra versao: nao conflita
+    assert cdb.carregar_ajustes(conn, "ENERGIA", "07/2026", ref=a)[0]["valor_novo"] == "2" and cdb.carregar_ajustes(conn, "ENERGIA", "07/2026", ref=b)[0]["valor_novo"] == "9"
+    assert len(cdb.log_ajustes(conn, "ENERGIA", "07/2026", ref=a)) == 1 and len(cdb.log_ajustes(conn, "ENERGIA", "07/2026", ref=b)) == 1
+    assert cdb.restaurar_ajustes(conn, "ENERGIA", "07/2026", "linhas", "k", "t", ref=a) == 1
+    assert cdb.carregar_ajustes(conn, "ENERGIA", "07/2026", ref=a) == [] and len(cdb.carregar_ajustes(conn, "ENERGIA", "07/2026", ref=b)) == 1
+
+
+def test_serie_mensal_usa_o_original_enviado_no_app(conn):
+    _sped(conn)                                              # Original: PIS 127,05
+    _sped(conn, ajuste_servico=5.0, tipo="1")                # Retificadora apontada: PIS 132,05
+    s = cdb.serie_mensal(conn, "ENERGIA")
+    r = s[s["competencia"] == "07/2026"].iloc[0]
+    assert r["origem"] == "ENVIO" and r["tem_original"] and r["cred_pis"] == 132.05 and r["orig_pis"] == 127.05
+    # promover o original a apontada: some a "diferenca" (a apontada e' o proprio original)
+    a = [v for v in cdb.listar_versoes(conn, "SPED", "ENERGIA", "07/2026") if v["sped_tipo"] == "Original"][0]["id"]
+    cdb.definir_apontada(conn, "SPED", a, "t")
+    r = cdb.serie_mensal(conn, "ENERGIA").query("competencia == '07/2026'").iloc[0]
+    assert r["cred_pis"] == 127.05 and not r["tem_original"]
+
+
+def test_comparar_versoes_do_sped(conn):
+    _sped(conn)
+    _sped(conn, ajuste_servico=5.0, tipo="1")
+    c = cdb.comparar_versoes_sped(conn, "ENERGIA", "07/2026")
+    assert list(c["credito_pis"]) == [127.05, 132.05] and list(c["apontada"]) == [False, True] and "apontada" in c["versao"].iloc[1]
+    cat = cdb.comparar_categorias_sped(conn, "ENERGIA", "07/2026")
+    assert len(cat.columns) == 3 and "categoria" in cat.columns and (cat.iloc[:, 1:].sum().round(2) > 0).all()
