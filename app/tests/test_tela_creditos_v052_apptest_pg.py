@@ -58,6 +58,15 @@ def _m(at):
     return {x.label: x for x in at.metric}
 
 
+def _simular(at, mes, trecho):
+    """v0.53.2: marca o mes em 'Quais meses simular?' e escolhe a versao (por um trecho do rotulo curto, ex.: 'original')."""
+    at.multiselect(key="cred_simmes_ENERGIA").set_value([mes])
+    at.run()
+    sb = at.selectbox(key=f"cred_sim_ENERGIA_{mes}")
+    sb.select([o for o in sb.options if trecho in o.lower()][0])
+    at.run()
+
+
 def test_estado_padrao_sem_simulacao_e_com_controles(conn):
     _cenario(conn)
     at = _rodar()
@@ -73,8 +82,7 @@ def test_estado_padrao_sem_simulacao_e_com_controles(conn):
 def test_simulacao_muda_os_numeros_na_hora_sem_gravar(conn):
     _cenario(conn)
     at = _rodar()
-    at.selectbox(key="cred_sim_ENERGIA_01/2026").select("Carga fixa jan–jul · SPED original")
-    at.run()
+    _simular(at, "01/2026", "original")
     assert not at.exception
     assert any("Simulação ligada" in w.value for w in at.warning)
     k = _m(at)["Crédito acumulado no período"]
@@ -160,8 +168,7 @@ def test_aba_relatorio_oficial_gera_o_botao_de_download(conn):
 def test_aba_relatorio_com_simulacao_avisa_mas_nao_trava(conn):
     _cenario(conn)
     at = _rodar()
-    at.selectbox(key="cred_sim_ENERGIA_01/2026").select("Carga fixa jan–jul · SPED original")
-    at.run()
+    _simular(at, "01/2026", "original")
     assert not at.exception
     assert any("simulação" in w.value and "NÃO É A VERSÃO OFICIAL" in w.value for w in at.warning)      # aviso na aba Relatorio
     assert any(d.proto.label == "⬇️ Baixar o relatório em PDF" for d in at.get("download_button"))      # continua gerando
@@ -183,3 +190,46 @@ def test_aba_relatorio_escolhe_outro_mes(conn):
     at.selectbox(key="cred_rel_mes").select("01/2026")
     at.run()
     assert not at.exception and any("Versão oficial de 01/2026" in s.value for s in at.success)
+
+
+# ---------------- v0.53.2: lista de simulacao enxuta, sem duplicata, e aviso de Detalhamento ----------------
+def test_simulacao_so_mostra_os_meses_marcados_e_com_rotulo_curto(conn):
+    _cenario(conn)
+    at = _rodar()
+    assert not at.exception
+    assert not [k for k in at.selectbox if str(k.key).startswith("cred_sim_ENERGIA_")]       # nada escolhido: nenhuma linha por mes
+    ms = at.multiselect(key="cred_simmes_ENERGIA")
+    assert set(ms.options) == {"01/2026", "07/2026"}                                           # so os meses com 2+ versoes
+    at.multiselect(key="cred_simmes_ENERGIA").set_value(["07/2026"])
+    at.run()
+    ops = at.selectbox(key="cred_sim_ENERGIA_07/2026").options
+    assert ops[0] == "Regra padrão (a versão apontada)"
+    assert len(ops) == 3                                                                         # padrao + 2 SPED (original e retificadora), nome curto
+    assert all("PISCOFINS_" not in o for o in ops)
+
+
+def test_aviso_de_detalhamento_ausente_nas_sugestoes_e_no_relatorio(conn):
+    _cenario(conn)
+    at = _rodar()
+    assert any("Detalhamento da contadora" in e.value and "não enviado" in e.value for e in at.info)
+    assert any("não enviado para este mês" in e.value for e in at.info)                          # aba Relatorio
+
+
+def test_detalhamento_do_original_sobre_retificadora_acusa_pendencias(conn):
+    _cenario(conn)
+    cont, nome = detalhamento_sintetico(competencia="07/2026")
+    cdb.gravar_detalhamento(conn, "ENERGIA", cdet.ler_detalhamento(cont, nome), nome, "t")
+    import creditos_status as cst
+    st_ = cst.status_detalhamento(conn, "ENERGIA", "07/2026")
+    assert st_["estado"] in ("fecha", "pendencias")
+    at = _rodar()
+    assert not at.exception
+
+
+def test_status_ausente_e_sem_sped(conn):
+    import creditos_status as cst
+    _cenario(conn)
+    assert cst.status_detalhamento(conn, "ENERGIA", "07/2026")["estado"] == "ausente"
+    cont, nome = detalhamento_sintetico(competencia="03/2026")
+    cdb.gravar_detalhamento(conn, "ENERGIA", cdet.ler_detalhamento(cont, nome), nome, "t", competencia="03/2026")
+    assert cst.status_detalhamento(conn, "ENERGIA", "03/2026")["estado"] == "sem_sped"

@@ -38,6 +38,25 @@ def _ou_none(v) -> Optional[float]:
     return None if v is None or (isinstance(v, float) and v != v) or pd.isna(v) else float(v)
 
 
+def texto_detalhamento(st: Optional[dict]) -> str:
+    """Frase curta e neutra (a mesma na tela e no PDF). Vazio se nao houver informacao."""
+    if not st:
+        return ""
+    e = st.get("estado")
+    if e == "ausente":
+        return "Detalhamento da contadora: não enviado para este mês. Os números são os do SPED, sem a conferência linha a linha com o Detalhamento."
+    if e == "sem_sped":
+        return ("Detalhamento da contadora: enviado, mas a conferência linha a linha só é possível com o SPED enviado no app "
+                "(este mês só tem a carga inicial).")
+    if e == "fecha":
+        return f"Detalhamento da contadora: enviado e conferido com o SPED — as {st['n_linhas']} linhas fecham."
+    if e == "pendencias":
+        tipo = f" {st['tipo_sped'].lower()}" if st.get("tipo_sped") else ""
+        return (f"Detalhamento da contadora: enviado, com {st['n_pendentes']} de {st['n_linhas']} linhas ainda pendentes de conferência com o SPED{tipo} "
+                "(o Detalhamento pode ter sido feito sobre outra versão do SPED).")
+    return ""
+
+
 def _linha_apuracao(r: pd.Series, p: Optional[pd.Series], rotulo: str, col_pis: str, col_cofins: str, usado: bool = False) -> dict:
     def v(row, trib):
         if row is None:
@@ -75,7 +94,7 @@ def _leitura(d: dict) -> list:
 
 def montar_dados(serie: pd.DataFrame, competencia: str, *, empresa_codigo: str, empresa_nome: str, cnpj: str = "", controle_mes: Optional[dict] = None,
                  usuario: str = "", nome_contador: str = "", janela: int = JANELA_PADRAO, incluir_sugestoes: bool = False,
-                 gerado_em: Optional[str] = None) -> dict:
+                 gerado_em: Optional[str] = None, detalhamento: Optional[dict] = None) -> dict:
     """Monta o dicionario do relatorio de um mes. `serie` = preparar_serie(..., 'total') da empresa (todos os meses disponiveis; so' os ate' `competencia` contam).
     Levanta ValueError se o mes nao esta na serie (nada para relatar)."""
     if serie is None or serie.empty or competencia not in set(serie["competencia"]):
@@ -127,6 +146,7 @@ def montar_dados(serie: pd.DataFrame, competencia: str, *, empresa_codigo: str, 
         "meses": meses, "tem_original": tem_orig, "dif_original": _ou_none(r["dif_total"]) if tem_orig else None,
         "credito_original": _ou_none(r["orig_total"]) if tem_orig else None,
         "sugestoes": [], "incluir_sugestoes": bool(incluir_sugestoes),
+        "detalhamento": detalhamento or None, "detalhamento_texto": texto_detalhamento(detalhamento),
         "nome_contador": nome_contador, "gerado_por": usuario, "gerado_em": gerado_em or formatacao.agora_br(),
     }
     if incluir_sugestoes:

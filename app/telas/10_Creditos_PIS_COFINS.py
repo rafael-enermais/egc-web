@@ -36,6 +36,7 @@ import creditos_db as cdb  # noqa: E402
 import creditos_detalhamento as cdet  # noqa: E402
 import creditos_export as cexp  # noqa: E402
 import creditos_graficos as gr  # noqa: E402
+import creditos_status as cst  # noqa: E402
 import formatacao  # noqa: E402
 import nf_export  # noqa: E402
 import sped_contribuicoes as sc  # noqa: E402
@@ -507,16 +508,21 @@ _REGRA_PADRAO = "Regra padrão (a versão apontada)"
 def _limpar_simulacao() -> None:
     for k in [k for k in st.session_state if str(k).startswith(f"cred_sim_{emp}_")]:
         del st.session_state[k]
+    st.session_state[f"cred_simmes_{emp}"] = []
+
+
+def _fonte_por_rotulo(comp: str, rotulo: str, manter=()):
+    """Opção escolhida no seletor (rótulo curto) -> fonte do mês. Mesmo critério da lista mostrada na tela."""
+    return next((f for f, r in cdb.opcoes_ui(fontes_all.get(comp, []), manter) if r == rotulo), None)
 
 
 def _escolhas_sessao() -> dict:
     """Simulação em curso ({competência: chave da fonte}), lida do estado dos seletores do Dashboard. Nada disso é gravado."""
     out: dict = {}
-    for c, ls in fontes_all.items():
-        rot = st.session_state.get(f"cred_sim_{emp}_{c}")
-        chave = next((f["chave"] for f in ls if f["rotulo"] == rot), None)
-        if chave:
-            out[c] = chave
+    for c in st.session_state.get(f"cred_simmes_{emp}", []) or []:      # só os meses que estão marcados em "Quais meses simular"
+        f = _fonte_por_rotulo(c, st.session_state.get(f"cred_sim_{emp}_{c}"))
+        if f:
+            out[c] = f["chave"]
     return out
 
 
@@ -541,8 +547,9 @@ with tab_rel:
         sug_r = st.checkbox("Incluir no PDF os \"pontos para acompanhar\" (as sugestões de conferência do app)", value=False, key="cred_rel_sug",
                             help="Por padrão ficam só na tela, como ajuda para você. Marque se quiser que apareçam no relatório.")
         try:
+            det_r = cst.status_detalhamento(conn, emp, mes_r)
             dados_r = dr.montar_dados(gr.preparar_serie(cen_r, "total"), mes_r, empresa_codigo=emp, empresa_nome=NOME_POR_COD[emp], cnpj=CNPJ_POR_COD.get(emp, ""),
-                                      controle_mes=ctrl_all.get(mes_r), usuario=usuario, nome_contador=nome_r.strip(), incluir_sugestoes=sug_r)
+                                      controle_mes=ctrl_all.get(mes_r), usuario=usuario, nome_contador=nome_r.strip(), incluir_sugestoes=sug_r, detalhamento=det_r)
         except ValueError as exc:
             dados_r = None
             st.warning(str(exc))
@@ -554,6 +561,9 @@ with tab_rel:
             else:
                 st.success(f"Versão oficial de {mes_r}: {dados_r['fonte_rotulo'] or 'fonte não informada'}"
                            + (" · conferido" if dados_r["conferido"] else " · ainda não marcado como conferido (é só uma marcação; você pode gerar assim mesmo)"))
+            if dados_r["detalhamento_texto"]:
+                (st.success if (dados_r["detalhamento"] or {}).get("estado") == "fecha" else st.info)(
+                    "📎 " + dados_r["detalhamento_texto"] + " Isso aparece no PDF, no quadro \"De onde vêm os números\" (é um aviso; não impede gerar).")
             st.markdown("**Leitura do mês (como vai no PDF)**")
             for par in dados_r["leitura"]:
                 st.write(_md(par))
@@ -597,12 +607,16 @@ with tab_dash:
                        "e a versão oficial continua a mesma. Se gostar do resultado, marque a versão como oficial em \"Um mês em detalhe\".")
             if not multiplos:
                 st.caption("Nenhum mês do período tem mais de uma versão guardada.")
-            for c in multiplos:
-                ls = fontes_all[c]
-                ops = {_REGRA_PADRAO if f is None else f["rotulo"]: (None if f is None else f["chave"]) for f in [None] + ls}
-                sel = st.selectbox(c, list(ops), key=f"cred_sim_{emp}_{c}")
-                if ops[sel]:
-                    escolhas[c] = ops[sel]
+            else:
+                st.caption("Só aparecem aqui os meses que têm mais de uma versão (por exemplo, original e retificadora). Marque os meses que quer simular; "
+                           "os outros seguem na oficial. A lista não cresce com o tempo: você escolhe o mês, e o filtro De/Até acima limita o período.")
+                st.session_state[f"cred_simmes_{emp}"] = [c for c in (st.session_state.get(f"cred_simmes_{emp}") or []) if c in multiplos]   # mudou o período: tira o que saiu
+                meses_sim = st.multiselect("Quais meses simular?", multiplos, key=f"cred_simmes_{emp}", placeholder="Escolha um ou mais meses")
+                for c in meses_sim:
+                    ops = {_REGRA_PADRAO: None, **{r: f["chave"] for f, r in cdb.opcoes_ui(fontes_all[c])}}
+                    sel = st.selectbox(f"Versão de {c}", list(ops), key=f"cred_sim_{emp}_{c}")
+                    if ops[sel]:
+                        escolhas[c] = ops[sel]
             if escolhas:
                 st.button("↩️ Voltar tudo para a oficial", key="cred_btn_sim_limpar", on_click=_limpar_simulacao)
         cen_bruta = cdb.serie_mensal(conn, emp, escolhas, True, fontes_all, ctrl_all) if escolhas else base_bruta
@@ -692,6 +706,9 @@ with tab_dash:
                    + ("  ·  ✅ conferido" + (f" por {ctrl_mes.get('conferido_por')}" if ctrl_mes.get("conferido_por") else "") if linha_mes["conferido"] else "  ·  ainda não marcado como conferido"))
 
         dicas = analise.sugestoes_mes(serie, i_mes, trib)
+        _det_st = cst.status_detalhamento(conn, emp, mes)
+        if _det_st.get("estado") in ("ausente", "pendencias", "sem_sped"):
+            dicas = list(dicas) + [{"nivel": "info", "titulo": "Detalhamento da contadora", "texto": dr.texto_detalhamento(_det_st)}]
         with st.expander(f"💡 Sugestões de conferência para {linha_mes['rotulo']} ({len(dicas)})", expanded=any(x["nivel"] == "atencao" for x in dicas)):
             st.caption("Sugestões automáticas, só para ajudar. Você decide o que fazer — nenhuma delas impede nada.")
             if not dicas:
@@ -719,9 +736,9 @@ with tab_dash:
         # comparar duas versões do mês
         if len(fontes_mes) > 1:
             with st.expander(f"⚖️ Comparar duas versões de {linha_mes['rotulo']}", expanded=False):
-                ops_f = {f["rotulo"]: f for f in fontes_mes}
+                ops_f = {r: f for f, r in cdb.opcoes_ui(fontes_mes, {linha_mes["fonte"]})}
                 nomes_f = list(ops_f)
-                idx_a = next((i for i, f in enumerate(fontes_mes) if f["chave"] == linha_mes["fonte"]), 0)
+                idx_a = next((i for i, f in enumerate(ops_f.values()) if f["chave"] == linha_mes["fonte"]), 0)
                 ca, cb = st.columns(2)
                 va = ops_f[ca.selectbox("Versão A", nomes_f, index=idx_a, key=f"cred_cmpA_{emp}_{mes}")]
                 vb = ops_f[cb.selectbox("Versão B", nomes_f, index=(idx_a + 1) % len(nomes_f), key=f"cred_cmpB_{emp}_{mes}")]
@@ -758,8 +775,10 @@ with tab_dash:
             else:
                 st.caption("Isso só organiza: a **oficial** é a versão em que o relatório em PDF se baseia; **conferido** é uma marcação sua; a **nota** aparece no relatório. "
                            "Nada aqui impede editar, trocar de versão ou gerar relatório.")
-                chaves = [None] + [f["chave"] for f in fontes_mes]
-                nomes = {None: _REGRA_PADRAO, **{f["chave"]: f["rotulo"] for f in fontes_mes}}
+                _manter = {x for x in (ctrl_mes.get("fonte_oficial"), escolhas.get(mes), linha_mes["fonte"]) if x}
+                _ops_ui = cdb.opcoes_ui(fontes_mes, _manter)
+                chaves = [None] + [f["chave"] for f, _r in _ops_ui]
+                nomes = {None: _REGRA_PADRAO, **{f["chave"]: r for f, r in _ops_ui}}
                 atual_of = ctrl_mes.get("fonte_oficial") if ctrl_mes.get("fonte_oficial") in chaves else None
                 inicial = escolhas.get(mes) if escolhas.get(mes) in chaves else atual_of
                 sel_of = st.selectbox("Versão oficial deste mês", chaves, index=chaves.index(inicial), format_func=lambda c: nomes[c], key=f"cred_of_{emp}_{mes}_{len(escolhas)}")

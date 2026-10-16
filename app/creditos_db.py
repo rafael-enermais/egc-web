@@ -12,6 +12,7 @@ bloco 30) ou, se ela nao escolheu, a regra padrao (a apontada). Tudo e' sugestao
 """
 from __future__ import annotations
 
+import re
 import uuid
 from contextlib import contextmanager
 from typing import Optional
@@ -522,6 +523,45 @@ def fontes_por_mes(conn, empresa_codigo: str) -> dict:
     for comp in fontes:
         fontes[comp].sort(key=lambda f: (0 if f["chave"] == HIST_ORIGINAL else 1 if f["chave"] == HIST_APONTADO else 2, str(f["enviado_em"] or ""), f["chave"]))
     return fontes
+
+
+_RE_DATA_ARQ = re.compile(r"_(?:Original|Retificadora)_(\d{4})(\d{2})(\d{2})\d{6}", re.IGNORECASE)
+
+
+def _data_do_arquivo(f: dict) -> str:
+    """dd/mm/aaaa em que o SPED foi gerado/transmitido (esta' no nome do arquivo); sem isso, a data do envio no app."""
+    m = _RE_DATA_ARQ.search(str(f.get("arquivo") or ""))
+    if m:
+        return f"{m.group(3)}/{m.group(2)}/{m.group(1)}"
+    em = f.get("enviado_em")
+    try:
+        return em.strftime("%d/%m/%Y")
+    except AttributeError:
+        return ""
+
+
+def opcoes_ui(fontes_mes: list, manter=()) -> list:
+    """Opcoes enxutas para os seletores de versao: [(fonte, rotulo_curto)].
+    * tira a repeticao: o mesmo arquivo na carga fixa (jan-jul) e enviado no app aparece UMA vez (prefere a carga fixa; `manter` = chaves que nao podem sumir);
+    * rotulo curto: 'Retificadora · 29/09/2026 · apontada' (em vez do nome longo do arquivo com hash). Rotulos iguais ganham ' · nº n'.
+    A lista completa (fontes_mes) continua a mesma para o resto do app: isto so' muda o que o seletor mostra."""
+    prio = lambda f: (0 if f["chave"] in manter else 1, 0 if f["chave"] == HIST_APONTADO else 1 if f["chave"] == HIST_ORIGINAL else 2 if f.get("apontada") else 3)
+    escolhidas: dict = {}
+    apontada_do_arquivo: dict = {}
+    for f in sorted(fontes_mes, key=prio):
+        k = str(f.get("arquivo") or "") or f["chave"]
+        apontada_do_arquivo[k] = apontada_do_arquivo.get(k, False) or bool(f.get("apontada"))
+        escolhidas.setdefault(k, f)
+    saida, vistos = [], {}
+    for f in fontes_mes:                                     # mantem a ordem original (original, apontada, envios)
+        k = str(f.get("arquivo") or "") or f["chave"]
+        if escolhidas.get(k) is not f:
+            continue
+        tipo = str(f.get("sped_tipo") or "").strip() or ("Original" if f["chave"] == HIST_ORIGINAL else "SPED")
+        r = f"{tipo} · {_data_do_arquivo(f)}".rstrip(" ·") + (" · apontada" if apontada_do_arquivo.get(k) else "")
+        vistos[r] = vistos.get(r, 0) + 1
+        saida.append([f, r, vistos[r]])
+    return [(f, r if vistos[r] == 1 else f"{r} · nº {n}") for f, r, n in saida]
 
 
 def fonte_padrao(fontes_mes: list) -> Optional[dict]:
