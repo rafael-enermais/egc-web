@@ -110,8 +110,8 @@ def montar_dados(serie: pd.DataFrame, competencia: str, *, empresa_codigo: str, 
 
     dados = {
         "tipo": "creditos",
-        "cabecalho_relatorio": f"Créditos e Débitos PIS/COFINS · {competencia}",
-        "capa_titulo": ("Créditos e Débitos", "PIS/COFINS"), "periodo_extenso": "",
+        "cabecalho_relatorio": f"Demonstrativo de Créditos e Débitos · PIS/COFINS · {competencia}",
+        "capa_titulo": ("Demonstrativo de", "Créditos e Débitos"), "capa_subtitulo": "PIS/COFINS", "periodo_extenso": "",
         "empresa_codigo": empresa_codigo, "empresa_nome": empresa_nome, "cnpj": cnpj,
         "competencia": competencia, "rotulo": r["rotulo"], "rotulo_anterior": None if p is None else p["rotulo"],
         "periodo_label": competencia,

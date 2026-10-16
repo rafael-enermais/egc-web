@@ -361,7 +361,7 @@ def gerar_pdf_creditos(dados: dict) -> bytes:
     g._registrar_fontes()
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=(PAGE_W, PAGE_H))
-    c.setTitle(f"Créditos e Débitos PIS/COFINS - {dados['empresa_nome']} - {dados['competencia']}")
+    c.setTitle(f"Demonstrativo de Créditos e Débitos PIS/COFINS - {dados['empresa_nome']} - {dados['competencia']}")
     for n, fn in enumerate(PAGINAS, 1):
         fn(c, dados, n)
         c.showPage()
