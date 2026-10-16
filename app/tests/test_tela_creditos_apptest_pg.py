@@ -71,7 +71,7 @@ def test_conferencia_completa_tudo_conferido_e_download(conn):
     m = {x.label: x.value for x in at.metric}
     assert m["Crédito PIS (SPED)"].endswith("127,05") and m["Linhas conferidas"] == "4 de 5" and m["Pendentes"] == "0"
     assert any("não há pendências" in s.value for s in at.success)
-    assert [d.proto.label for d in at.get("download_button")] == ["⬇️ Baixar a conferência (.xlsx)"]
+    assert [d.proto.label for d in at.get("download_button")] == ["⬇️ Baixar a conferência (.xlsx)", "⬇️ Baixar o relatório em PDF"]   # v0.53.0: + aba Relatório
     assert len(at.get("arrow_data_frame")) >= 1 or True
 
 

@@ -1201,8 +1201,10 @@ def pagina_capa(c, dados, pagina: int, total_paginas: int):
     c.setLineWidth(3)
     c.line(MARGEM, Y(268), MARGEM + 46, Y(268))
 
-    txt(c, MARGEM, 310, "Demonstrativo", font="heavy", size=30, color=NAVY)
-    txt(c, MARGEM, 345, "Comentado", font="heavy", size=30, color=NAVY)
+    # v0.53.0: o relatorio de Creditos PIS/COFINS reusa esta capa (mesma identidade) trocando so' o titulo/selo via dados; sem essas chaves nada muda.
+    titulo_capa = dados.get("capa_titulo", ("Demonstrativo", "Comentado"))
+    txt(c, MARGEM, 310, titulo_capa[0], font="heavy", size=30, color=NAVY)
+    txt(c, MARGEM, 345, titulo_capa[1], font="heavy", size=30, color=NAVY)
 
     # FIX_20260930 (variante "Gerencial" -- Rafael: pág. de Composição das
     # Despesas Administrativas sai do "Demonstrativo Comentado" padrão e
@@ -1217,9 +1219,9 @@ def pagina_capa(c, dados, pagina: int, total_paginas: int):
     # e' o MESMO dado, so' a pagina de Despesas que soma/some (ver
     # `gerar_pdf_completo`).
     # v0.40.0: "fornecedor" usa o MESMO mecanismo do selo (texto proprio).
-    texto_selo = SELO_VARIANTE.get(dados.get("variante", "padrao"))
+    texto_selo = dados["capa_selo"] if "capa_selo" in dados else SELO_VARIANTE.get(dados.get("variante", "padrao"))
     if texto_selo:
-        x_selo0 = MARGEM + stringWidth("Comentado", FONT["heavy"], 30) + 14
+        x_selo0 = MARGEM + stringWidth(titulo_capa[1], FONT["heavy"], 30) + 14
         largura_selo = stringWidth(texto_selo, FONT["bold"], 9) + 20
         rect(c, x_selo0, 322, x_selo0 + largura_selo, 344, fill=ORANGE, radius=8)
         txt(c, x_selo0 + largura_selo / 2, 337, texto_selo, font="bold", size=9, color="#FFFFFF", align="center")

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Tela CRÉDITOS PIS/COFINS (v0.51.0, 16/10/2026) -- controle do crédito e do débito de PIS/COFINS a partir do SPED EFD-Contribuições.
+Tela CRÉDITOS PIS/COFINS (v0.53.0, 16/10/2026) -- controle do crédito e do débito de PIS/COFINS a partir do SPED EFD-Contribuições.
 
 Fluxo combinado com o Rafael (16/10/2026):
   1. Sobe o SPED "original" do mês (já com os apontamentos) e o Detalhamento de Débito e Crédito feito pela contadora (.xlsx).
@@ -9,10 +9,14 @@ Fluxo combinado com o Rafael (16/10/2026):
      restaurar a linha ao valor calculado. As edições ficam presas à versão do SPED em que foram feitas.
   3b. (v0.51.0) CADA upload é uma VERSÃO do mês e nunca some: o SPED original e as retificadoras ficam todos guardados e visíveis; uma é a
      "apontada" (a que vale no dashboard). A contadora escolhe qual conferir, compara as versões e define qual é a apontada.
+  3c. (v0.52.0) Dashboard FLEXÍVEL: filtros (tributo, período), simulação da versão de cada mês (sem gravar), comparação de versões, ponte,
+     sugestões de conferência (só sugestões: nada trava) e controle do mês (versão oficial, conferido, nota — bloco 30; o relatório usa a oficial).
+  3d. (v0.53.0) Aba Relatório: PDF de 4 páginas (créditos e débitos) a partir da versão OFICIAL do mês; se a tela estiver numa simulação, sai com o aviso
+     "não é a versão oficial" (nada trava).
   4. Dashboard: crédito por mês/categoria, diferença original × apontado (jan–jul, carga fixa), débito, crédito utilizado, saldo,
      retenções, a recolher e receita por regime.
 Funções puras ficam em sped_contribuicoes / creditos_detalhamento / creditos_conferencia / creditos_graficos / creditos_export;
-o banco em creditos_db (blocos 28 e 29 do schema.sql).
+o banco em creditos_db (blocos 28, 29 e 30 do schema.sql).
 """
 import sys
 import uuid
@@ -24,6 +28,9 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from auth import usuario_atual  # noqa: E402
 from conexao import sidebar_contexto, get_conn, EMPRESAS_FIXAS, empresa_por_cnpj, flash, mostrar_flash  # noqa: E402
+import creditos_analise as analise  # noqa: E402
+import dados_relatorio_creditos as dr  # noqa: E402
+import gerador_relatorio_creditos as gen  # noqa: E402
 import creditos_conferencia as cf  # noqa: E402
 import creditos_db as cdb  # noqa: E402
 import creditos_detalhamento as cdet  # noqa: E402
@@ -34,6 +41,7 @@ import nf_export  # noqa: E402
 import sped_contribuicoes as sc  # noqa: E402
 
 NOME_POR_COD = {cod: nome for cod, nome, _c in EMPRESAS_FIXAS}
+CNPJ_POR_COD = {cod: cnpj for cod, _n, cnpj in EMPRESAS_FIXAS}
 PENDENTES = (cf.S_NUM, cf.S_DIF, cf.S_SO_SPED, cf.S_SO_DET)
 
 usuario = usuario_atual()
@@ -82,6 +90,11 @@ def _brl(v) -> str:
     return formatacao.moeda_br(v)
 
 
+def _md(texto: str) -> str:
+    """Escapa o cifrão: dois "R$" no mesmo texto viram fórmula (LaTeX) no markdown do Streamlit e saem em fonte de código."""
+    return str(texto).replace("$", "\\$")
+
+
 def _cnpj_mask(d: str) -> str:
     return nf_export._cnpj_formatado(d) or d
 
@@ -99,7 +112,7 @@ codigos = [c for c, _n, _cnpj in EMPRESAS_FIXAS]
 emp = st.selectbox("Empresa", codigos, index=0, format_func=lambda c: NOME_POR_COD[c], key="cred_empresa")
 st.caption("A estrutura já é de várias empresas; por enquanto o uso é só da Energia.")
 
-tab_envio, tab_conf, tab_dash = st.tabs(["📤 Enviar arquivos", "🔎 Conferência", "📊 Dashboard"])
+tab_envio, tab_conf, tab_dash, tab_rel = st.tabs(["📤 Enviar arquivos", "🔎 Conferência", "📊 Dashboard", "📄 Relatório"])
 
 
 # ═════════════════════════════ 1. ENVIAR ARQUIVOS ═════════════════════════════
@@ -473,30 +486,157 @@ with tab_conf:
                                                         "valor_antes": "Antes", "valor_depois": "Depois"}), hide_index=True, width="stretch")
 
 
+# ═════════════════════════════ DADOS DO DASHBOARD E DO RELATÓRIO ═════════════════════════════
+fontes_all = cdb.fontes_por_mes(conn, emp)
+tem30 = cdb.tem_bloco30(conn)
+ctrl_all = cdb.carregar_mes(conn, emp)
+base_bruta = cdb.serie_mensal(conn, emp, None, True, fontes_all, ctrl_all)
+_REGRA_PADRAO = "Regra padrão (a versão apontada)"
+
+
+def _limpar_simulacao() -> None:
+    for k in [k for k in st.session_state if str(k).startswith(f"cred_sim_{emp}_")]:
+        del st.session_state[k]
+
+
+def _escolhas_sessao() -> dict:
+    """Simulação em curso ({competência: chave da fonte}), lida do estado dos seletores do Dashboard. Nada disso é gravado."""
+    out: dict = {}
+    for c, ls in fontes_all.items():
+        rot = st.session_state.get(f"cred_sim_{emp}_{c}")
+        chave = next((f["chave"] for f in ls if f["rotulo"] == rot), None)
+        if chave:
+            out[c] = chave
+    return out
+
+
+@st.cache_data(show_spinner="Montando o PDF...", max_entries=8)
+def _pdf_creditos(dados: dict) -> bytes:
+    return gen.gerar_pdf_creditos(dados)
+
+
+# ═════════════════════════════ 4. RELATÓRIO (PDF) ═════════════════════════════
+with tab_rel:
+    st.caption("PDF de 5 páginas (capa + 4) com os créditos e os débitos de PIS/COFINS do mês (resumo, crédito, débito e apuração, histórico e observações). "
+               "Ele sai da versão **oficial** do mês — a que você marcou como oficial ou, sem marcação, a apontada.")
+    if base_bruta is None or base_bruta.empty:
+        st.info("O relatório fica disponível quando houver o histórico (jan–jul) carregado ou o primeiro SPED enviado.")
+    else:
+        esc_r = _escolhas_sessao()
+        cen_r = cdb.serie_mensal(conn, emp, esc_r, True, fontes_all, ctrl_all) if esc_r else base_bruta
+        meses_r = list(cen_r["competencia"])[::-1]
+        r1, r2 = st.columns([1, 2])
+        mes_r = r1.selectbox("Mês do relatório", meses_r, key="cred_rel_mes")
+        nome_r = r2.text_input("Nome da contadora (aparece na linha de assinatura; opcional)", key="cred_rel_nome")
+        sug_r = st.checkbox("Incluir no PDF os \"pontos para acompanhar\" (as sugestões de conferência do app)", value=False, key="cred_rel_sug",
+                            help="Por padrão ficam só na tela, como ajuda para você. Marque se quiser que apareçam no relatório.")
+        try:
+            dados_r = dr.montar_dados(gr.preparar_serie(cen_r, "total"), mes_r, empresa_codigo=emp, empresa_nome=NOME_POR_COD[emp], cnpj=CNPJ_POR_COD.get(emp, ""),
+                                      controle_mes=ctrl_all.get(mes_r), usuario=usuario, nome_contador=nome_r.strip(), incluir_sugestoes=sug_r)
+        except ValueError as exc:
+            dados_r = None
+            st.warning(str(exc))
+        if dados_r is not None:
+            if not dados_r["oficial"]:
+                st.warning("🔀 A **simulação** do Dashboard está ligada para " + ", ".join(dados_r["meses_nao_oficiais"]) + ". Você pode gerar o PDF assim — ele sai com o aviso "
+                           "\"SIMULAÇÃO — NÃO É A VERSÃO OFICIAL\" em todas as páginas. Para gerar da oficial, volte a simulação.")
+                st.button("↩️ Voltar tudo para a oficial", key="cred_btn_sim_limpar_rel", on_click=_limpar_simulacao)
+            else:
+                st.success(f"Versão oficial de {mes_r}: {dados_r['fonte_rotulo'] or 'fonte não informada'}"
+                           + (" · conferido" if dados_r["conferido"] else " · ainda não marcado como conferido (é só uma marcação; você pode gerar assim mesmo)"))
+            st.markdown("**Leitura do mês (como vai no PDF)**")
+            for par in dados_r["leitura"]:
+                st.write(_md(par))
+            if dados_r["nota"]:
+                st.caption(_md(f"Nota da contadora que vai no PDF: {dados_r['nota']}"))
+            elif tem30:
+                st.caption("Quer registrar uma observação no relatório? Escreva a nota do mês em Dashboard → Um mês em detalhe → Controle.")
+            st.download_button("⬇️ Baixar o relatório em PDF", data=_pdf_creditos(dados_r), file_name=dr.nome_arquivo(dados_r), mime="application/pdf",
+                               key="cred_dl_relatorio", type="primary")
+
+
 # ═════════════════════════════ 3. DASHBOARD ═════════════════════════════
+# (v0.52.0) Dashboard FLEXIVEL: filtros (tributo, período), escolha/simulação da versão de cada mês, comparação, ponte, sugestões de conferência e controle
+# do mês (oficial / conferido / nota). Tudo é SUGESTÃO e organização: nada trava e nada é gravado numa simulação.
+def _rotulo_modo(modo: str) -> str:
+    return {"padrao": "oficial (padrão = apontada)", "oficial": "oficial (marcada pela contadora)", "simulada": "SIMULAÇÃO — não é a oficial"}.get(modo, modo)
+
+
 with tab_dash:
-    serie_bruta = cdb.serie_mensal(conn, emp)
-    if serie_bruta is None or serie_bruta.empty:
+    if base_bruta is None or base_bruta.empty:
         st.info("O dashboard aparece quando houver o histórico (jan–jul) carregado ou o primeiro SPED enviado.")
     else:
-        trib = st.radio("Tributo", ["total", "pis", "cofins"], horizontal=True, key="cred_trib",
-                        format_func={"total": "PIS + COFINS", "pis": "PIS", "cofins": "COFINS"}.get)
+        todas = list(base_bruta["competencia"])
+
+        # ---- filtros (tudo opcional) ----
+        f1, f2, f3 = st.columns([2, 1, 1])
+        trib = f1.radio("Tributo", ["total", "pis", "cofins"], horizontal=True, key="cred_trib", format_func={"total": "PIS + COFINS", "pis": "PIS", "cofins": "COFINS"}.get)
+        de = f2.selectbox("De", todas, index=0, key=f"cred_de_{emp}")
+        ate = f3.selectbox("Até", todas, index=len(todas) - 1, key=f"cred_ate_{emp}")
+        i_de, i_ate = todas.index(de), todas.index(ate)
+        if i_de > i_ate:
+            st.warning("O mês inicial está depois do final; mostrando o intervalo invertido.")
+            i_de, i_ate = i_ate, i_de
+        periodo = todas[i_de:i_ate + 1]
+
+        # ---- simulação da versão de cada mês (nada é gravado) ----
+        multiplos = [c for c in periodo if len(fontes_all.get(c, [])) > 1]
+        escolhas: dict = {}
+        with st.expander(f"🔀 Escolher a versão de cada mês e ver o efeito ({len(multiplos)} mês(es) com mais de uma versão)", expanded=False):
+            st.caption("Experimente outra versão do SPED em qualquer mês: os números e os gráficos abaixo mudam na hora. É só uma **simulação** — nada é gravado "
+                       "e a versão oficial continua a mesma. Se gostar do resultado, marque a versão como oficial em \"Um mês em detalhe\".")
+            if not multiplos:
+                st.caption("Nenhum mês do período tem mais de uma versão guardada.")
+            for c in multiplos:
+                ls = fontes_all[c]
+                ops = {_REGRA_PADRAO if f is None else f["rotulo"]: (None if f is None else f["chave"]) for f in [None] + ls}
+                sel = st.selectbox(c, list(ops), key=f"cred_sim_{emp}_{c}")
+                if ops[sel]:
+                    escolhas[c] = ops[sel]
+            if escolhas:
+                st.button("↩️ Voltar tudo para a oficial", key="cred_btn_sim_limpar", on_click=_limpar_simulacao)
+        cen_bruta = cdb.serie_mensal(conn, emp, escolhas, True, fontes_all, ctrl_all) if escolhas else base_bruta
+        if escolhas and (cen_bruta["modo"] != "simulada").all():
+            escolhas = {}
+        simulando = bool(escolhas) and bool((cen_bruta["modo"] == "simulada").any())
+        cen_f = cen_bruta[cen_bruta["competencia"].isin(periodo)].reset_index(drop=True)
+        base_f = base_bruta[base_bruta["competencia"].isin(periodo)].reset_index(drop=True)
+        if cen_f.empty:
+            st.info("Não há dados no período escolhido.")
+            st.stop()
         # o tributo escolhido vale para os KPIs, os graficos e a tabela (a receita e' base de calculo: nao depende do tributo)
-        serie = gr.preparar_serie(serie_bruta, trib)
-        st.caption("Mostrando: **" + {"total": "PIS + COFINS", "pis": "somente PIS", "cofins": "somente COFINS"}[trib] + "**.")
+        serie = gr.preparar_serie(cen_f, trib)
+        serie_base = gr.preparar_serie(base_f, trib)
+        if simulando:
+            n_sim = int((serie["modo"] == "simulada").sum())
+            st.warning(f"🔀 **Simulação ligada** em {n_sim} mês(es): os números abaixo usam versões diferentes da oficial. Nada foi gravado. "
+                       "Os relatórios gerados avisam que não são da versão oficial.")
+        st.caption("Mostrando: **" + {"total": "PIS + COFINS", "pis": "somente PIS", "cofins": "somente COFINS"}[trib] + f"** · período {periodo[0]} a {periodo[-1]}.")
         ult = serie.iloc[-1]
+        ult_b = serie_base.iloc[-1]
         com_orig = serie[serie["dif_total"].notna()]
+
+        def _delta(a, b):
+            return None if not simulando or abs(a - b) < 0.005 else formatacao.moeda_br(a - b, forcar_sinal=True) + " vs oficial"
+
         k = st.columns(4)
-        k[0].metric(f"Crédito apontado em {ult['rotulo']}", _brl(ult["cred_total"]))
-        k[1].metric("Crédito acumulado no período", _brl(serie["cred_total"].sum()))
+        k[0].metric(f"Crédito apontado em {ult['rotulo']}", _brl(ult["cred_total"]), delta=_delta(ult["cred_total"], ult_b["cred_total"]))
+        k[1].metric("Crédito acumulado no período", _brl(serie["cred_total"].sum()), delta=_delta(serie["cred_total"].sum(), serie_base["cred_total"].sum()))
         k[2].metric("Diferença acumulada original × apontado", _brl(com_orig["dif_total"].sum()) if not com_orig.empty else "—",
-                    help=("Meses " + ", ".join(com_orig["rotulo"]) + " — jan–jul: carga fixa (original × última retificadora); depois: SPED Original enviado no app × versão apontada") if not com_orig.empty else None)
-        k[3].metric(f"Saldo de crédito em {ult['rotulo']}", _brl(ult["saldo_total"]))
+                    help=("Meses " + ", ".join(com_orig["rotulo"]) + " — jan–jul: carga fixa (original × última retificadora); depois: SPED Original enviado no app × versão em uso") if not com_orig.empty else None)
+        k[3].metric(f"Saldo de crédito em {ult['rotulo']}", _brl(ult["saldo_total"]), delta=_delta(ult["saldo_total"], ult_b["saldo_total"]))
         k2 = st.columns(4)
-        k2[0].metric(f"Débito não cumulativo em {ult['rotulo']}", _brl(ult["deb_nc_total"]))
-        k2[1].metric(f"Débito cumulativo em {ult['rotulo']}", _brl(ult["deb_cum_total"]))
-        k2[2].metric(f"Retenções em {ult['rotulo']}", _brl(ult["ret_total"]))
-        k2[3].metric(f"A recolher em {ult['rotulo']}", _brl(ult["recolher_total"]))
+        k2[0].metric(f"Débito não cumulativo em {ult['rotulo']}", _brl(ult["deb_nc_total"]), delta=_delta(ult["deb_nc_total"], ult_b["deb_nc_total"]))
+        k2[1].metric(f"Débito cumulativo em {ult['rotulo']}", _brl(ult["deb_cum_total"]), delta=_delta(ult["deb_cum_total"], ult_b["deb_cum_total"]))
+        k2[2].metric(f"Retenções em {ult['rotulo']}", _brl(ult["ret_total"]), delta=_delta(ult["ret_total"], ult_b["ret_total"]))
+        k2[3].metric(f"A recolher em {ult['rotulo']}", _brl(ult["recolher_total"]), delta=_delta(ult["recolher_total"], ult_b["recolher_total"]))
+
+        if simulando:
+            st.subheader("O que a simulação muda")
+            pt = analise.ponte(serie_base, serie)
+            st.caption(_md(f"Crédito do período na oficial: **{_brl(pt['inicio'])}** → na simulação: **{_brl(pt['fim'])}** ({formatacao.moeda_br(pt['fim'] - pt['inicio'], forcar_sinal=True)}). "
+                            "Cada barra é um mês cuja versão foi trocada."))
+            _grafico(gr.fig_ponte(pt, DARK))
 
         st.subheader("Crédito")
         g1, g2 = st.columns(2)
@@ -530,32 +670,112 @@ with tab_dash:
             st.markdown("**Receita por regime** (não cumulativa × cumulativa)")
             _grafico(gr.fig_receita(serie, DARK))
 
+        # ---- um mês em detalhe ----
         st.subheader("Um mês em detalhe")
-        mes = st.selectbox("Mês", list(serie["competencia"])[::-1], key="cred_dash_mes")
-        linha_mes = serie[serie["competencia"] == mes].iloc[0]
+        meses_det = list(serie["competencia"])[::-1]
+        mes = st.selectbox("Mês", meses_det, key="cred_dash_mes")
+        i_mes = int(serie.index[serie["competencia"] == mes][0])
+        linha_mes = serie.iloc[i_mes]
+        fontes_mes = fontes_all.get(mes, [])
+        ctrl_mes = ctrl_all.get(mes) or {}
+        st.caption(f"**Fonte usada em {linha_mes['rotulo']}:** {linha_mes['fonte_rotulo'] or '—'}  ·  **{_rotulo_modo(str(linha_mes['modo']))}**"
+                   + ("  ·  ✅ conferido" + (f" por {ctrl_mes.get('conferido_por')}" if ctrl_mes.get("conferido_por") else "") if linha_mes["conferido"] else "  ·  ainda não marcado como conferido"))
+
+        dicas = analise.sugestoes_mes(serie, i_mes, trib)
+        with st.expander(f"💡 Sugestões de conferência para {linha_mes['rotulo']} ({len(dicas)})", expanded=any(x["nivel"] == "atencao" for x in dicas)):
+            st.caption("Sugestões automáticas, só para ajudar. Você decide o que fazer — nenhuma delas impede nada.")
+            if not dicas:
+                st.caption("Nada fora do padrão neste mês.")
+            for x in dicas:
+                (st.warning if x["nivel"] == "atencao" else st.info)(_md(f"**{x['titulo']}.** {x['texto']}"))
+
         m1, m2, m3 = st.columns(3)
         with m1:
-            st.markdown("**Crédito por categoria**")
-            _grafico(gr.fig_creditos_por_categoria_mes(linha_mes["por_categoria"], DARK, trib))
+            st.markdown("**Crédito por categoria** (com % do mês)")
+            _grafico(gr.fig_composicao(analise.composicao(linha_mes["por_categoria"], trib), DARK))
         with m2:
             st.markdown("**Crédito por natureza da base**")
             _grafico(gr.fig_base_natureza(linha_mes["por_natureza"], DARK))
         with m3:
-            if linha_mes["origem"] == "ENVIO":
-                sp = cdb.carregar_sped(conn, emp, mes)
+            fonte_id = str(linha_mes["fonte"] or "")[4:] if str(linha_mes["fonte"] or "").startswith("ENV:") else None
+            if fonte_id:
+                sp = cdb.carregar_sped(conn, emp, mes, envio_id=fonte_id)
                 st.markdown("**Maiores fornecedores do mês**")
                 _grafico(gr.fig_top_fornecedores(sp["creditos"] if sp else None, DARK, tributo=trib))
             else:
                 st.markdown("**Quem mais mudou o crédito** (original × apontado)")
                 _grafico(gr.fig_dif_fornecedores(linha_mes["dif_fornecedores"], DARK))
 
+        # comparar duas versões do mês
+        if len(fontes_mes) > 1:
+            with st.expander(f"⚖️ Comparar duas versões de {linha_mes['rotulo']}", expanded=False):
+                ops_f = {f["rotulo"]: f for f in fontes_mes}
+                nomes_f = list(ops_f)
+                idx_a = next((i for i, f in enumerate(fontes_mes) if f["chave"] == linha_mes["fonte"]), 0)
+                ca, cb = st.columns(2)
+                va = ops_f[ca.selectbox("Versão A", nomes_f, index=idx_a, key=f"cred_cmpA_{emp}_{mes}")]
+                vb = ops_f[cb.selectbox("Versão B", nomes_f, index=(idx_a + 1) % len(nomes_f), key=f"cred_cmpB_{emp}_{mes}")]
+                cmp_f = analise.comparar_fontes(va, vb, trib)
+                ap_ = cmp_f[cmp_f["grupo"] == "Apuração"]
+                st.dataframe(pd.DataFrame({"Item": ap_["item"], "A": ap_["a"].map(_brl), "B": ap_["b"].map(_brl),
+                                           "Diferença (B − A)": ap_["dif"].map(lambda v: formatacao.moeda_br(v, forcar_sinal=True)),
+                                           "%": ap_["pct"].map(lambda v: formatacao.pct_br(v, forcar_sinal=True))}), hide_index=True, width="stretch")
+                ct_ = cmp_f[cmp_f["grupo"] == "Categoria"]
+                if not ct_.empty:
+                    st.markdown("**Crédito por categoria nas duas versões**")
+                    _grafico(gr.fig_comparacao_categorias(ct_, DARK, "A", "B"))
+
+        # SPED x Detalhamento por categoria
+        v_det_m = cdb.listar_versoes(conn, "DETALHAMENTO", emp, mes)
+        if v_det_m and linha_mes["por_categoria"]:
+            with st.expander(f"📑 SPED × Detalhamento da contadora em {linha_mes['rotulo']}", expanded=False):
+                pad_d = next((i for i, v in enumerate(v_det_m) if v["apontada"]), len(v_det_m) - 1)
+                ops_d = {v["rotulo"]: v["id"] for v in v_det_m}
+                nome_d = st.selectbox("Versão do Detalhamento", list(ops_d), index=pad_d, key=f"cred_dashdet_{emp}_{mes}") if len(ops_d) > 1 else list(ops_d)[0]
+                cmp_d = analise.comparar_sped_detalhamento(linha_mes["por_categoria"], cdb.det_por_categoria(conn, ops_d[nome_d]), trib)
+                st.dataframe(pd.DataFrame({"Categoria": cmp_d["categoria"], "SPED": cmp_d["sped"].map(_brl), "Detalhamento": cmp_d["det"].map(_brl),
+                                           "Diferença (Detalhamento − SPED)": cmp_d["dif"].map(lambda v: formatacao.moeda_br(v, forcar_sinal=True))}),
+                             hide_index=True, width="stretch")
+                st.caption("Depreciação e imobilizado vêm do SPED e não têm nota no Detalhamento — a diferença nessas linhas é esperada. "
+                           "A conferência nota a nota continua na aba Conferência.")
+                _grafico(gr.fig_comparacao_categorias(pd.DataFrame({"item": cmp_d["categoria"], "a": cmp_d["sped"], "b": cmp_d["det"]}), DARK, "SPED", "Detalhamento"))
+
+        # controle do mês: oficial / conferido / nota (organização, sem travas)
+        with st.expander(f"🗂️ Controle de {linha_mes['rotulo']}: versão oficial, conferido e nota", expanded=False):
+            if not tem30:
+                st.info("Para guardar a versão oficial, a marcação de conferido e as notas, falta uma atualização no banco (bloco 30 do schema.sql: "
+                        "rodar `scripts/bloco30_controle_creditos.txt` no SQL Editor do Supabase). O restante do dashboard funciona normalmente.")
+            else:
+                st.caption("Isso só organiza: a **oficial** é a versão em que o relatório em PDF se baseia; **conferido** é uma marcação sua; a **nota** aparece no relatório. "
+                           "Nada aqui impede editar, trocar de versão ou gerar relatório.")
+                chaves = [None] + [f["chave"] for f in fontes_mes]
+                nomes = {None: _REGRA_PADRAO, **{f["chave"]: f["rotulo"] for f in fontes_mes}}
+                atual_of = ctrl_mes.get("fonte_oficial") if ctrl_mes.get("fonte_oficial") in chaves else None
+                inicial = escolhas.get(mes) if escolhas.get(mes) in chaves else atual_of
+                sel_of = st.selectbox("Versão oficial deste mês", chaves, index=chaves.index(inicial), format_func=lambda c: nomes[c], key=f"cred_of_{emp}_{mes}_{len(escolhas)}")
+                if escolhas.get(mes):
+                    st.caption("A escolha acima começou na versão da sua simulação — salve para torná-la oficial.")
+                conf = st.checkbox("Marcar este mês como conferido", value=bool(ctrl_mes.get("conferido")), key=f"cred_conf_{emp}_{mes}")
+                nota = st.text_area("Nota do mês (aparece no relatório)", value=ctrl_mes.get("nota") or "", key=f"cred_nota_{emp}_{mes}", height=90)
+                if st.button("💾 Salvar o controle deste mês", key=f"cred_btn_ctrl_{emp}_{mes}", type="primary"):
+                    n = cdb.salvar_mes(conn, emp, mes, usuario, fonte_oficial=sel_of, conferido=conf, nota=nota)
+                    if escolhas.get(mes) and sel_of == escolhas.get(mes):
+                        st.session_state.pop(f"cred_sim_{emp}_{mes}", None)
+                    flash("ok", f"Controle de {mes} salvo." if n else "Nada mudou neste mês.")
+                    st.rerun()
+                lm = cdb.log_mes(conn, emp, mes)
+                if not lm.empty:
+                    st.markdown("**Histórico deste mês**")
+                    lm["em"] = lm["em"].map(formatacao.hora_br)
+                    st.dataframe(lm.rename(columns={"em": "Quando", "usuario": "Quem", "campo": "Campo", "valor_antes": "Antes", "valor_depois": "Depois"}), hide_index=True, width="stretch")
+
         with st.expander("📋 Ver os números em tabela"):
-            tab = serie[["rotulo", "origem", "sped_tipo", "cred_total", "orig_total", "dif_total", "deb_nc_total", "deb_cum_total", "usado_total",
+            tab = serie[["rotulo", "origem", "sped_tipo", "modo", "cred_total", "orig_total", "dif_total", "deb_nc_total", "deb_cum_total", "usado_total",
                          "saldo_total", "ret_total", "recolher_total", "receita_nc", "receita_cum"]].rename(columns={
-                "rotulo": "Mês", "origem": "Origem", "sped_tipo": "SPED", "cred_total": "Crédito apontado", "orig_total": "Crédito no original",
+                "rotulo": "Mês", "origem": "Origem", "sped_tipo": "SPED", "modo": "Versão", "cred_total": "Crédito apontado", "orig_total": "Crédito no original",
                 "dif_total": "Diferença", "deb_nc_total": "Débito NC", "deb_cum_total": "Débito cumulativo", "usado_total": "Crédito utilizado",
                 "saldo_total": "Saldo de crédito", "ret_total": "Retenções", "recolher_total": "A recolher", "receita_nc": "Receita NC",
                 "receita_cum": "Receita cumulativa"})
             st.dataframe(tab, hide_index=True, width="stretch")
-        st.caption("Jan–jul: carga fixa feita a partir dos SPED já enviados (original × última retificadora). De agosto em diante vale a versão **apontada** do SPED de cada mês; "
-                   "o \"original\" é o primeiro SPED Original enviado no mês (quando a apontada é uma retificadora).")
+        st.caption("Jan–jul: carga fixa feita a partir dos SPED já enviados (original × última retificadora). De agosto em diante vale a versão **apontada** do SPED de cada mês, "
+                   "a menos que a contadora marque outra como oficial; o \"original\" é o primeiro SPED Original enviado no mês (quando a versão em uso é uma retificadora).")
