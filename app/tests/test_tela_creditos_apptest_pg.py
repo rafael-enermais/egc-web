@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v0.50.0 -- renderiza a tela Creditos PIS/COFINS de verdade (streamlit AppTest) contra Postgres real."""
+"""v0.50.0/v0.51.0 -- renderiza a tela Creditos PIS/COFINS de verdade (streamlit AppTest) contra Postgres real."""
 import sys
 import types
 from pathlib import Path
@@ -130,8 +130,9 @@ def test_salvar_sem_mudanca_avisa_e_nao_grava_nada(conn):
 def test_edicao_salva_muda_a_conferencia_e_pode_ser_restaurada_pela_tela(conn):
     # (o AppTest nao simula digitar dentro do data_editor; a edicao e' gravada pelo mesmo caminho que o botao Salvar usa)
     _gravar(conn)
+    ref = cdb.carregar_sped(conn, "ENERGIA", "07/2026")["envio_id"]
     cdb.salvar_ajustes(conn, "ENERGIA", "07/2026", "linhas",
-                       [{"chave": "11111111000111|1001", "campo": "pis_det", "valor_original": "16.5", "valor_novo": "10"}], "t")
+                       [{"chave": "11111111000111|1001", "campo": "pis_det", "valor_original": "16.5", "valor_novo": "10"}], "t", ref=ref)
     at = _rodar()
     assert not at.exception
     m = {x.label: x.value for x in at.metric}
@@ -140,7 +141,7 @@ def test_edicao_salva_muda_a_conferencia_e_pode_ser_restaurada_pela_tela(conn):
     [b for b in at.button if b.key == "cred_btn_rest_linha"][0].click()
     at.run()
     assert not at.exception
-    assert cdb.carregar_ajustes(conn, "ENERGIA", "07/2026") == []
+    assert cdb.carregar_ajustes(conn, "ENERGIA", "07/2026", ref=ref) == []
     m = {x.label: x.value for x in at.metric}
     assert m["Pendentes"] == "0" and m["Edições salvas"] == "0"
 
@@ -149,3 +150,47 @@ def test_aba_enviar_tem_os_dois_uploaders(conn):
     at = _rodar()
     assert not at.exception
     assert len(at.get("file_uploader")) == 2
+
+
+def test_sem_bloco29_avisa_e_nao_quebra(conn):
+    with conn.cursor() as cur:
+        cur.execute("ALTER TABLE egc.cred_ajuste DROP COLUMN envio_ref")
+    at = _rodar()
+    assert not at.exception
+    assert any("bloco 29" in w.value for w in at.warning)
+
+
+def test_duas_versoes_do_sped_seletor_aviso_e_tornar_apontada(conn):
+    _gravar(conn)                                                                  # 1a: Original (+ Detalhamento)
+    cont, nome = sped_sintetico(ajuste_servico=5.0, tipo="1")
+    cdb.gravar_sped(conn, "ENERGIA", sc.ler_sped(cont, nome), nome, "t")           # 2a: Retificadora = apontada
+    at = _rodar()
+    assert not at.exception
+    sel = at.selectbox(key="cred_ver_sped_07/2026")
+    assert "APONTADA" in sel.value and sel.value.startswith("2ª")
+    assert not any("não é a apontada" in w.value for w in at.warning)
+    # a contadora escolhe conferir o ORIGINAL: aparece o aviso e o botao de tornar apontada
+    at.selectbox(key="cred_ver_sped_07/2026").select_index(0)
+    at.run()
+    assert not at.exception and any("não é a apontada" in w.value for w in at.warning)
+    m = {x.label: x.value for x in at.metric}
+    assert m["Crédito PIS (SPED)"].startswith("R$ 127,05")
+    [b for b in at.button if b.key == "cred_apontar_conf_SPED_07/2026"][0].click()
+    at.run()
+    assert not at.exception
+    assert cdb.carregar_sped(conn, "ENERGIA", "07/2026")["cabecalho"]["tipo"] == "Original"
+    assert len(cdb.listar_versoes(conn, "SPED", "ENERGIA", "07/2026")) == 2          # nada apagado
+
+
+def test_edicao_do_original_nao_aparece_na_retificadora_pela_tela(conn):
+    _gravar(conn)
+    ref_orig = cdb.carregar_sped(conn, "ENERGIA", "07/2026")["envio_id"]
+    cont, nome = sped_sintetico(ajuste_servico=5.0, tipo="1")
+    cdb.gravar_sped(conn, "ENERGIA", sc.ler_sped(cont, nome), nome, "t")
+    cdb.salvar_ajustes(conn, "ENERGIA", "07/2026", "linhas",
+                       [{"chave": "11111111000111|1001", "campo": "pis_det", "valor_original": "16.5", "valor_novo": "10"}], "t", ref=ref_orig)
+    at = _rodar()                                                                   # abre na apontada (retificadora)
+    assert not at.exception and {x.label: x.value for x in at.metric}["Edições salvas"] == "0"
+    at.selectbox(key="cred_ver_sped_07/2026").select_index(0)
+    at.run()
+    assert {x.label: x.value for x in at.metric}["Edições salvas"] == "1"

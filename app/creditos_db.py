@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-EGC | Creditos PIS/COFINS -- banco (bloco 28 do schema.sql).  (v0.50.0, 16/10/2026)
+EGC | Creditos PIS/COFINS -- banco (blocos 28 e 29 do schema.sql).  (v0.51.0, 16/10/2026)
 
-Mesmo desenho dos envios de NFS: cada upload (SPED ou Detalhamento) e' um ENVIO por empresa+competencia; reenviar o mes ARQUIVA o anterior
-(nada e' apagado). As edicoes da contadora (cred_ajuste) sao independentes do envio -- sobrevivem a um novo upload e ficam com trilha
-(cred_ajuste_log). O historico jan-jul (cred_historico) e' carga fixa; o dashboard junta historico + envios vigentes.
+Cada upload (SPED ou Detalhamento) e' uma VERSAO do mes (empresa+competencia) e NUNCA e' apagada nem some da tela. Uma versao por mes e'
+a APONTADA (a que vale para dashboard e conferencia padrao); as demais ficam guardadas como "outras versoes" e podem ser conferidas,
+comparadas e promovidas a apontada. (Tecnicamente: arquivado_em IS NULL = apontada; preenchido = outra versao.)
+As edicoes da contadora (cred_ajuste) ficam presas a versao do SPED em que foram feitas (envio_ref) e tem trilha (cred_ajuste_log).
+O historico jan-jul (cred_historico) e' carga fixa; o dashboard junta historico + versoes apontadas.
 """
 from __future__ import annotations
 
@@ -29,6 +31,16 @@ class Bloco28Indisponivel(Exception):
 def tem_bloco28(conn) -> bool:
     try:
         return all(nf_sienge._tabela_existe(conn, f"egc.{t}") is True for t in TABELAS)
+    except Exception:
+        return False
+
+
+def tem_bloco29(conn) -> bool:
+    """O bloco 29 (envio_ref nas edicoes) ja' foi rodado neste banco?"""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM information_schema.columns WHERE table_schema = 'egc' AND table_name = 'cred_ajuste' AND column_name = 'envio_ref'")
+            return cur.fetchone() is not None
     except Exception:
         return False
 
@@ -82,8 +94,26 @@ dif_fornecedores = sc.dif_fornecedores
 # ─────────────────────────────────────────────
 #  ENVIOS
 # ─────────────────────────────────────────────
-def gravar_sped(conn, empresa_codigo: str, sped: dict, arquivo_nome: str, usuario: str) -> str:
-    """Grava o SPED como o envio vigente da empresa+competencia (o anterior e' ARQUIVADO). Devolve o id."""
+def _versao_apontada(cur, tab: str, empresa_codigo: str, competencia: str):
+    cur.execute(f"SELECT id FROM egc.{tab} WHERE empresa_codigo = %s AND competencia = %s AND arquivado_em IS NULL", (empresa_codigo, competencia))
+    r = cur.fetchone()
+    return str(r[0]) if r else None
+
+
+def _marcar_versao(cur, tab: str, empresa_codigo: str, competencia: str, novo: str, apontar: bool, usuario: str) -> None:
+    """Depois de inserir a versao `novo`: ou ela vira a APONTADA (a anterior continua guardada como outra versao) ou fica guardada sem apontar."""
+    if apontar:
+        cur.execute(f"UPDATE egc.{tab} SET arquivado_em = now(), arquivado_por = %s, "
+                    "arquivado_motivo = 'Outra versão do mês foi apontada' "
+                    "WHERE empresa_codigo = %s AND competencia = %s AND arquivado_em IS NULL AND id <> %s", (usuario, empresa_codigo, competencia, novo))
+    else:
+        cur.execute(f"UPDATE egc.{tab} SET arquivado_em = now(), arquivado_por = %s, arquivado_motivo = 'Guardada sem apontar (a apontada continua a mesma)' "
+                    "WHERE id = %s", (usuario, novo))
+
+
+def gravar_sped(conn, empresa_codigo: str, sped: dict, arquivo_nome: str, usuario: str, apontar: bool = True) -> str:
+    """Grava o SPED como mais uma VERSAO do mes (nada e' apagado). `apontar=True` (padrao): vira a apontada e a anterior continua guardada.
+    `apontar=False`: fica guardada como outra versao (se o mes ainda nao tem apontada, vira a apontada). Devolve o id."""
     cab = sped["cabecalho"]
     cred, rec = sped["creditos"], sped["receitas"]
     novo = str(uuid.uuid4())
@@ -92,10 +122,7 @@ def gravar_sped(conn, empresa_codigo: str, sped: dict, arquivo_nome: str, usuari
     resumo["linhas_receita"] = int(len(rec))
     with _transacao(conn):
         with conn.cursor() as cur:
-            cur.execute("UPDATE egc.cred_sped_envio SET arquivado_em = now(), arquivado_por = %s, "
-                        "arquivado_motivo = 'Substituído por um novo envio do mesmo mês' "
-                        "WHERE empresa_codigo = %s AND competencia = %s AND arquivado_em IS NULL",
-                        (usuario, empresa_codigo, cab["competencia"]))
+            apontar = apontar or _versao_apontada(cur, "cred_sped_envio", empresa_codigo, cab["competencia"]) is None
             cur.execute(
                 "INSERT INTO egc.cred_sped_envio (id, empresa_codigo, competencia, sped_tipo, arquivo_nome, sha256, cnpj, num_rec_anterior, "
                 "enviado_arquivo_em, resumo, apuracao, por_categoria, por_natureza, enviado_por) "
@@ -117,10 +144,12 @@ def gravar_sped(conn, empresa_codigo: str, sped: dict, arquivo_nome: str, usuari
                     [(novo, r.registro, _nn(r.cnpj), _nn(r.cliente), _nn(r.numero), _nn(r.data), _f(r.valor), _nn(r.cst_pis), _f(r.base_pis),
                       _f(r.aliq_pis), _f(r.pis), _nn(r.cst_cofins), _f(r.base_cofins), _f(r.aliq_cofins), _f(r.cofins))
                      for r in rec.itertuples(index=False)], page_size=500)
+            _marcar_versao(cur, "cred_sped_envio", empresa_codigo, cab["competencia"], novo, apontar, usuario)
     return novo
 
 
-def gravar_detalhamento(conn, empresa_codigo: str, det: dict, arquivo_nome: str, usuario: str, competencia: Optional[str] = None) -> str:
+def gravar_detalhamento(conn, empresa_codigo: str, det: dict, arquivo_nome: str, usuario: str, competencia: Optional[str] = None,
+                        apontar: bool = True) -> str:
     comp = competencia or det.get("competencia")
     if not comp:
         raise ValueError("Não consegui descobrir a competência (mês/ano) do Detalhamento.")
@@ -128,9 +157,7 @@ def gravar_detalhamento(conn, empresa_codigo: str, det: dict, arquivo_nome: str,
     novo = str(uuid.uuid4())
     with _transacao(conn):
         with conn.cursor() as cur:
-            cur.execute("UPDATE egc.cred_det_envio SET arquivado_em = now(), arquivado_por = %s, "
-                        "arquivado_motivo = 'Substituído por um novo envio do mesmo mês' "
-                        "WHERE empresa_codigo = %s AND competencia = %s AND arquivado_em IS NULL", (usuario, empresa_codigo, comp))
+            apontar = apontar or _versao_apontada(cur, "cred_det_envio", empresa_codigo, comp) is None
             cur.execute(
                 "INSERT INTO egc.cred_det_envio (id, empresa_codigo, competencia, arquivo_nome, sha256, total_linhas, resumo, debitos, "
                 "reconciliacao, enviado_por) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
@@ -144,6 +171,7 @@ def gravar_detalhamento(conn, empresa_codigo: str, det: dict, arquivo_nome: str,
                       _nn(r.produto), _nn(str(r.descricao)[:300]), _f(r.valor_total), _f(r.base), _nn(r.cst_pis), _f(r.aliq_pis), _f(r.pis),
                       _nn(r.cst_cofins), _f(r.aliq_cofins), _f(r.cofins), _nn(r.tipo_credito), int(r.linha_origem))
                      for r in linhas.itertuples(index=False)], page_size=500)
+            _marcar_versao(cur, "cred_det_envio", empresa_codigo, comp, novo, apontar, usuario)
     return novo
 
 
@@ -215,22 +243,113 @@ def restaurar_envio(conn, tipo: str, envio_id: str, usuario: str) -> None:
 
 
 # ─────────────────────────────────────────────
+#  VERSOES DO MES (v0.51.0)
+# ─────────────────────────────────────────────
+def listar_versoes(conn, tipo: str, empresa_codigo: str, competencia: str) -> list:
+    """Todas as versoes do mes (SPED ou DETALHAMENTO), da mais antiga para a mais nova:
+    [{id, n, tipo, sped_tipo, arquivo_nome, sha256, enviado_por, enviado_em, apontada, rotulo, resumo}]. `n` = 1, 2, 3... na ordem de envio."""
+    sped = tipo == "SPED"
+    extra = "sped_tipo, resumo" if sped else "NULL::text AS sped_tipo, resumo"
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT id, {extra}, arquivo_nome, sha256, enviado_por, enviado_em, arquivado_em FROM egc.{_tab(tipo)} "
+                    "WHERE empresa_codigo = %s AND competencia = %s ORDER BY enviado_em, id", (empresa_codigo, competencia))
+        rows = cur.fetchall()
+    saida = []
+    for i, (eid, st_, resumo, arq, sha, por, em, arq_em) in enumerate(rows, 1):
+        nome = (str(st_).strip() if st_ else "Detalhamento")
+        v = {"id": str(eid), "n": i, "tipo": tipo, "sped_tipo": st_, "arquivo_nome": arq, "sha256": sha, "enviado_por": por, "enviado_em": em,
+             "apontada": arq_em is None, "resumo": resumo or {}}
+        v["rotulo"] = f"{i}ª · {nome} · {arq} · enviado por {por} em {_hora(em)}" + (" · APONTADA" if v["apontada"] else "")
+        saida.append(v)
+    return saida
+
+
+def _hora(ts) -> str:
+    try:
+        return ts.strftime("%d/%m/%Y %H:%M")
+    except AttributeError:
+        return str(ts)
+
+
+def envio_com_sha(conn, tipo: str, empresa_codigo: str, competencia: str, sha256: str) -> Optional[dict]:
+    """Se este MESMO arquivo ja' foi enviado neste mes (em qualquer versao): devolve a versao (com 'n' e 'apontada')."""
+    for v in listar_versoes(conn, tipo, empresa_codigo, competencia):
+        if sha256 and v["sha256"] == sha256:
+            return v
+    return None
+
+
+def definir_apontada(conn, tipo: str, envio_id: str, usuario: str) -> bool:
+    """Passa a ser a versao APONTADA do mes (a que estava apontada continua guardada como outra versao). Troca numa transacao so'.
+    Devolve False se ja' era a apontada."""
+    tab = _tab(tipo)
+    with _transacao(conn):
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT empresa_codigo, competencia, arquivado_em FROM egc.{tab} WHERE id = %s", (envio_id,))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("Envio não encontrado.")
+            if row[2] is None:
+                return False
+            cur.execute(f"UPDATE egc.{tab} SET arquivado_em = now(), arquivado_por = %s, arquivado_motivo = 'Outra versão do mês foi apontada' "
+                        "WHERE empresa_codigo = %s AND competencia = %s AND arquivado_em IS NULL AND id <> %s", (usuario, row[0], row[1], envio_id))
+            cur.execute(f"UPDATE egc.{tab} SET arquivado_em = NULL, arquivado_por = NULL, arquivado_motivo = NULL WHERE id = %s", (envio_id,))
+    return True
+
+
+def comparar_versoes_sped(conn, empresa_codigo: str, competencia: str) -> pd.DataFrame:
+    """Tabela para comparar as versoes do SPED do mes (do resumo guardado em cada envio): uma linha por versao, numeros em R$."""
+    linhas = []
+    for v in listar_versoes(conn, "SPED", empresa_codigo, competencia):
+        r = v["resumo"]
+        linhas.append({"versao": f"{v['n']}ª · {v['sped_tipo'] or ''}" + (" (apontada)" if v["apontada"] else ""), "id": v["id"], "apontada": v["apontada"],
+                       "credito_pis": _f(r.get("credito_pis")), "credito_cofins": _f(r.get("credito_cofins")),
+                       "debito_nc_pis": _f(r.get("debito_nc_pis")), "debito_nc_cofins": _f(r.get("debito_nc_cofins")),
+                       "saldo_pis": _f(r.get("saldo_pis")), "saldo_cofins": _f(r.get("saldo_cofins")),
+                       "a_recolher_pis": _f(r.get("a_recolher_pis")), "a_recolher_cofins": _f(r.get("a_recolher_cofins")),
+                       "linhas_credito": int(_f(r.get("linhas_credito"))), "arquivo": v["arquivo_nome"], "enviado_em": v["enviado_em"],
+                       "enviado_por": v["enviado_por"]})
+    return pd.DataFrame(linhas)
+
+
+def comparar_categorias_sped(conn, empresa_codigo: str, competencia: str) -> pd.DataFrame:
+    """Credito (PIS+COFINS) por categoria x versao do SPED do mes: colunas = versoes (na ordem de envio)."""
+    dados: dict = {}
+    cols = []
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, por_categoria FROM egc.cred_sped_envio WHERE empresa_codigo = %s AND competencia = %s", (empresa_codigo, competencia))
+        pc = {str(r[0]): (r[1] or {}) for r in cur.fetchall()}
+    for v in listar_versoes(conn, "SPED", empresa_codigo, competencia):
+        col = f"{v['n']}ª {v['sped_tipo'] or ''}".strip() + (" (apontada)" if v["apontada"] else "")
+        cols.append(col)
+        for cat, vals in pc.get(v["id"], {}).items():
+            dados.setdefault(cat, {})[col] = _f((vals or {}).get("pis")) + _f((vals or {}).get("cofins"))
+    if not dados:
+        return pd.DataFrame()
+    df = pd.DataFrame.from_dict(dados, orient="index").reindex(columns=cols).fillna(0.0)
+    df.index.name = "categoria"
+    return df.reset_index()
+
+
+# ─────────────────────────────────────────────
 #  LEITURA DO PERIODO (reconstroi os dicionarios usados pela conferencia)
 # ─────────────────────────────────────────────
 def competencias(conn, empresa_codigo: str) -> list:
-    """Competencias com SPED ou Detalhamento vigente (mais recente primeiro)."""
+    """Competencias com algum SPED ou Detalhamento enviado, em qualquer versao (mais recente primeiro)."""
     with conn.cursor() as cur:
-        cur.execute("SELECT competencia FROM egc.cred_sped_envio WHERE empresa_codigo = %s AND arquivado_em IS NULL UNION "
-                    "SELECT competencia FROM egc.cred_det_envio WHERE empresa_codigo = %s AND arquivado_em IS NULL", (empresa_codigo, empresa_codigo))
+        cur.execute("SELECT competencia FROM egc.cred_sped_envio WHERE empresa_codigo = %s UNION "
+                    "SELECT competencia FROM egc.cred_det_envio WHERE empresa_codigo = %s", (empresa_codigo, empresa_codigo))
         comps = [r[0] for r in cur.fetchall()]
     return sorted(set(comps), key=_chave_comp, reverse=True)
 
 
-def carregar_sped(conn, empresa_codigo: str, competencia: str) -> Optional[dict]:
+def carregar_sped(conn, empresa_codigo: str, competencia: str, envio_id: Optional[str] = None) -> Optional[dict]:
+    """O SPED APONTADO do mes (padrao) ou uma versao especifica (`envio_id`). 'apontada' vem no dicionario."""
+    filtro, params = ("id = %s", (envio_id,)) if envio_id else ("arquivado_em IS NULL", ())
     with conn.cursor() as cur:
         cur.execute("SELECT id, sped_tipo, arquivo_nome, sha256, cnpj, num_rec_anterior, enviado_arquivo_em, resumo, apuracao, por_categoria, "
-                    "por_natureza, enviado_por, enviado_em FROM egc.cred_sped_envio "
-                    "WHERE empresa_codigo = %s AND competencia = %s AND arquivado_em IS NULL", (empresa_codigo, competencia))
+                    "por_natureza, enviado_por, enviado_em, arquivado_em FROM egc.cred_sped_envio "
+                    f"WHERE empresa_codigo = %s AND competencia = %s AND {filtro}", (empresa_codigo, competencia) + params)
         r = cur.fetchone()
     if not r:
         return None
@@ -250,13 +369,15 @@ def carregar_sped(conn, empresa_codigo: str, competencia: str) -> Optional[dict]
     return {"envio_id": eid, "erro": None, "creditos": cred, "receitas": rec, "apuracao": r[8] or {}, "resumo": r[7] or {},
             "por_categoria": r[9] or {}, "por_natureza": r[10] or {}, "sha256": r[3], "arquivo": r[2],
             "cabecalho": {"tipo": r[1], "cnpj": r[4], "num_rec_anterior": r[5], "enviado_arquivo_em": r[6], "competencia": competencia},
-            "enviado_por": r[11], "enviado_em": r[12]}
+            "enviado_por": r[11], "enviado_em": r[12], "apontada": r[13] is None}
 
 
-def carregar_detalhamento(conn, empresa_codigo: str, competencia: str) -> Optional[dict]:
+def carregar_detalhamento(conn, empresa_codigo: str, competencia: str, envio_id: Optional[str] = None) -> Optional[dict]:
+    """O Detalhamento APONTADO do mes (padrao) ou uma versao especifica (`envio_id`)."""
+    filtro, params = ("id = %s", (envio_id,)) if envio_id else ("arquivado_em IS NULL", ())
     with conn.cursor() as cur:
-        cur.execute("SELECT id, arquivo_nome, sha256, resumo, debitos, reconciliacao, enviado_por, enviado_em FROM egc.cred_det_envio "
-                    "WHERE empresa_codigo = %s AND competencia = %s AND arquivado_em IS NULL", (empresa_codigo, competencia))
+        cur.execute("SELECT id, arquivo_nome, sha256, resumo, debitos, reconciliacao, enviado_por, enviado_em, arquivado_em FROM egc.cred_det_envio "
+                    f"WHERE empresa_codigo = %s AND competencia = %s AND {filtro}", (empresa_codigo, competencia) + params)
         r = cur.fetchone()
     if not r:
         return None
@@ -272,61 +393,66 @@ def carregar_detalhamento(conn, empresa_codigo: str, competencia: str) -> Option
         linhas[c] = linhas[c].fillna("")
     return {"envio_id": eid, "erro": None, "competencia": competencia, "linhas": linhas, "resumo": pd.DataFrame(r[3] or []),
             "debitos": pd.DataFrame(r[4] or []), "reconciliacao": pd.DataFrame(r[5] or []), "sha256": r[2], "arquivo": r[1],
-            "enviado_por": r[6], "enviado_em": r[7]}
+            "enviado_por": r[6], "enviado_em": r[7], "apontada": r[8] is None}
 
 
 # ─────────────────────────────────────────────
 #  AJUSTES (edicoes da contadora)
 # ─────────────────────────────────────────────
-def carregar_ajustes(conn, empresa_codigo: str, competencia: str) -> list:
+def carregar_ajustes(conn, empresa_codigo: str, competencia: str, ref: str = "") -> list:
+    """Edicoes da versao `ref` (id do SPED conferido; '' = mes sem SPED)."""
     with conn.cursor() as cur:
         cur.execute("SELECT aba, chave, campo, valor_original, valor_novo, editado_por, editado_em FROM egc.cred_ajuste "
-                    "WHERE empresa_codigo = %s AND competencia = %s ORDER BY id", (empresa_codigo, competencia))
+                    "WHERE empresa_codigo = %s AND competencia = %s AND envio_ref = %s ORDER BY id", (empresa_codigo, competencia, ref or ""))
         return [dict(zip(("aba", "chave", "campo", "valor_original", "valor_novo", "editado_por", "editado_em"), r)) for r in cur.fetchall()]
 
 
-def salvar_ajustes(conn, empresa_codigo: str, competencia: str, aba: str, mudancas: list, usuario: str) -> int:
-    """mudancas = [{'chave','campo','valor_original','valor_novo'}]. Upsert + trilha. Devolve quantas edicoes gravou."""
+def salvar_ajustes(conn, empresa_codigo: str, competencia: str, aba: str, mudancas: list, usuario: str, ref: str = "") -> int:
+    """mudancas = [{'chave','campo','valor_original','valor_novo'}]. Upsert + trilha, presos a versao `ref`. Devolve quantas edicoes gravou."""
+    ref = ref or ""
     n = 0
     with _transacao(conn):
         with conn.cursor() as cur:
             for m in mudancas:
                 cur.execute("SELECT valor_novo, valor_original FROM egc.cred_ajuste WHERE empresa_codigo = %s AND competencia = %s AND aba = %s "
-                            "AND chave = %s AND campo = %s", (empresa_codigo, competencia, aba, m["chave"], m["campo"]))
+                            "AND chave = %s AND campo = %s AND envio_ref = %s", (empresa_codigo, competencia, aba, m["chave"], m["campo"], ref))
                 ant = cur.fetchone()
                 original = ant[1] if ant else m.get("valor_original")
                 antes = ant[0] if ant else m.get("valor_original")
                 cur.execute(
-                    "INSERT INTO egc.cred_ajuste (empresa_codigo, competencia, aba, chave, campo, valor_original, valor_novo, editado_por) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (empresa_codigo, competencia, aba, chave, campo) DO UPDATE SET "
+                    "INSERT INTO egc.cred_ajuste (empresa_codigo, competencia, aba, chave, campo, valor_original, valor_novo, editado_por, envio_ref) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (empresa_codigo, competencia, aba, chave, campo, envio_ref) DO UPDATE SET "
                     "valor_novo = EXCLUDED.valor_novo, editado_por = EXCLUDED.editado_por, editado_em = now()",
-                    (empresa_codigo, competencia, aba, m["chave"], m["campo"], original, m["valor_novo"], usuario))
-                cur.execute("INSERT INTO egc.cred_ajuste_log (empresa_codigo, competencia, aba, chave, campo, acao, valor_antes, valor_depois, usuario) "
-                             "VALUES (%s,%s,%s,%s,%s,'editar',%s,%s,%s)",
-                             (empresa_codigo, competencia, aba, m["chave"], m["campo"], antes, m["valor_novo"], usuario))
+                    (empresa_codigo, competencia, aba, m["chave"], m["campo"], original, m["valor_novo"], usuario, ref))
+                cur.execute("INSERT INTO egc.cred_ajuste_log (empresa_codigo, competencia, aba, chave, campo, acao, valor_antes, valor_depois, usuario, envio_ref) "
+                             "VALUES (%s,%s,%s,%s,%s,'editar',%s,%s,%s,%s)",
+                             (empresa_codigo, competencia, aba, m["chave"], m["campo"], antes, m["valor_novo"], usuario, ref))
                 n += 1
     return n
 
 
-def restaurar_ajustes(conn, empresa_codigo: str, competencia: str, aba: str, chave: str, usuario: str) -> int:
-    """Remove TODAS as edicoes de uma linha (volta ao valor calculado). Fica registrado no log."""
+def restaurar_ajustes(conn, empresa_codigo: str, competencia: str, aba: str, chave: str, usuario: str, ref: str = "") -> int:
+    """Remove TODAS as edicoes de uma linha da versao `ref` (volta ao valor calculado). Fica registrado no log."""
+    ref = ref or ""
     with _transacao(conn):
         with conn.cursor() as cur:
-            cur.execute("SELECT campo, valor_novo, valor_original FROM egc.cred_ajuste WHERE empresa_codigo = %s AND competencia = %s AND aba = %s AND chave = %s",
-                        (empresa_codigo, competencia, aba, chave))
+            cur.execute("SELECT campo, valor_novo, valor_original FROM egc.cred_ajuste WHERE empresa_codigo = %s AND competencia = %s AND aba = %s "
+                        "AND chave = %s AND envio_ref = %s", (empresa_codigo, competencia, aba, chave, ref))
             rows = cur.fetchall()
             for campo, novo, orig in rows:
-                cur.execute("INSERT INTO egc.cred_ajuste_log (empresa_codigo, competencia, aba, chave, campo, acao, valor_antes, valor_depois, usuario) "
-                             "VALUES (%s,%s,%s,%s,%s,'restaurar',%s,%s,%s)", (empresa_codigo, competencia, aba, chave, campo, novo, orig, usuario))
-            cur.execute("DELETE FROM egc.cred_ajuste WHERE empresa_codigo = %s AND competencia = %s AND aba = %s AND chave = %s",
-                        (empresa_codigo, competencia, aba, chave))
+                cur.execute("INSERT INTO egc.cred_ajuste_log (empresa_codigo, competencia, aba, chave, campo, acao, valor_antes, valor_depois, usuario, envio_ref) "
+                             "VALUES (%s,%s,%s,%s,%s,'restaurar',%s,%s,%s,%s)", (empresa_codigo, competencia, aba, chave, campo, novo, orig, usuario, ref))
+            cur.execute("DELETE FROM egc.cred_ajuste WHERE empresa_codigo = %s AND competencia = %s AND aba = %s AND chave = %s AND envio_ref = %s",
+                        (empresa_codigo, competencia, aba, chave, ref))
     return len(rows)
 
 
-def log_ajustes(conn, empresa_codigo: str, competencia: str, limite: int = 200) -> pd.DataFrame:
+def log_ajustes(conn, empresa_codigo: str, competencia: str, limite: int = 200, ref: str = "") -> pd.DataFrame:
+    """Trilha das edicoes da versao `ref`."""
     with conn.cursor() as cur:
         cur.execute("SELECT em, usuario, aba, chave, campo, acao, valor_antes, valor_depois FROM egc.cred_ajuste_log "
-                    "WHERE empresa_codigo = %s AND competencia = %s ORDER BY id DESC LIMIT %s", (empresa_codigo, competencia, limite))
+                    "WHERE empresa_codigo = %s AND competencia = %s AND envio_ref = %s ORDER BY id DESC LIMIT %s",
+                    (empresa_codigo, competencia, ref or "", limite))
         return pd.DataFrame(cur.fetchall(), columns=["em", "usuario", "aba", "chave", "campo", "acao", "valor_antes", "valor_depois"])
 
 
@@ -362,9 +488,17 @@ def serie_mensal(conn, empresa_codigo: str) -> pd.DataFrame:
     Colunas: competencia, origem, tem_original, e (apontado) / (original) para credito, debito, a recolher, retencao..."""
     hist = carregar_historico(conn, empresa_codigo)
     with conn.cursor() as cur:
-        cur.execute("SELECT competencia, sped_tipo, resumo, por_categoria, por_natureza FROM egc.cred_sped_envio "
-                    "WHERE empresa_codigo = %s AND arquivado_em IS NULL", (empresa_codigo,))
-        envios = {r[0]: r for r in cur.fetchall()}
+        cur.execute("SELECT competencia, sped_tipo, resumo, por_categoria, por_natureza, arquivado_em, enviado_em, id FROM egc.cred_sped_envio "
+                    "WHERE empresa_codigo = %s ORDER BY enviado_em, id", (empresa_codigo,))
+        todos = cur.fetchall()
+    envios = {r[0]: r for r in todos if r[5] is None}                      # versao APONTADA do mes
+    originais: dict = {}                                                     # 1o SPED "Original" enviado no app (se nao for a propria apontada)
+    for r in todos:
+        if str(r[1] or "").strip().lower() == "original" and r[0] not in originais:
+            originais[r[0]] = r
+    for c, o in list(originais.items()):
+        if c in envios and envios[c][7] == o[7]:
+            del originais[c]
     por: dict = {}
     for h in hist:
         d = por.setdefault(h["competencia"], {})
@@ -378,7 +512,8 @@ def serie_mensal(conn, empresa_codigo: str) -> pd.DataFrame:
         ap = env[2] if env else (h.get("APONTADO") or {}).get("resumo")
         cat = env[3] if env else (h.get("APONTADO") or {}).get("por_categoria", {})
         nat = env[4] if env else (h.get("APONTADO") or {}).get("por_natureza", {})
-        orig = (h.get("ORIGINAL") or {}).get("resumo")
+        orig_env = None if h.get("ORIGINAL") else originais.get(c)
+        orig = (h.get("ORIGINAL") or {}).get("resumo") or (orig_env[2] if orig_env else None)
         if not ap and not orig:
             continue
         ap = ap or {}
@@ -399,7 +534,7 @@ def serie_mensal(conn, empresa_codigo: str) -> pd.DataFrame:
             "recolher_pis": _f(ap.get("a_recolher_pis")), "recolher_cofins": _f(ap.get("a_recolher_cofins")),
             "receita_nc": _f(ap.get("receita_nc")), "receita_cum": _f(ap.get("receita_cum")),
             "por_categoria": cat or {}, "por_natureza": nat or {},
-            "orig_por_categoria": (h.get("ORIGINAL") or {}).get("por_categoria", {}),
+            "orig_por_categoria": (h.get("ORIGINAL") or {}).get("por_categoria", {}) or (orig_env[3] if orig_env else {}) or {},
             "dif_fornecedores": (h.get("APONTADO") or {}).get("dif_fornecedores", []),
         })
     return pd.DataFrame(linhas)

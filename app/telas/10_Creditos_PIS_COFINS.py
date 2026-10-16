@@ -1,16 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-Tela CRÉDITOS PIS/COFINS (v0.50.0, 16/10/2026) -- controle do crédito e do débito de PIS/COFINS a partir do SPED EFD-Contribuições.
+Tela CRÉDITOS PIS/COFINS (v0.51.0, 16/10/2026) -- controle do crédito e do débito de PIS/COFINS a partir do SPED EFD-Contribuições.
 
 Fluxo combinado com o Rafael (16/10/2026):
   1. Sobe o SPED "original" do mês (já com os apontamentos) e o Detalhamento de Débito e Crédito feito pela contadora (.xlsx).
   2. O app cruza os dois (nota a nota, por categoria, por base e na apuração de débitos) e mostra o que bate e o que não bate.
   3. TUDO é editável ("pra não depender se o app erra algo"): cada edição fica salva, com quem/quando e o valor antes, e dá para
-     restaurar a linha ao valor calculado. Reenviar um arquivo ARQUIVA o anterior (nada é apagado).
+     restaurar a linha ao valor calculado. As edições ficam presas à versão do SPED em que foram feitas.
+  3b. (v0.51.0) CADA upload é uma VERSÃO do mês e nunca some: o SPED original e as retificadoras ficam todos guardados e visíveis; uma é a
+     "apontada" (a que vale no dashboard). A contadora escolhe qual conferir, compara as versões e define qual é a apontada.
   4. Dashboard: crédito por mês/categoria, diferença original × apontado (jan–jul, carga fixa), débito, crédito utilizado, saldo,
      retenções, a recolher e receita por regime.
 Funções puras ficam em sped_contribuicoes / creditos_detalhamento / creditos_conferencia / creditos_graficos / creditos_export;
-o banco em creditos_db (bloco 28 do schema.sql).
+o banco em creditos_db (blocos 28 e 29 do schema.sql).
 """
 import sys
 import uuid
@@ -49,6 +51,10 @@ conn = get_conn()
 if not cdb.tem_bloco28(conn):
     st.warning("Esta tela ainda precisa de uma atualização no banco (bloco 28 do schema.sql — tabelas de créditos PIS/COFINS). "
                "Rode o arquivo `scripts/bloco28_creditos.txt` no SQL Editor do Supabase e recarregue a página.")
+    st.stop()
+if not cdb.tem_bloco29(conn):
+    st.warning("Esta tela ainda precisa de mais uma atualização no banco (bloco 29 do schema.sql — versões de SPED por mês). "
+               "Rode o arquivo `scripts/bloco29_versoes_creditos.txt` no SQL Editor do Supabase e recarregue a página.")
     st.stop()
 
 
@@ -132,16 +138,21 @@ with tab_envio:
                     a2.metric("A recolher COFINS", _brl(res["a_recolher_cofins"]))
                     st.caption(f"{len(r['creditos'])} linhas de crédito · {len(r['receitas'])} linhas de receita"
                                + (f" · retifica o recibo {cab['num_rec_anterior']}" if cab.get("num_rec_anterior") else ""))
-                    atual = _vigente("SPED", cab["competencia"])
-                    igual = bool(atual) and cdb.sha_vigente(conn, "SPED", emp, cab["competencia"]) == r["sha256"]
+                    versoes = cdb.listar_versoes(conn, "SPED", emp, cab["competencia"])
+                    ja = cdb.envio_com_sha(conn, "SPED", emp, cab["competencia"], r["sha256"])
+                    igual = ja is not None
+                    atual = next((v for v in versoes if v["apontada"]), None)
+                    apontar = True
                     if igual:
-                        st.info(f"Este mesmo arquivo já está gravado como o SPED vigente de {cab['competencia']}.")
-                    elif atual:
-                        st.warning(f"{cab['competencia']} já tem um SPED vigente (arquivo **{atual['arquivo_nome']}**). "
-                                   "Ao gravar, ele será **arquivado** (nada é apagado; dá para restaurar).")
+                        st.info(f"Este mesmo arquivo já está gravado em {cab['competencia']} (versão {ja['n']}ª" + (", a apontada" if ja["apontada"] else "") + ").")
+                    elif versoes:
+                        st.info(f"{cab['competencia']} já tem {len(versoes)} versão(ões) de SPED (a apontada é a {atual['n']}ª, **{atual['arquivo_nome']}**). "
+                                "Nada é apagado: esta entra como mais uma versão e as outras continuam guardadas e visíveis.")
+                        apontar = st.checkbox("Esta nova versão passa a ser a **apontada** do mês (a que vale no dashboard)", value=True,
+                                              key=f"cred_apontar_sped_{n_up_s}")
                     if st.button("💾 Gravar este SPED", key="cred_btn_sped", type="primary", disabled=igual):
                         try:
-                            cdb.gravar_sped(conn, emp, r, up_s.name, usuario)
+                            cdb.gravar_sped(conn, emp, r, up_s.name, usuario, apontar=apontar)
                             flash("ok", f"SPED de {cab['competencia']} gravado.")
                             st.session_state["cred_up_n_sped"] = n_up_s + 1
                             st.rerun()
@@ -167,62 +178,67 @@ with tab_envio:
                 if comp_det:
                     if _vigente("SPED", comp_det) is None:
                         st.info(f"Ainda não há SPED de {comp_det}. Pode gravar o Detalhamento, mas a conferência só aparece depois do SPED.")
-                    atual = _vigente("DETALHAMENTO", comp_det)
-                    igual_d = bool(atual) and cdb.sha_vigente(conn, "DETALHAMENTO", emp, comp_det) == d["sha256"]
+                    versoes_d = cdb.listar_versoes(conn, "DETALHAMENTO", emp, comp_det)
+                    ja_d = cdb.envio_com_sha(conn, "DETALHAMENTO", emp, comp_det, d["sha256"])
+                    igual_d = ja_d is not None
+                    atual_d = next((v for v in versoes_d if v["apontada"]), None)
+                    apontar_d = True
                     if igual_d:
-                        st.info(f"Este mesmo arquivo já está gravado como o Detalhamento vigente de {comp_det}.")
-                    elif atual:
-                        st.warning(f"{comp_det} já tem um Detalhamento vigente (arquivo **{atual['arquivo_nome']}**). "
-                                   "Ao gravar, ele será **arquivado** (nada é apagado).")
+                        st.info(f"Este mesmo arquivo já está gravado em {comp_det} (versão {ja_d['n']}ª" + (", a apontada" if ja_d["apontada"] else "") + ").")
+                    elif versoes_d:
+                        st.info(f"{comp_det} já tem {len(versoes_d)} versão(ões) de Detalhamento (a apontada é a {atual_d['n']}ª, **{atual_d['arquivo_nome']}**). "
+                                "Nada é apagado: esta entra como mais uma versão.")
+                        apontar_d = st.checkbox("Esta nova versão passa a ser a **apontada** do mês", value=True, key=f"cred_apontar_det_{n_up_d}")
                     if st.button("💾 Gravar este Detalhamento", key="cred_btn_det", type="primary", disabled=igual_d):
                         try:
-                            cdb.gravar_detalhamento(conn, emp, d, up_d.name, usuario, competencia=comp_det)
+                            cdb.gravar_detalhamento(conn, emp, d, up_d.name, usuario, competencia=comp_det, apontar=apontar_d)
                             flash("ok", f"Detalhamento de {comp_det} gravado.")
                             st.session_state["cred_up_n_det"] = n_up_d + 1
                             st.rerun()
                         except Exception as exc:
                             st.error(f"Não consegui gravar o Detalhamento: {exc}")
 
-    with st.expander("🗃️ Envios gravados (arquivar / restaurar)", expanded=False):
+    with st.expander("🗃️ Versões enviadas (escolher a apontada)", expanded=False):
+        st.caption("Todo arquivo enviado fica guardado aqui, para sempre. Em cada mês, uma versão é a **apontada** (a que vale no dashboard); "
+                   "as outras continuam disponíveis para conferir e comparar na aba Conferência.")
         envios = cdb.listar_envios(conn, emp, incluir_arquivados=True)
         if not envios:
             st.caption("Nenhum arquivo enviado ainda.")
         else:
-            tabela = pd.DataFrame([{"Tipo": e["tipo"], "Competência": e["competencia"], "Arquivo": e["arquivo_nome"],
+            tabela = pd.DataFrame([{"Tipo": e["tipo"], "Competência": e["competencia"], "SPED": e.get("detalhe") or "", "Arquivo": e["arquivo_nome"],
                                     "Enviado por": e["enviado_por"], "Enviado em": formatacao.hora_br(e["enviado_em"]),
-                                    "Situação": "Arquivado" if e["arquivado_em"] else "Vigente"} for e in envios])
+                                    "Situação": "Outra versão" if e["arquivado_em"] else "Apontada"} for e in envios])
             st.dataframe(tabela, hide_index=True, width="stretch")
-            opcoes = {f"{e['tipo']} · {e['competencia']} · {e['arquivo_nome']} ({'arquivado' if e['arquivado_em'] else 'vigente'})": e for e in envios}
-            escolha = st.selectbox("Escolha um envio", list(opcoes), key="cred_sel_envio")
+            opcoes = {f"{e['tipo']} · {e['competencia']} · {e['arquivo_nome']} ({'outra versão' if e['arquivado_em'] else 'apontada'})": e for e in envios}
+            escolha = st.selectbox("Escolha uma versão", list(opcoes), key="cred_sel_envio")
             e = opcoes[escolha]
-            # a confirmação vale para UMA ação: contador na chave zera o "Confirmo" depois de arquivar/restaurar
-            n_ok = st.session_state.get("cred_ok_n", 0)
-            ok = st.checkbox("Confirmo: é isso mesmo (nada é apagado)", key=f"cred_ok_envio_{n_ok}")
-            if e["arquivado_em"]:
-                if st.button("♻️ Restaurar envio", key="cred_btn_rest", disabled=not ok):
+            if not e["arquivado_em"]:
+                st.caption("Esta já é a versão apontada do mês.")
+            else:
+                # a confirmação vale para UMA ação: contador na chave zera o "Confirmo" depois de apontar
+                n_ok = st.session_state.get("cred_ok_n", 0)
+                ok = st.checkbox("Confirmo: passar esta a ser a versão apontada (a atual continua guardada)", key=f"cred_ok_envio_{n_ok}")
+                if st.button("⭐ Tornar esta a versão apontada", key="cred_btn_apontar", disabled=not ok):
                     try:
-                        cdb.restaurar_envio(conn, e["tipo"], e["id"], usuario)
-                        flash("ok", "Envio restaurado.")
+                        cdb.definir_apontada(conn, e["tipo"], e["id"], usuario)
+                        flash("ok", "Versão apontada trocada. A anterior continua guardada.")
                         st.session_state["cred_ok_n"] = n_ok + 1
                         st.rerun()
                     except ValueError as exc:
                         st.error(str(exc))
-            else:
-                if st.button("🗃️ Arquivar envio", key="cred_btn_arq", disabled=not ok):
-                    cdb.arquivar_envio(conn, e["tipo"], e["id"], usuario)
-                    flash("ok", "Envio arquivado.")
-                    st.session_state["cred_ok_n"] = n_ok + 1
-                    st.rerun()
 
 
 # ═════════════════════════════ 2. CONFERÊNCIA ═════════════════════════════
+_REF = [""]   # versão (id do SPED) que está sendo conferida: as edições ficam presas a ela
+
+
 def _editor(aba: str, df: pd.DataFrame, comp: str, ajustes: list, ordem: list, desabilitadas: list, config: dict, dinamico: bool = False):
     """data_editor + botão Salvar. Devolve True se salvou algo (a tela já foi recarregada nesse caso)."""
     chave, campos, _ = cf.ABAS[aba]
     n = st.session_state.get(f"cred_ed_n_{aba}", 0)
     view = df[[c for c in dict.fromkeys([chave] + ordem) if c in df.columns]].reset_index(drop=True)
     cfg = {chave: None, **config}
-    ed = st.data_editor(view, key=f"cred_ed_{aba}_{n}", hide_index=True, width="stretch", disabled=desabilitadas,
+    ed = st.data_editor(view, key=f"cred_ed_{aba}_{n}_{_REF[0][:8]}", hide_index=True, width="stretch", disabled=desabilitadas,
                         column_config=cfg, num_rows="dynamic" if dinamico else "fixed")
     c1, c2 = st.columns([1, 3])
     if c1.button("💾 Salvar edições", key=f"cred_save_{aba}", type="primary"):
@@ -233,7 +249,7 @@ def _editor(aba: str, df: pd.DataFrame, comp: str, ajustes: list, ordem: list, d
         if not mud:
             st.info("Nenhuma mudança para salvar.")
         else:
-            cdb.salvar_ajustes(conn, emp, comp, aba, mud, usuario)
+            cdb.salvar_ajustes(conn, emp, comp, aba, mud, usuario, ref=_REF[0])
             st.session_state[f"cred_ed_n_{aba}"] = n + 1
             flash("ok", f"{len(mud)} edição(ões) salva(s).")
             st.rerun()
@@ -252,16 +268,64 @@ with tab_conf:
         st.info("Ainda não há arquivos enviados para esta empresa. Use a aba **Enviar arquivos**.")
     else:
         comp = st.selectbox("Competência", comps, key="cred_comp")
-        sped = cdb.carregar_sped(conn, emp, comp)
-        det = cdb.carregar_detalhamento(conn, emp, comp)
-        ajustes = cdb.carregar_ajustes(conn, emp, comp)
+        v_sped = cdb.listar_versoes(conn, "SPED", emp, comp)
+        v_det = cdb.listar_versoes(conn, "DETALHAMENTO", emp, comp)
+
+        def _escolher(versoes: list, rotulo: str, chave: str):
+            """Seletor de versão (padrão = a apontada). Só aparece quando o mês tem mais de uma."""
+            if not versoes:
+                return None
+            if len(versoes) == 1:
+                return versoes[0]["id"]
+            ops = {v["rotulo"]: v["id"] for v in versoes}
+            pad = next((i for i, v in enumerate(versoes) if v["apontada"]), len(versoes) - 1)
+            return ops[st.selectbox(rotulo, list(ops), index=pad, key=chave)]
+
+        cv1, cv2 = st.columns(2)
+        with cv1:
+            sped_id = _escolher(v_sped, "Versão do SPED que está sendo conferida", f"cred_ver_sped_{comp}")
+        with cv2:
+            det_id = _escolher(v_det, "Versão do Detalhamento que está sendo usada", f"cred_ver_det_{comp}")
+        sped = cdb.carregar_sped(conn, emp, comp, envio_id=sped_id)
+        det = cdb.carregar_detalhamento(conn, emp, comp, envio_id=det_id)
+        _REF[0] = sped["envio_id"] if sped else ""
+        ajustes = cdb.carregar_ajustes(conn, emp, comp, ref=_REF[0])
+
+        for tipo_v, obj, versoes in (("SPED", sped, v_sped), ("Detalhamento", det, v_det)):
+            if obj is not None and not obj["apontada"]:
+                ap = next((v for v in versoes if v["apontada"]), None)
+                st.warning(f"Você está vendo uma versão do {tipo_v} que **não é a apontada** do mês"
+                           + (f" (a apontada é a {ap['n']}ª)" if ap else "") + ". O dashboard usa a apontada; as edições desta tela ficam presas à versão do SPED que você escolheu.")
+                if st.button(f"⭐ Tornar esta a versão apontada do {tipo_v}", key=f"cred_apontar_conf_{tipo_v}_{comp}"):
+                    cdb.definir_apontada(conn, "SPED" if tipo_v == "SPED" else "DETALHAMENTO", obj["envio_id"], usuario)
+                    flash("ok", f"Versão apontada do {tipo_v} trocada. A anterior continua guardada.")
+                    st.rerun()
+
+        if len(v_sped) > 1:
+            with st.expander(f"🔀 Comparar as {len(v_sped)} versões do SPED de {comp}"):
+                cmp_ = cdb.comparar_versoes_sped(conn, emp, comp)
+                apont = cmp_[cmp_["apontada"]].iloc[0] if cmp_["apontada"].any() else cmp_.iloc[-1]
+                tab_cmp = pd.DataFrame({
+                    "Versão": cmp_["versao"], "Arquivo": cmp_["arquivo"], "Enviado em": cmp_["enviado_em"].map(formatacao.hora_br),
+                    "Crédito PIS": cmp_["credito_pis"].map(_brl), "Dif. PIS × apontada": (cmp_["credito_pis"] - apont["credito_pis"]).map(_brl),
+                    "Crédito COFINS": cmp_["credito_cofins"].map(_brl), "Dif. COFINS × apontada": (cmp_["credito_cofins"] - apont["credito_cofins"]).map(_brl),
+                    "Débito NC PIS": cmp_["debito_nc_pis"].map(_brl), "Débito NC COFINS": cmp_["debito_nc_cofins"].map(_brl),
+                    "Saldo PIS": cmp_["saldo_pis"].map(_brl), "Saldo COFINS": cmp_["saldo_cofins"].map(_brl), "Linhas de crédito": cmp_["linhas_credito"]})
+                st.dataframe(tab_cmp, hide_index=True, width="stretch")
+                cat = cdb.comparar_categorias_sped(conn, emp, comp)
+                if not cat.empty:
+                    st.markdown("**Crédito (PIS + COFINS) por categoria em cada versão**")
+                    for c_ in cat.columns[1:]:
+                        cat[c_] = cat[c_].map(_brl)
+                    st.dataframe(cat.rename(columns={"categoria": "Categoria"}), hide_index=True, width="stretch")
 
         if sped is None:
             st.warning(f"{comp} tem o Detalhamento, mas ainda não tem o SPED. Envie o SPED para ver a conferência.")
         else:
             res = sc.resumo_apuracao(sped["apuracao"])
             cab = sped["cabecalho"]
-            st.caption(f"SPED {str(cab.get('tipo') or '').lower()}: {sped['arquivo']} · enviado por {sped['enviado_por']} em {formatacao.hora_br(sped['enviado_em'])}"
+            n_v = next((v["n"] for v in v_sped if v["id"] == sped["envio_id"]), "?")
+            st.caption(f"SPED {n_v}ª versão ({str(cab.get('tipo') or '').lower()}{', apontada' if sped['apontada'] else ', outra versão'}): {sped['arquivo']} · enviado por {sped['enviado_por']} em {formatacao.hora_br(sped['enviado_em'])}"
                        + (f" · Detalhamento: {det['arquivo']}" if det else " · Detalhamento: ainda não enviado"))
             if det is None:
                 st.info("Falta o Detalhamento da contadora deste mês — por enquanto só dá para ver os números do SPED.")
@@ -303,7 +367,8 @@ with tab_conf:
                 xlsx = cexp.gerar_xlsx_conferencia(NOME_POR_COD[emp], emp, comp, L.drop(columns=["editado"], errors="ignore"),
                                                    C.drop(columns=["editado"], errors="ignore"), B.drop(columns=["editado"], errors="ignore"),
                                                    T.drop(columns=["editado"], errors="ignore"), D.drop(columns=["editado"], errors="ignore"), kpis,
-                                                   {"SPED": sped["arquivo"], "Detalhamento": det["arquivo"]})
+                                                   {"SPED": f"{sped['arquivo']} (versão {n_v}ª, {'apontada' if sped['apontada'] else 'outra versão'})",
+                                                    "Detalhamento": det["arquivo"] + ("" if det["apontada"] else " (outra versão)")})
                 st.download_button("⬇️ Baixar a conferência (.xlsx)", data=xlsx, key="cred_dl_conf",
                                    file_name=f"creditos_pis_cofins_{emp}_{comp.replace('/', '-')}.xlsx",
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -384,7 +449,7 @@ with tab_conf:
 
                 with s_log:
                     if not ajustes:
-                        st.caption("Nenhuma edição salva neste mês.")
+                        st.caption("Nenhuma edição salva nesta versão do mês.")
                     else:
                         grupos = sorted({(a["aba"], a["chave"]) for a in ajustes})
                         st.markdown("**Linhas com edição salva**")
@@ -395,12 +460,12 @@ with tab_conf:
                         esc = st.selectbox("Restaurar uma linha ao valor calculado (desfaz as edições e traz de volta linhas excluídas)", list(rot), key="cred_sel_rest")
                         if st.button("♻️ Restaurar esta linha", key="cred_btn_rest_linha"):
                             aba_r, chave_r = rot[esc]
-                            cdb.restaurar_ajustes(conn, emp, comp, aba_r, chave_r, usuario)
+                            cdb.restaurar_ajustes(conn, emp, comp, aba_r, chave_r, usuario, ref=_REF[0])
                             for a in cf.ABAS:
                                 st.session_state[f"cred_ed_n_{a}"] = st.session_state.get(f"cred_ed_n_{a}", 0) + 1
                             flash("ok", "Linha restaurada.")
                             st.rerun()
-                    lg = cdb.log_ajustes(conn, emp, comp)
+                    lg = cdb.log_ajustes(conn, emp, comp, ref=_REF[0])
                     if not lg.empty:
                         st.markdown("**Histórico de edições**")
                         lg["em"] = lg["em"].map(formatacao.hora_br)
@@ -425,7 +490,7 @@ with tab_dash:
         k[0].metric(f"Crédito apontado em {ult['rotulo']}", _brl(ult["cred_total"]))
         k[1].metric("Crédito acumulado no período", _brl(serie["cred_total"].sum()))
         k[2].metric("Diferença acumulada original × apontado", _brl(com_orig["dif_total"].sum()) if not com_orig.empty else "—",
-                    help=("Meses " + ", ".join(com_orig["rotulo"]) + " — carga fixa feita com os SPED enviados (original × última retificadora)") if not com_orig.empty else None)
+                    help=("Meses " + ", ".join(com_orig["rotulo"]) + " — jan–jul: carga fixa (original × última retificadora); depois: SPED Original enviado no app × versão apontada") if not com_orig.empty else None)
         k[3].metric(f"Saldo de crédito em {ult['rotulo']}", _brl(ult["saldo_total"]))
         k2 = st.columns(4)
         k2[0].metric(f"Débito não cumulativo em {ult['rotulo']}", _brl(ult["deb_nc_total"]))
@@ -492,4 +557,5 @@ with tab_dash:
                 "saldo_total": "Saldo de crédito", "ret_total": "Retenções", "recolher_total": "A recolher", "receita_nc": "Receita NC",
                 "receita_cum": "Receita cumulativa"})
             st.dataframe(tab, hide_index=True, width="stretch")
-        st.caption("Jan–jul: carga fixa feita a partir dos SPED já enviados (original × última retificadora). De agosto em diante o app só guarda e controla o que está no SPED, que já vem apontado.")
+        st.caption("Jan–jul: carga fixa feita a partir dos SPED já enviados (original × última retificadora). De agosto em diante vale a versão **apontada** do SPED de cada mês; "
+                   "o \"original\" é o primeiro SPED Original enviado no mês (quando a apontada é uma retificadora).")

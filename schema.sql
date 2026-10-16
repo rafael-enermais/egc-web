@@ -1235,3 +1235,19 @@ CREATE POLICY egc_app_full_access ON egc.cred_ajuste_log    FOR ALL TO egc_app U
 DROP POLICY IF EXISTS egc_app_full_access ON egc.cred_historico;
 CREATE POLICY egc_app_full_access ON egc.cred_historico     FOR ALL TO egc_app USING (true) WITH CHECK (true);
 -- Fim do bloco 28. Rodar so' este bloco no SQL Editor do Supabase.
+
+-- ====== BLOCO 29 (v0.51.0) ======
+-- BLOCO 29 — v0.51.0: VERSOES DE SPED/DETALHAMENTO POR MES + edicoes presas a versao.
+--  * Cada upload do mes (SPED original, retificadoras; Detalhamento) fica guardado e visivel; uma delas e' a "apontada".
+--    (A coluna arquivado_em dos envios continua sendo o marcador: NULL = apontada; preenchida = outra versao guardada. Nada muda nelas.)
+--  * egc.cred_ajuste / egc.cred_ajuste_log ganham envio_ref (id do SPED da versao conferida; '' = sem SPED). As edicoes agora ficam com a versao
+--    em que foram feitas. A chave unica de cred_ajuste passa a incluir envio_ref.
+-- Aditivo e idempotente (pode rodar de novo). Nao apaga dado. Linhas de edicao antigas (envio_ref = '') seguem guardadas, mas nao aparecem
+-- na conferencia das versoes novas.
+-- =====================================================================
+ALTER TABLE egc.cred_ajuste     ADD COLUMN IF NOT EXISTS envio_ref text NOT NULL DEFAULT '';
+ALTER TABLE egc.cred_ajuste_log ADD COLUMN IF NOT EXISTS envio_ref text NOT NULL DEFAULT '';
+ALTER TABLE egc.cred_ajuste DROP CONSTRAINT IF EXISTS cred_ajuste_empresa_codigo_competencia_aba_chave_campo_key;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_cred_ajuste_versao ON egc.cred_ajuste (empresa_codigo, competencia, aba, chave, campo, envio_ref);
+CREATE INDEX IF NOT EXISTS idx_cred_ajuste_log_ref ON egc.cred_ajuste_log (empresa_codigo, competencia, envio_ref);
+-- Fim do bloco 29. Rodar so' este bloco no SQL Editor do Supabase.
