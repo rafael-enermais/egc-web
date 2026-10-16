@@ -109,8 +109,11 @@ def _grafico(fig) -> None:
 
 
 codigos = [c for c, _n, _cnpj in EMPRESAS_FIXAS]
+# v0.53.1: o SPED enviado identifica a empresa pelo CNPJ; a troca e' pedida aqui (antes do seletor existir) porque o Streamlit nao deixa mudar um widget ja desenhado
+if "cred_empresa_pend" in st.session_state:
+    st.session_state["cred_empresa"] = st.session_state.pop("cred_empresa_pend")
 emp = st.selectbox("Empresa", codigos, index=0, format_func=lambda c: NOME_POR_COD[c], key="cred_empresa")
-st.caption("A estrutura já é de várias empresas; por enquanto o uso é só da Energia.")
+st.caption("A estrutura já é de várias empresas. Ao enviar o SPED, a empresa é reconhecida pelo CNPJ do arquivo (não precisa escolher antes).")
 
 tab_envio, tab_conf, tab_dash, tab_rel = st.tabs(["📤 Enviar arquivos", "🔎 Conferência", "📊 Dashboard", "📄 Relatório"])
 
@@ -140,8 +143,14 @@ with tab_envio:
                 if achada is None:
                     st.error(f"O CNPJ do arquivo ({_cnpj_mask(cab['cnpj'])}) não é de nenhuma empresa cadastrada no app.")
                 elif achada[0] != emp:
-                    st.error(f"Este SPED é da {achada[1]}, mas a empresa escolhida acima é {NOME_POR_COD[emp]}. Troque a empresa e envie de novo.")
+                    # reconhece a empresa pelo CNPJ do arquivo e troca o seletor sozinho (o arquivo continua no uploader)
+                    st.session_state["cred_empresa_pend"] = achada[0]
+                    st.session_state["cred_empresa_auto"] = f"Empresa trocada para {achada[1]}: é a do CNPJ {_cnpj_mask(cab['cnpj'])} deste SPED."
+                    st.rerun()
                 else:
+                    aviso_auto = st.session_state.pop("cred_empresa_auto", None)
+                    if aviso_auto:
+                        st.info(aviso_auto)
                     res = sc.resumo_apuracao(r["apuracao"])
                     st.success(f"SPED {cab['tipo'].lower()} de **{cab['competencia']}** — {cab['empresa_nome']}")
                     a1, a2 = st.columns(2)
@@ -176,6 +185,7 @@ with tab_envio:
         st.subheader("2. Detalhamento da contadora")
         st.caption("Planilha .xlsx \"Detalhamento de Débito e Crédito PIS e COFINS\" do mês.")
         up_d = st.file_uploader("Detalhamento (.xlsx)", type=["xlsx"], key=f"cred_up_det_{n_up_d}")
+        st.caption(f"Será gravado em **{NOME_POR_COD[emp]}**. A planilha não traz CNPJ; vale a empresa reconhecida pelo SPED (ou a escolhida acima).")
         if up_d is not None:
             d = _ler_det(up_d.getvalue(), up_d.name)
             if d["erro"]:

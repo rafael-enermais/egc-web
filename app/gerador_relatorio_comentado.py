@@ -1098,7 +1098,7 @@ def paginas_extras_anexo(dados) -> int:
     return pagina_final - 1
 
 
-def desenhar_bloco_empresa_capa(c, dados) -> float:
+def desenhar_bloco_empresa_capa(c, dados, dy: float = 0.0) -> float:
     """Bloco "quem e' o cliente" da capa (Modelo A e Modelo B): devolve o
     deslocamento (pt) que a pilula do periodo precisa descer pra nunca
     sobrepor o bloco.
@@ -1111,11 +1111,11 @@ def desenhar_bloco_empresa_capa(c, dados) -> float:
     fonte menor (9.5pt), uma por linha, mesma ordem de `empresas_codigos`."""
     nomes_grupo = _nomes_empresas_grupo(dados)
     if not nomes_grupo:
-        txt(c, MARGEM, 380, dados["empresa_nome"], font="regular", size=12, color=GREY_TEXT)
-        txt(c, MARGEM, 398, _linha_identificacao_empresa(dados), font="regular", size=12, color=GREY_TEXT)
-        return 0.0
-    txt(c, MARGEM, 388, dados["empresa_nome"], font="bold", size=20, color=NAVY)
-    y_lista0, passo = 409.0, 12.5
+        txt(c, MARGEM, 380 + dy, dados["empresa_nome"], font="regular", size=12, color=GREY_TEXT)
+        txt(c, MARGEM, 398 + dy, _linha_identificacao_empresa(dados), font="regular", size=12, color=GREY_TEXT)
+        return dy
+    txt(c, MARGEM, 388 + dy, dados["empresa_nome"], font="bold", size=20, color=NAVY)
+    y_lista0, passo = 409.0 + dy, 12.5
     for i, nome in enumerate(nomes_grupo):
         txt(c, MARGEM, y_lista0 + i * passo, nome, font="regular", size=9.5, color=GREY_TEXT)
     y_ultimo = y_lista0 + (len(nomes_grupo) - 1) * passo
@@ -1205,6 +1205,12 @@ def pagina_capa(c, dados, pagina: int, total_paginas: int):
     titulo_capa = dados.get("capa_titulo", ("Demonstrativo", "Comentado"))
     txt(c, MARGEM, 310, titulo_capa[0], font="heavy", size=30, color=NAVY)
     txt(c, MARGEM, 345, titulo_capa[1], font="heavy", size=30, color=NAVY)
+    # v0.53.1: subtitulo menor abaixo do titulo (so' quando `capa_subtitulo` vem em dados); empurra empresa/pilula pra baixo
+    subtitulo_capa = dados.get("capa_subtitulo")
+    dy_capa = 0.0
+    if subtitulo_capa:
+        txt(c, MARGEM, 374, subtitulo_capa, font="bold", size=17, color=ORANGE)
+        dy_capa = 32.0
 
     # FIX_20260930 (variante "Gerencial" -- Rafael: pág. de Composição das
     # Despesas Administrativas sai do "Demonstrativo Comentado" padrão e
@@ -1228,7 +1234,7 @@ def pagina_capa(c, dados, pagina: int, total_paginas: int):
 
     # FIX_20260930b: bloco da empresa/grupo (ver desenhar_bloco_empresa_capa)
     # -- multi-CNPJ: "Grupo Enermais" em destaque + lista de nomes menor.
-    deslocamento_pilula = desenhar_bloco_empresa_capa(c, dados)
+    deslocamento_pilula = desenhar_bloco_empresa_capa(c, dados, dy_capa)
 
     # FIX_20260928 (Rafael, revisando PDF real): periodo_extenso ja era
     # usado nas paginas Destaques/Fechamento mas nunca aparecia na capa --
