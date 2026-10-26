@@ -1,7 +1,7 @@
 # Versoes FIXAS (as que estao rodando em producao no Streamlit Cloud, log de deploy de 05/10/2026, Python 3.14).
 # Motivo: com ">=" cada redeploy puxa a versao mais nova e uma atualizacao de biblioteca pode quebrar o app sem
 # ninguem ter mexido no codigo. Para atualizar de proposito: trocar a versao aqui, rodar os testes e publicar.
-streamlit==1.65.0
+streamlit==1.66.1
 supabase==2.32.0
 psycopg2-binary==2.9.13
 reportlab==5.0.1
@@ -17,3 +17,5 @@ pyarrow==24.0.0
 numpy==2.5.3
 # xlrd: leitura das planilhas .xls da escrituracao (NFS, v0.49.0) -- o pandas nao le .xls sem ele.
 xlrd==2.0.2
+# Pillow 13 corrige 37 avisos de seguranca da 12.3.0; exige streamlit>=1.66.1 (GOVINFRA #01 v0.7.3)
+pillow==13.0.0
