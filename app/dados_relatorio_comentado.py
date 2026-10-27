@@ -688,8 +688,10 @@ def validar_cobertura_documento(conn, cod: str, periodo: date, granularidade: st
                 f"({ini.strftime('%d/%m/%Y')} a {periodo.strftime('%d/%m/%Y')}) é '{declarada}'. "
                 "Os números deste documento não são de um período "
                 f"{selecao_periodos.rotulo_granularidade(granularidade).lower()} — provável erro de "
-                "classificação na importação. Reimporte o PDF correto confirmando a granularidade "
-                f"'{declarada}' (ou arquive este documento) antes de gerar o relatório."
+                "classificação na importação. Para corrigir: na tela 'Fechamento do ano' use "
+                f"'Corrigir granularidade' para '{declarada}' (o PDF já está certo, só o rótulo errou), "
+                f"ou reimporte o PDF confirmando a granularidade '{declarada}' (ou arquive este documento) "
+                "antes de gerar o relatório."
             )
 
 
@@ -764,6 +766,8 @@ def periodo_extenso_padrao(periodo: date, granularidade: str = "") -> str:
         return f"{mes // 3}º trimestre de {ano}"
     if granularidade == "semestral" and mes % 6 == 0:
         return f"{mes // 6}º semestre de {ano}"
+    if granularidade == "9meses":
+        return f"acumulado de 9 meses até {_MESES_EXTENSO[mes - 1]} de {ano}"
     if granularidade == "anual":
         return f"exercício de {ano}" if mes == 12 else f"12 meses encerrados em {_MESES_EXTENSO[mes - 1]} de {ano}"
     if granularidade in ("", "mensal"):

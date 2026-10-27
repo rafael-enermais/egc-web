@@ -108,7 +108,7 @@ st.caption(
 
 _NOME_GRANULARIDADE = {
     "mensal": "Mensal", "bimestral": "Bimestral", "trimestral": "Trimestral", "semestral": "Semestral",
-    "anual": "Anual", "outra": "Outro intervalo", "": "",
+    "9meses": "Acumulado 9 meses", "anual": "Anual", "outra": "Outro intervalo", "": "",
 }
 
 # ─────────── Painel de pendências / completude (movido da Início em
@@ -258,6 +258,15 @@ TIPO_GERENCIAL = "Demonstrativo Comentado Gerencial"
 TIPO_FORNECEDOR = "Demonstrativo Comentado Fornecedor"
 TIPO_COMPARATIVO = "Comparativo / Evolução"
 _TIPOS_RELATORIO = [TIPO_GERENCIAL, TIPO_FORNECEDOR, TIPO_COMPARATIVO]
+# v0.54.0: atalho vindo da tela "Fechamento do ano" (ex.: "Os 4 trimestres do ano"). Aplica ANTES de
+# instanciar os widgets: tipo Comparativo + empresas; os pares de periodo sao aplicados mais abaixo,
+# quando a key do multiselect (que leva a assinatura das opcoes) ja' e' conhecida.
+_preset_fechamento = st.session_state.pop("relatorio_preset", None)
+if _preset_fechamento:
+    st.session_state["relatorio_tipo"] = TIPO_COMPARATIVO
+    st.session_state["relatorio_empresas_multi"] = list(_preset_fechamento.get("empresas") or [])
+    st.session_state["relatorio_preset_pares"] = [tuple(p) for p in (_preset_fechamento.get("pares") or [])]
+    st.info("Atalho do Fechamento do ano aplicado — confira as empresas e os períodos abaixo antes de gerar.")
 if st.session_state.get("relatorio_tipo") not in _TIPOS_RELATORIO:
     st.session_state.pop("relatorio_tipo", None)  # valor guardado de antes da remocao do "padrao"
 tipo_relatorio = st.radio("Tipo de relatório", _TIPOS_RELATORIO, key="relatorio_tipo", horizontal=True)
@@ -357,7 +366,8 @@ else:
     )
     empresas_sel_raw = st.multiselect(
         "Empresas", [cod for cod, _n, _c in EMPRESAS_FIXAS],
-        default=[cod_empresa], format_func=lambda c: f"{NOME_POR_COD.get(c, c)} ({c})",
+        default=None if "relatorio_empresas_multi" in st.session_state else [cod_empresa],
+        format_func=lambda c: f"{NOME_POR_COD.get(c, c)} ({c})",
         key="relatorio_empresas_multi",
     )
     empresas_multi = list(empresas_sel_raw)
@@ -390,6 +400,11 @@ else:
     # nao esta' nas opcoes (bug visto: multiselect, rotulos e granularidades
     # dessincronizados). A reconciliacao abaixo e' a segunda trava.
     sig_multi = selecao_periodos.assinatura(empresas_multi, periodos_ativos_multi)
+    _pares_preset = st.session_state.pop("relatorio_preset_pares", None)
+    if _pares_preset:
+        st.session_state[f"relatorio_periodos_multi_{sig_multi}"] = [
+            p for p in _pares_preset if p in periodos_ativos_multi
+        ]
     periodos_sel_raw = st.multiselect(
         "Períodos (data + base)", periodos_ativos_multi,
         format_func=lambda pg: selecao_periodos.rotulo_item(pg[0], pg[1]),

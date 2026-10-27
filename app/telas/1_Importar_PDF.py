@@ -72,7 +72,7 @@ COLUNAS_DRE = ["Conta", "Valor", "Grupo", "Origem"]
 # 4_Visao_Grupo.py/8_Relatorio_Comentado.py pra consistencia visual).
 _OPCOES_GRANULARIDADE = {
     "": "Não declarada", "mensal": "Mensal", "bimestral": "Bimestral", "trimestral": "Trimestral",
-    "semestral": "Semestral", "anual": "Anual", "outra": "Outro intervalo",
+    "semestral": "Semestral", "9meses": "Acumulado 9 meses", "anual": "Anual", "outra": "Outro intervalo",
 }
 
 def indicadores_rotulo(g: str) -> str:

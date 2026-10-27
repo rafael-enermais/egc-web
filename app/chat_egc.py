@@ -141,7 +141,7 @@ TOOLS = [
                 "periodo": {"type": "string", "description": "Periodo no formato 'AAAA-MM' (ex. '2026-06') -- opcional, sem isso usa o mais recente."},
                 "granularidade": {
                     "type": "string",
-                    "enum": ["mensal", "bimestral", "trimestral", "semestral", "anual", "outra"],
+                    "enum": ["mensal", "bimestral", "trimestral", "semestral", "9meses", "anual", "outra"],
                     "description": (
                         "So' preencha quando uma chamada anterior devolver 'ambiguo': true "
                         "(esse periodo tem mais de 1 documento ativo, ex. trimestral e semestral "
@@ -175,7 +175,7 @@ TOOLS = [
                 "visao": {"type": "string", "enum": ["macro", "especifica"], "description": "macro (padrao) ou especifica."},
                 "granularidade": {
                     "type": "string",
-                    "enum": ["mensal", "bimestral", "trimestral", "semestral", "anual", "outra"],
+                    "enum": ["mensal", "bimestral", "trimestral", "semestral", "9meses", "anual", "outra"],
                     "description": (
                         "So' preencha quando uma chamada anterior devolver 'ambiguo': true "
                         "(esse periodo tem mais de 1 documento ativo pra alguma empresa do "
@@ -213,7 +213,7 @@ TOOLS = [
                 },
                 "granularidade": {
                     "type": "string",
-                    "enum": ["mensal", "bimestral", "trimestral", "semestral", "anual", "outra"],
+                    "enum": ["mensal", "bimestral", "trimestral", "semestral", "9meses", "anual", "outra"],
                     "description": (
                         "Base do periodo (abrangencia do documento). Omita pra usar a padrao "
                         "(periodo mais recente; a mais abrangente se houver mais de uma). "
@@ -295,7 +295,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "empresas": {"type": "array", "items": {"type": "string"}, "description": "Codigos; vazio = grupo todo consolidado."},
-                "granularidade": {"type": "string", "enum": ["mensal", "bimestral", "trimestral", "semestral", "anual", "outra"],
+                "granularidade": {"type": "string", "enum": ["mensal", "bimestral", "trimestral", "semestral", "9meses", "anual", "outra"],
                                   "description": "Base desejada; omita pra usar a padrao."},
                 "indicadores": {"type": "array", "items": {"type": "string"},
                                 "description": "Nomes exatos dos indicadores a devolver (ex. ['EBITDA','Margem EBITDA']); vazio = todos."},

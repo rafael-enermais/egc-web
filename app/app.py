@@ -355,6 +355,9 @@ paginas = [
     st.Page("telas/2_Revisao_Correcao.py", title="Revisão/Correção", icon="✏️"),
     st.Page("telas/3_Arquivar_Recuperar.py", title="Arquivar/Recuperar", icon="🗄️"),
     st.Page("telas/4_Visao_Grupo.py", title="Visão Grupo", icon="🏢"),
+    # v0.54.0: grade dos fechamentos do ano (1T-4T, 1S, 2S, 9M, Anual) por empresa -- o que falta subir,
+    # rotulo suspeito, conferencias (so' aviso) e atalhos pro Relatorio Comentado.
+    st.Page("telas/11_Fechamento_do_Ano.py", title="Fechamento do ano", icon="📆"),
     # Notas Fiscais x Sienge (25/09/2026) -- fluxo 100% separado do
     # BP/DRE: manifesto de NF-e da Receita Federal x Contas a Pagar do
     # Sienge. Ver EGC 00-handoff.md seção 62 pro desenho.

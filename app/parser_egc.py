@@ -1064,6 +1064,12 @@ def calcular_granularidade(periodo_inicio: str, periodo_fim: str) -> str:
         return "trimestral"
     if dias <= 185:
         return "semestral"
+    # 9 meses acumulados (01/01 a 30/09 = 273 dias; 01/04 a 31/12 = 275):
+    # fechamento "ate hoje com 3 trimestres" (v0.54.0, decisao do Rafael
+    # 27/10/2026). Antes caia em "anual" e o guard de cobertura barrava o
+    # documento com uma mensagem enganosa (caso ENG 09/2026).
+    if 270 <= dias <= 276:
+        return "9meses"
     if dias <= 370:
         return "anual"
     return "outra"

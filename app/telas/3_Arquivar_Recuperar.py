@@ -49,7 +49,7 @@ import db  # noqa: E402
 
 _NOME_GRANULARIDADE = {
     "mensal": "Mensal", "bimestral": "Bimestral", "trimestral": "Trimestral", "semestral": "Semestral",
-    "anual": "Anual", "outra": "Outro intervalo", "": "",
+    "9meses": "Acumulado 9 meses", "anual": "Anual", "outra": "Outro intervalo", "": "",
 }
 
 st.title("🗄️ Arquivar / Recuperar importação")

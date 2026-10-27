@@ -127,14 +127,14 @@ def _texto_pdf(d):
     return "\n".join(p.extract_text() for p in r.pages)
 
 
-def test_pdf_avisa_quando_nao_ha_detalhamento_e_quando_fecha():
-    d = _dados(detalhamento={"estado": "ausente"})
-    assert "Detalhamento da contadora: não enviado para este mês" in " ".join(_texto_pdf(d).split())
-    d = _dados(detalhamento={"estado": "fecha", "n_linhas": 627, "n_pendentes": 0, "arquivo": "x.xlsx"})
-    assert "conferido com o SPED" in _texto_pdf(d) and "627" in _texto_pdf(d)
-    d = _dados(detalhamento={"estado": "pendencias", "n_linhas": 627, "n_pendentes": 195, "tipo_sped": "Retificadora"})
-    assert "195 de 627 linhas" in " ".join(_texto_pdf(d).split())
-    assert "Detalhamento da contadora" not in _texto_pdf(_dados())                                # sem informacao: nada no PDF (retrocompativel)
+def test_pdf_nao_traz_aviso_de_detalhamento_em_nenhum_estado():
+    """Rafael 27/10/2026: aviso de Detalhamento fica SO no app; o PDF segue o padrao, sem avisos."""
+    for det in ({"estado": "ausente"},
+                {"estado": "fecha", "n_linhas": 627, "n_pendentes": 0, "arquivo": "x.xlsx"},
+                {"estado": "pendencias", "n_linhas": 627, "n_pendentes": 195, "tipo_sped": "Retificadora"}):
+        txt = " ".join(_texto_pdf(_dados(detalhamento=det)).split())
+        assert "Detalhamento da contadora" not in txt and "sem Detalhamento" not in txt
+    assert "Detalhamento da contadora" not in _texto_pdf(_dados())
 
 
 def test_opcoes_ui_tira_duplicata_e_encurta_rotulo():
@@ -149,3 +149,13 @@ def test_opcoes_ui_tira_duplicata_e_encurta_rotulo():
     assert [f["chave"] for f, _r in ops] == ["HIST_ORIGINAL", "HIST_APONTADO"]
     ops2 = cdb.opcoes_ui(fs, manter={"ENV:b"})                                                    # a oficial marcada nao pode sumir da lista
     assert "ENV:b" in [f["chave"] for f, _r in ops2] and len(ops2) == 2
+
+
+def test_v0540_mes_conferido_sem_detalhamento_pdf_segue_padrao():
+    """Rafael 27/10/2026: mes sem Detalhamento PODE ser conferido; o aviso e' so' no app, o PDF fica padrao."""
+    ctrl = {"conferido": True, "conferido_por": "Ana"}
+    for det in ({"estado": "ausente"}, {"estado": "fecha", "n_linhas": 3}):
+        com = _texto(gen.gerar_pdf_creditos(_dados(controle_mes=ctrl, detalhamento=det)))[1].replace("\n", " ")
+        assert "conferida por Ana." in com and "sem Detalhamento" not in com and "Detalhamento da contadora" not in com
+    nao = _texto(gen.gerar_pdf_creditos(_dados(detalhamento={"estado": "ausente"})))[1].replace("\n", " ")
+    assert "ainda não foi marcado como conferido" in nao and "Detalhamento da contadora" not in nao

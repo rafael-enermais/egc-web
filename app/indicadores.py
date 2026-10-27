@@ -113,12 +113,12 @@ COLUNAS_INDICADORES = [
 # semestral > trimestral > bimestral > mensal > outra > "" (nao
 # declarada).
 _PRIORIDADE_GRANULARIDADE = {
-    "anual": 5, "semestral": 4, "trimestral": 3, "bimestral": 2, "mensal": 1, "outra": 0, "": -1,
+    "anual": 6, "9meses": 5, "semestral": 4, "trimestral": 3, "bimestral": 2, "mensal": 1, "outra": 0, "": -1,
 }
 
 NOME_GRANULARIDADE = {
     "mensal": "Mensal", "bimestral": "Bimestral", "trimestral": "Trimestral",
-    "semestral": "Semestral", "anual": "Anual", "outra": "Outro intervalo", "": "Não declarada",
+    "semestral": "Semestral", "9meses": "Acumulado 9 meses", "anual": "Anual", "outra": "Outro intervalo", "": "Não declarada",
 }
 
 

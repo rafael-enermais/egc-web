@@ -125,7 +125,7 @@ if not cods_selecionados:
 
 _NOME_GRANULARIDADE = {
     "mensal": "Mensal", "bimestral": "Bimestral", "trimestral": "Trimestral", "semestral": "Semestral",
-    "anual": "Anual", "outra": "Outro intervalo", "": "",
+    "9meses": "Acumulado 9 meses", "anual": "Anual", "outra": "Outro intervalo", "": "",
 }
 
 # uniao dos (periodo, granularidade) ATIVOS das empresas selecionadas --

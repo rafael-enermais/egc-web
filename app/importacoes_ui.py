@@ -158,6 +158,8 @@ def inferir_granularidade_nome(nome_arquivo: str) -> str:
         achados.add("bimestral")
     if re.search(r"\bmensal\b|\bmes de\b", t):
         achados.add("mensal")
+    if re.search(r"\b9\s*m(eses)?\b|\bnove meses\b|\bacumulado\b", t):
+        achados.add("9meses")
     if re.search(r"\banual\b|\bexercicio\b", t):
         achados.add("anual")
     return next(iter(achados)) if len(achados) == 1 else ""

@@ -27,12 +27,12 @@ from typing import Iterable, Optional
 
 NOME_GRANULARIDADE = {
     "mensal": "Mensal", "bimestral": "Bimestral", "trimestral": "Trimestral",
-    "semestral": "Semestral", "anual": "Anual", "outra": "Outro intervalo",
+    "semestral": "Semestral", "9meses": "Acumulado 9 meses", "anual": "Anual", "outra": "Outro intervalo",
     "": "Base não declarada",
 }
 
 # meses de cada granularidade (para checar adjacencia do "periodo anterior")
-MESES_GRANULARIDADE = {"mensal": 1, "bimestral": 2, "trimestral": 3, "semestral": 6, "anual": 12}
+MESES_GRANULARIDADE = {"mensal": 1, "bimestral": 2, "trimestral": 3, "semestral": 6, "9meses": 9, "anual": 12}
 
 Par = tuple  # (periodo_fim: date, granularidade: str)
 
@@ -51,7 +51,7 @@ def rotulo_item(periodo: date, granularidade: Optional[str]) -> str:
 
 def rotulo_coluna_padrao(periodo: date, granularidade: Optional[str]) -> str:
     """Rotulo DEFAULT da coluna do PDF (editavel na tela):
-    trimestral "2T/2026" | semestral "1S/2026" | anual "2026" |
+    trimestral "2T/2026" | semestral "1S/2026" | 9 meses "9M/2026" | anual "2026" |
     mensal "06/2026" | bimestral "05-06/2026" | demais "06/2026".
     Distingue granularidade mesmo quando periodo_fim se repete."""
     g = granularidade or ""
@@ -60,6 +60,8 @@ def rotulo_coluna_padrao(periodo: date, granularidade: Optional[str]) -> str:
         return f"{(m - 1) // 3 + 1}T/{a}"
     if g == "semestral":
         return f"{1 if m <= 6 else 2}S/{a}"
+    if g == "9meses":
+        return f"9M/{a}"
     if g == "anual":
         return f"{a}"
     if g == "bimestral":

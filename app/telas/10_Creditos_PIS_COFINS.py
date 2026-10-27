@@ -563,7 +563,7 @@ with tab_rel:
                            + (" · conferido" if dados_r["conferido"] else " · ainda não marcado como conferido (é só uma marcação; você pode gerar assim mesmo)"))
             if dados_r["detalhamento_texto"]:
                 (st.success if (dados_r["detalhamento"] or {}).get("estado") == "fecha" else st.info)(
-                    "📎 " + dados_r["detalhamento_texto"] + " Isso aparece no PDF, no quadro \"De onde vêm os números\" (é um aviso; não impede gerar).")
+                    "📎 " + dados_r["detalhamento_texto"] + " Este aviso aparece só aqui no app; o PDF segue o padrão, sem avisos (e nada impede gerar).")
             st.markdown("**Leitura do mês (como vai no PDF)**")
             for par in dados_r["leitura"]:
                 st.write(_md(par))
@@ -785,6 +785,10 @@ with tab_dash:
                 if escolhas.get(mes):
                     st.caption("A escolha acima começou na versão da sua simulação — salve para torná-la oficial.")
                 conf = st.checkbox("Marcar este mês como conferido", value=bool(ctrl_mes.get("conferido")), key=f"cred_conf_{emp}_{mes}")
+                if _det_st.get("estado") == "ausente":
+                    # v0.54.0 (Rafael 27/10/2026): pode conferir mesmo sem Detalhamento -- so' avisa que ele falta.
+                    st.caption("📎 Este mês **não tem Detalhamento** enviado: pode marcar como conferido (a conferência fica só com o SPED), "
+                               "e o aviso fica só no app — o relatório em PDF segue o padrão, sem avisos.")
                 nota = st.text_area("Nota do mês (aparece no relatório)", value=ctrl_mes.get("nota") or "", key=f"cred_nota_{emp}_{mes}", height=90)
                 if st.button("💾 Salvar o controle deste mês", key=f"cred_btn_ctrl_{emp}_{mes}", type="primary"):
                     n = cdb.salvar_mes(conn, emp, mes, usuario, fonte_oficial=sel_of, conferido=conf, nota=nota)

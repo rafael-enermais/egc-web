@@ -218,6 +218,150 @@ def listar_inicios_documento(
 #  IMPORTACAO
 # ─────────────────────────────────────────────
 
+def listar_documentos_grade(conn, empresas: list, ano: int) -> list[dict]:
+    """
+    v0.54.0 (Fechamento do ano): 1 linha por documento ATIVO (empresa, periodo_fim, granularidade)
+    com periodo_fim no `ano`: se tem BP, se tem DRE e o periodo_inicio declarado no DRE (None se o
+    PDF nao declarou). So' leitura. Alimenta fechamento_ano.docs_de_linhas.
+    """
+    if not empresas:
+        return []
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT empresa_codigo, periodo, COALESCE(granularidade, '') AS granularidade,
+                   bool_or(tipo = 'BP') AS tem_bp, bool_or(tipo = 'DRE') AS tem_dre,
+                   min(periodo_inicio) FILTER (WHERE tipo = 'DRE') AS inicio_dre
+            FROM egc.lancamentos
+            WHERE empresa_codigo = ANY(%s) AND status = 'ATIVO'
+              AND periodo >= %s AND periodo <= %s
+            GROUP BY empresa_codigo, periodo, COALESCE(granularidade, '')
+            ORDER BY empresa_codigo, periodo, granularidade
+            """,
+            (list(empresas), date(ano, 1, 1), date(ano, 12, 31)),
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def listar_valores_dre_documentos(conn, empresas: list, ano: int, contas: list) -> list[dict]:
+    """
+    v0.54.0: valor das `contas` do DRE ATIVO de cada documento do ano -- base das conferencias
+    entre periodos (1T + 2T = 1S ...). Devolve [{empresa_codigo, periodo, granularidade, conta,
+    valor, n}]; `n` = quantas linhas a conta tem no documento (deveria ser 1; se vier mais, a
+    conferencia ignora a conta em vez de comparar um valor ambiguo).
+    """
+    if not empresas or not contas:
+        return []
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT empresa_codigo, periodo, COALESCE(granularidade, '') AS granularidade, conta,
+                   sum(valor) AS valor, count(*) AS n
+            FROM egc.lancamentos
+            WHERE empresa_codigo = ANY(%s) AND status = 'ATIVO' AND tipo = 'DRE'
+              AND periodo >= %s AND periodo <= %s AND conta = ANY(%s)
+            GROUP BY empresa_codigo, periodo, COALESCE(granularidade, ''), conta
+            """,
+            (list(empresas), date(ano, 1, 1), date(ano, 12, 31), list(contas)),
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+GRANULARIDADES_VALIDAS = ("mensal", "bimestral", "trimestral", "semestral", "9meses", "anual", "outra")
+
+
+def corrigir_granularidade_documento(
+    conn, empresa_codigo: str, periodo: date, de: str, para: str, usuario: Optional[str] = None,
+) -> dict:
+    """
+    v0.54.0: corrige so' o ROTULO de granularidade de um documento ATIVO ja gravado (os numeros nao
+    mudam). Caso real: ENG 09/2026 gravado 'trimestral' mas o PDF e' o acumulado 01/01 a 30/09
+    ('9meses'). Move (empresa, periodo, de) -> (empresa, periodo, para) em egc.lancamentos (BP e DRE
+    ATIVOS) e nas tabelas derivadas que carregam granularidade (despesas_admin_itens, nao_recorrente,
+    nao_recorrente_confirmacao) quando existem. Linhas INATIVAS nao sao tocadas.
+
+    Recusa (ValueError, nada e' alterado) se: `para` invalido ou igual a `de`; nao ha documento ATIVO
+    em `de`; ou ja existe documento ATIVO em `para` do mesmo tipo (nao sobrescreve -- arquive o
+    existente antes). Registra o evento no log do sistema. Devolve {"lancamentos": n, "derivadas": {...}}.
+    """
+    de, para = de or "", para or ""
+    if para not in GRANULARIDADES_VALIDAS:
+        raise ValueError(f"Granularidade de destino inválida: '{para}'.")
+    if de == para:
+        raise ValueError("A granularidade de destino é igual à atual.")
+    em_transacao = bool(getattr(conn, "autocommit", False))  # producao: autocommit -> agrupa numa transacao
+    if em_transacao:
+        conn.autocommit = False
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT tipo, count(*) FROM egc.lancamentos WHERE empresa_codigo = %s AND periodo = %s "
+                "AND COALESCE(granularidade, '') = %s AND status = 'ATIVO' GROUP BY tipo",
+                (empresa_codigo, periodo, de),
+            )
+            origem = {t: n for t, n in cur.fetchall()}
+            if not origem:
+                raise ValueError(f"Não há documento ATIVO de {empresa_codigo} em {periodo:%d/%m/%Y} com a base atual informada.")
+            cur.execute(
+                "SELECT DISTINCT tipo FROM egc.lancamentos WHERE empresa_codigo = %s AND periodo = %s "
+                "AND COALESCE(granularidade, '') = %s AND status = 'ATIVO' AND tipo = ANY(%s)",
+                (empresa_codigo, periodo, para, list(origem)),
+            )
+            conflito = [r[0] for r in cur.fetchall()]
+            if conflito:
+                raise ValueError(
+                    f"Já existe documento ATIVO ({', '.join(sorted(conflito))}) de {empresa_codigo} em "
+                    f"{periodo:%d/%m/%Y} na base '{para}'. Arquive esse documento antes de corrigir o rótulo."
+                )
+            cur.execute(
+                "UPDATE egc.lancamentos SET granularidade = %s, atualizado_em = now() "
+                "WHERE empresa_codigo = %s AND periodo = %s AND COALESCE(granularidade, '') = %s AND status = 'ATIVO'",
+                (para, empresa_codigo, periodo, de),
+            )
+            total = cur.rowcount
+            derivadas: dict = {}
+            for tabela, filtro_extra in (
+                ("egc.despesas_admin_itens", ""),
+                ("egc.nao_recorrente", ""),
+                ("egc.nao_recorrente_confirmacao", " AND NOT EXISTS (SELECT 1 FROM egc.nao_recorrente_confirmacao x "
+                 "WHERE x.empresa_codigo = %s AND x.periodo = %s AND x.granularidade = %s)"),
+            ):
+                cur.execute("SAVEPOINT corrigir_gran")
+                try:
+                    params = [para, empresa_codigo, periodo, de]
+                    sql = f"UPDATE {tabela} SET granularidade = %s WHERE empresa_codigo = %s AND periodo = %s AND granularidade = %s"
+                    if filtro_extra:
+                        sql += filtro_extra
+                        params += [empresa_codigo, periodo, para]
+                    cur.execute(sql, params)
+                    derivadas[tabela.split(".")[1]] = cur.rowcount
+                    cur.execute("RELEASE SAVEPOINT corrigir_gran")
+                except (psycopg2.errors.UndefinedTable, psycopg2.errors.UndefinedColumn):
+                    cur.execute("ROLLBACK TO SAVEPOINT corrigir_gran")
+                    derivadas[tabela.split(".")[1]] = None  # tabela/coluna ainda nao existe no banco
+        if em_transacao:
+            conn.commit()
+    except Exception:
+        if em_transacao:
+            conn.rollback()
+        raise
+    finally:
+        if em_transacao:
+            conn.autocommit = True
+    try:
+        registrar_evento(
+            conn, "fechamento_ano", "INFO",
+            f"Granularidade corrigida: {empresa_codigo} {periodo:%d/%m/%Y} '{de or 'não declarada'}' -> '{para}'",
+            empresa_codigo=empresa_codigo, periodo=periodo, usuario=usuario,
+            detalhe=f"lancamentos={total}; derivadas={derivadas}",
+        )
+    except Exception:
+        pass
+    return {"lancamentos": total, "derivadas": derivadas}
+
+
 def inativar_periodo_existente(
     conn, empresa_codigo: str, periodo: date, tipo: str, granularidade: str = "",
 ) -> int:
